@@ -48,18 +48,18 @@ const nodes = ref<Node[]>([
 const edges = ref<Edge[]>([])
 
 // ─── Edge propagation ─────────────────────────────────────────────────────────
-// Watch nodeOutputs reference (shallowRef) and edges array length only.
-// NO { deep: true } — Vue Flow mutates edge objects with sourceX/Y on every
-// drag frame, so deep-watching would re-run this on every mousemove.
-watch(
-  [() => edges.value.length, () => canvasStore.nodeOutputs],
-  () => {
-    for (const edge of edges.value) {
-      const data = canvasStore.nodeOutputs[edge.source]
-      if (data) canvasStore.setNodeInput(edge.target, data)
-    }
-  },
-)
+// watchEffect auto-tracks every reactive read inside — fires when nodeOutputs
+// reference changes (new data loaded OR transform re-computed) or when edges
+// are added. No { deep:true } so Vue Flow's per-frame edge position mutations
+// don't trigger this.
+watchEffect(() => {
+  const outputs   = canvasStore.nodeOutputs  // track shallowRef reference
+  const edgeList  = edges.value              // track edges array reference
+  for (const edge of edgeList) {
+    const data = outputs[edge.source]
+    if (data) canvasStore.setNodeInput(edge.target, data)
+  }
+})
 
 // ─── Connections ──────────────────────────────────────────────────────────────
 onConnect((conn: Connection) => {

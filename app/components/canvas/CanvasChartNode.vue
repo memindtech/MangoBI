@@ -3,7 +3,8 @@ import { Handle, Position } from '@vue-flow/core'
 import { BarChart2, TrendingUp, PieChart, Unplug } from 'lucide-vue-next'
 import type { ChartType } from '~/stores/canvas'
 
-const { nodeEl, width, onDragStart } = useNodeResize(200)
+const { nodeEl, width, height, onDragStart, onDragStartHeight, onDragStartCorner } = useNodeResize(200, 80)
+const isSized = computed(() => height.value !== 'auto')
 
 const props = defineProps<{
   id: string
@@ -35,12 +36,14 @@ const headerBg: Record<ChartType, string> = {
 </script>
 
 <template>
-  <div ref="nodeEl" class="relative" :style="{ width }">
+  <div ref="nodeEl" class="relative" :style="{ width, height }">
 
     <div
-      class="rounded-xl border-2 bg-background shadow-md transition-[border-color,box-shadow] overflow-hidden"
+      class="rounded-xl border-2 bg-background shadow-md transition-[border-color,box-shadow] overflow-hidden flex flex-col"
       style="will-change: transform;"
+      :style="isSized ? { height: '100%' } : {}"
       :class="selected ? 'border-primary shadow-lg' : 'border-border'"
+      @wheel.stop
     >
       <!-- Header -->
       <div class="flex items-center gap-2 px-3 py-2 rounded-t-xl border-b" :class="headerBg[chartType]">
@@ -72,11 +75,11 @@ const headerBg: Record<ChartType, string> = {
             :x-field="xField"
             :y-field="yField"
             :chart-type="chartType"
-            class="w-full"
+            :class="['w-full', isSized ? 'flex-1 min-h-0' : '']"
           />
         </div>
 
-        <div v-if="hasData" class="px-3 pb-2.5 flex gap-3 text-[10px] text-muted-foreground">
+        <div v-if="hasData" class="px-3 pb-2.5 flex gap-3 text-[10px] text-muted-foreground shrink-0">
           <span>X: <strong class="text-foreground/70">{{ xField }}</strong></span>
           <span>Y: <strong class="text-foreground/70">{{ yField }}</strong></span>
         </div>
@@ -93,6 +96,16 @@ const headerBg: Record<ChartType, string> = {
     <div
       class="absolute right-0 top-0 h-full w-2 cursor-ew-resize hover:bg-blue-400/40 rounded-r-xl nodrag z-10"
       @mousedown.stop="onDragStart"
+    />
+    <!-- Bottom-edge resize -->
+    <div
+      class="absolute bottom-0 left-0 w-full h-2 cursor-ns-resize hover:bg-blue-400/40 rounded-b-xl nodrag z-10"
+      @mousedown.stop="onDragStartHeight"
+    />
+    <!-- Corner resize -->
+    <div
+      class="absolute bottom-0 right-0 w-3 h-3 cursor-nwse-resize nodrag z-20"
+      @mousedown.stop="onDragStartCorner"
     />
   </div>
 </template>

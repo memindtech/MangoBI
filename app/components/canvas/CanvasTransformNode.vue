@@ -2,7 +2,8 @@
 import { Handle, Position } from '@vue-flow/core'
 import { Shuffle, ChevronDown, Plus, X } from 'lucide-vue-next'
 
-const { nodeEl, width, onDragStart } = useNodeResize(200)
+const { nodeEl, width, height, onDragStart, onDragStartHeight, onDragStartCorner } = useNodeResize(200)
+const isSized = computed(() => height.value !== 'auto')
 
 const props = defineProps<{
   id: string
@@ -164,11 +165,13 @@ const outputRows = computed(() => canvasStore.nodeOutputs[props.id] ?? [])
 </script>
 
 <template>
-  <div ref="nodeEl" class="relative" :style="{ width }">
+  <div ref="nodeEl" class="relative" :style="{ width, height }">
   <div
-    class="rounded-xl border-2 bg-background shadow-md transition-[border-color,box-shadow] overflow-hidden"
+    class="rounded-xl border-2 bg-background shadow-md transition-[border-color,box-shadow] overflow-hidden flex flex-col"
     style="will-change: transform;"
+    :style="isSized ? { height: '100%' } : {}"
     :class="selected ? 'border-violet-400 shadow-lg' : 'border-border'"
+    @wheel.stop
   >
     <!-- Header -->
     <div class="flex items-center gap-2 px-3 py-2 bg-violet-50 dark:bg-violet-950/30 rounded-t-xl border-b sticky top-0 z-10">
@@ -184,7 +187,7 @@ const outputRows = computed(() => canvasStore.nodeOutputs[props.id] ?? [])
       {{ outputRows.length ? `${outputRows.length.toLocaleString()} rows out` : 'Transform' }}
     </div>
 
-    <div v-else class="p-3 flex flex-col gap-2.5">
+    <div v-else :class="['p-3 flex flex-col gap-2.5', isSized ? 'flex-1 min-h-0 overflow-y-auto nodrag' : '']">
 
       <!-- No input -->
       <div v-if="!columns.length" class="text-[10px] text-center text-muted-foreground py-2 border border-dashed rounded-lg">
@@ -311,6 +314,16 @@ const outputRows = computed(() => canvasStore.nodeOutputs[props.id] ?? [])
   <Handle id="out" type="source" :position="Position.Right"
     style="right: -6px; width: 12px; height: 12px; background: #8b5cf6; border: 2px solid white;" />
 
+  <!-- Bottom-edge resize -->
+  <div
+    class="absolute bottom-0 left-0 w-full h-2 cursor-ns-resize hover:bg-violet-400/40 rounded-b-xl nodrag z-10"
+    @mousedown.stop="onDragStartHeight"
+  />
+  <!-- Corner resize -->
+  <div
+    class="absolute bottom-0 right-0 w-3 h-3 cursor-nwse-resize nodrag z-20"
+    @mousedown.stop="onDragStartCorner"
+  />
   <!-- Right-edge resize strip -->
   <div
     class="absolute right-0 top-0 h-full w-2 cursor-ew-resize hover:bg-violet-400/40 rounded-r-xl nodrag z-10"

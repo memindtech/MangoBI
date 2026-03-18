@@ -3,7 +3,8 @@ import { Handle, Position } from '@vue-flow/core'
 import { Database, Download, CheckCircle2, Loader2, AlertCircle } from 'lucide-vue-next'
 import { MOCK_DATA, DATASET_META, type DatasetKey } from '~/stores/canvas'
 
-const { nodeEl, width, onDragStart } = useNodeResize(200)
+const { nodeEl, width, height, onDragStart, onDragStartHeight, onDragStartCorner } = useNodeResize(200)
+const isSized = computed(() => height.value !== 'auto')
 
 const props = defineProps<{
   id: string
@@ -167,11 +168,13 @@ function loadData() {
 </script>
 
 <template>
-  <div ref="nodeEl" class="relative" :style="{ width }">
+  <div ref="nodeEl" class="relative" :style="{ width, height }">
   <div
-    class="rounded-xl border-2 bg-background shadow-md transition-[border-color,box-shadow] overflow-hidden"
+    class="rounded-xl border-2 bg-background shadow-md transition-[border-color,box-shadow] overflow-hidden flex flex-col"
     style="will-change: transform;"
+    :style="isSized ? { height: '100%' } : {}"
     :class="selected ? 'border-orange-400 shadow-lg' : 'border-border'"
+    @wheel.stop
   >
     <!-- Header -->
     <div class="flex items-center gap-2 px-3 py-2 bg-orange-50 dark:bg-orange-950/30 rounded-t-xl border-b">
@@ -205,7 +208,7 @@ function loadData() {
     </div>
 
     <!-- Body -->
-    <div class="p-3 flex flex-col gap-2">
+    <div :class="['p-3 flex flex-col gap-2', isSized ? 'flex-1 min-h-0 overflow-y-auto nodrag' : '']">
 
       <!-- MOCK mode -->
       <template v-if="mode === 'mock'">
@@ -354,6 +357,16 @@ function loadData() {
   <div
     class="absolute right-0 top-0 h-full w-2 cursor-ew-resize hover:bg-orange-400/40 rounded-r-xl nodrag z-10"
     @mousedown.stop="onDragStart"
+  />
+  <!-- Bottom-edge resize -->
+  <div
+    class="absolute bottom-0 left-0 w-full h-2 cursor-ns-resize hover:bg-orange-400/40 rounded-b-xl nodrag z-10"
+    @mousedown.stop="onDragStartHeight"
+  />
+  <!-- Corner resize -->
+  <div
+    class="absolute bottom-0 right-0 w-3 h-3 cursor-nwse-resize nodrag z-20"
+    @mousedown.stop="onDragStartCorner"
   />
   </div><!-- end root -->
 </template>
