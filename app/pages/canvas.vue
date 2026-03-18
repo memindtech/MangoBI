@@ -48,16 +48,17 @@ const nodes = ref<Node[]>([
 const edges = ref<Edge[]>([])
 
 // ─── Edge propagation ─────────────────────────────────────────────────────────
-// Watch only nodeOutputs (written by DataSourceNode) → prevents infinite loop
+// Watch nodeOutputs reference (shallowRef) and edges array length only.
+// NO { deep: true } — Vue Flow mutates edge objects with sourceX/Y on every
+// drag frame, so deep-watching would re-run this on every mousemove.
 watch(
-  [edges, () => canvasStore.nodeOutputs],
+  [() => edges.value.length, () => canvasStore.nodeOutputs],
   () => {
     for (const edge of edges.value) {
       const data = canvasStore.nodeOutputs[edge.source]
       if (data) canvasStore.setNodeInput(edge.target, data)
     }
   },
-  { deep: true },
 )
 
 // ─── Connections ──────────────────────────────────────────────────────────────

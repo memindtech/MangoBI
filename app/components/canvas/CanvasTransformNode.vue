@@ -103,8 +103,10 @@ watch(columns, (cols) => {
   filters.value.forEach(f => { if (f.field && !cols.includes(f.field)) f.field = cols[0] ?? '' })
 }, { immediate: true })
 
-// ── Transform ────────────────────────────────────────────────────
-watchEffect(() => {
+// ── Transform (debounced 80ms so drag frames don't trigger computation) ───────
+let _transformTimer: ReturnType<typeof setTimeout> | null = null
+
+function runTransform() {
   if (!inputRows.value.length) {
     canvasStore.setNodeOutput(props.id, [])
     return
@@ -145,7 +147,18 @@ watchEffect(() => {
   })
 
   canvasStore.setNodeOutput(props.id, result)
-})
+}
+
+watch(
+  [inputRows, filters, groupByField, aggregations],
+  () => {
+    if (_transformTimer) clearTimeout(_transformTimer)
+    _transformTimer = setTimeout(runTransform, 80)
+  },
+  { deep: true, immediate: true },
+)
+
+onUnmounted(() => { if (_transformTimer) clearTimeout(_transformTimer) })
 
 const outputRows = computed(() => canvasStore.nodeOutputs[props.id] ?? [])
 </script>
