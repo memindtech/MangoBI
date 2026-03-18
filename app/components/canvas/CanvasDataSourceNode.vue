@@ -1,14 +1,15 @@
 <script setup lang="ts">
 import { Handle, Position } from '@vue-flow/core'
-import { NodeResizer } from '@vue-flow/node-resizer'
-import '@vue-flow/node-resizer/dist/style.css'
 import { Database, Download, CheckCircle2, Loader2, AlertCircle } from 'lucide-vue-next'
 import { MOCK_DATA, DATASET_META, type DatasetKey } from '~/stores/canvas'
+
+const { nodeEl, width, onDragStart } = useNodeResize(200)
 
 const props = defineProps<{
   id: string
   data: Record<string, any>
   selected: boolean
+  dragging?: boolean
 }>()
 
 const canvasStore = useCanvasStore()
@@ -166,14 +167,10 @@ function loadData() {
 </script>
 
 <template>
-  <NodeResizer
-    :min-width="200" :min-height="80"
-    :is-visible="selected"
-    :handle-style="{ width: '8px', height: '8px', borderRadius: '2px' }"
-    :line-style="{ borderColor: '#f97316' }"
-  />
+  <div ref="nodeEl" class="relative" :style="{ width }">
   <div
-    class="rounded-xl border-2 bg-background shadow-md transition-all overflow-hidden" style="width:100%;min-height:100%;"
+    class="rounded-xl border-2 bg-background shadow-md transition-[border-color,box-shadow] overflow-hidden"
+    style="will-change: transform;"
     :class="selected ? 'border-orange-400 shadow-lg' : 'border-border'"
   >
     <!-- Header -->
@@ -186,6 +183,12 @@ function loadData() {
       </div>
     </div>
 
+    <!-- Drag placeholder -->
+    <div v-if="dragging" class="px-3 py-4 text-center text-[10px] text-muted-foreground">
+      {{ isLoaded ? `${output.length.toLocaleString()} rows · ${mode.toUpperCase()}` : mode.toUpperCase() }}
+    </div>
+
+    <template v-else>
     <!-- Mode tabs -->
     <div class="flex border-b text-[10px]">
       <button
@@ -335,13 +338,22 @@ function loadData() {
       </div>
 
     </div>
+    </template><!-- end v-else dragging -->
 
-    <!-- Output handle -->
-    <Handle
-      id="out"
-      type="source"
-      :position="Position.Right"
-      style="right: -6px; width: 12px; height: 12px; background: #f97316; border: 2px solid white;"
-    />
-  </div>
+  </div><!-- end card -->
+
+  <!-- Handle outside overflow-hidden -->
+  <Handle
+    id="out"
+    type="source"
+    :position="Position.Right"
+    style="right: -6px; width: 12px; height: 12px; background: #f97316; border: 2px solid white;"
+  />
+
+  <!-- Right-edge resize strip -->
+  <div
+    class="absolute right-0 top-0 h-full w-2 cursor-ew-resize hover:bg-orange-400/40 rounded-r-xl nodrag z-10"
+    @mousedown.stop="onDragStart"
+  />
+  </div><!-- end root -->
 </template>

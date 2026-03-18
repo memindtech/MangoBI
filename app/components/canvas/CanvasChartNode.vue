@@ -1,14 +1,15 @@
 <script setup lang="ts">
 import { Handle, Position } from '@vue-flow/core'
-import { NodeResizer } from '@vue-flow/node-resizer'
-import '@vue-flow/node-resizer/dist/style.css'
 import { BarChart2, TrendingUp, PieChart, Unplug } from 'lucide-vue-next'
 import type { ChartType } from '~/stores/canvas'
+
+const { nodeEl, width, onDragStart } = useNodeResize(200)
 
 const props = defineProps<{
   id: string
   data: Record<string, any>
   selected: boolean
+  dragging?: boolean
 }>()
 
 const canvasStore = useCanvasStore()
@@ -24,17 +25,8 @@ const xField    = computed(() => config.value.xField ?? columns.value[0] ?? '')
 const yField    = computed(() => config.value.yField ?? numericCols.value[0] ?? '')
 const chartType = computed<ChartType>(() => config.value.chartType ?? 'bar')
 
-const chartIcon: Record<ChartType, any> = {
-  bar:  BarChart2,
-  line: TrendingUp,
-  pie:  PieChart,
-}
-
-const chartColor: Record<ChartType, string> = {
-  bar:  'text-blue-500',
-  line: 'text-teal-500',
-  pie:  'text-violet-500',
-}
+const chartIcon: Record<ChartType, any> = { bar: BarChart2, line: TrendingUp, pie: PieChart }
+const chartColor: Record<ChartType, string> = { bar: 'text-blue-500', line: 'text-teal-500', pie: 'text-violet-500' }
 const headerBg: Record<ChartType, string> = {
   bar:  'bg-blue-50 dark:bg-blue-950/30',
   line: 'bg-teal-50 dark:bg-teal-950/30',
@@ -43,17 +35,54 @@ const headerBg: Record<ChartType, string> = {
 </script>
 
 <template>
-  <NodeResizer
-    :min-width="200" :min-height="80"
-    :is-visible="selected"
-    :handle-style="{ width: '8px', height: '8px', borderRadius: '2px' }"
-    :line-style="{ borderColor: '#6366f1' }"
-  />
-  <div
-    class="rounded-xl border-2 bg-background shadow-md transition-all overflow-hidden" style="width:100%;min-height:100%;"
-    :class="selected ? 'border-primary shadow-lg' : 'border-border'"
-  >
-    <!-- Input handle -->
+  <div ref="nodeEl" class="relative" :style="{ width }">
+
+    <div
+      class="rounded-xl border-2 bg-background shadow-md transition-[border-color,box-shadow] overflow-hidden"
+      style="will-change: transform;"
+      :class="selected ? 'border-primary shadow-lg' : 'border-border'"
+    >
+      <!-- Header -->
+      <div class="flex items-center gap-2 px-3 py-2 rounded-t-xl border-b" :class="headerBg[chartType]">
+        <component :is="chartIcon[chartType]" class="size-4 shrink-0" :class="chartColor[chartType]" />
+        <span class="text-xs font-semibold" :class="chartColor[chartType]">Chart</span>
+        <span class="ml-auto text-[10px] px-2 py-0.5 rounded bg-white/60 dark:bg-black/20 font-medium">
+          {{ chartType }}
+        </span>
+      </div>
+
+      <!-- Drag placeholder -->
+      <div v-if="dragging" class="px-3 py-4 text-center text-[10px] text-muted-foreground">
+        {{ hasData ? `${rows.length.toLocaleString()} rows` : 'ไม่มีข้อมูล' }}
+      </div>
+
+      <template v-else>
+        <div class="px-2 pt-2 pb-1">
+          <div
+            v-if="!hasData"
+            class="h-36 flex flex-col items-center justify-center gap-2 text-muted-foreground rounded-lg border border-dashed"
+          >
+            <Unplug class="size-6 opacity-25" />
+            <p class="text-xs">เชื่อมต่อ Data Source</p>
+          </div>
+
+          <CanvasMiniChart
+            v-else
+            :rows="rows"
+            :x-field="xField"
+            :y-field="yField"
+            :chart-type="chartType"
+            class="w-full"
+          />
+        </div>
+
+        <div v-if="hasData" class="px-3 pb-2.5 flex gap-3 text-[10px] text-muted-foreground">
+          <span>X: <strong class="text-foreground/70">{{ xField }}</strong></span>
+          <span>Y: <strong class="text-foreground/70">{{ yField }}</strong></span>
+        </div>
+      </template>
+    </div>
+
     <Handle
       id="in"
       type="target"
@@ -61,44 +90,9 @@ const headerBg: Record<ChartType, string> = {
       style="left: -6px; width: 12px; height: 12px; background: #3b82f6; border: 2px solid white;"
     />
 
-    <!-- Header -->
     <div
-      class="flex items-center gap-2 px-3 py-2 rounded-t-xl border-b"
-      :class="headerBg[chartType]"
-    >
-      <component :is="chartIcon[chartType]" class="size-4 shrink-0" :class="chartColor[chartType]" />
-      <span class="text-xs font-semibold" :class="chartColor[chartType]">Chart</span>
-      <span class="ml-auto text-[10px] px-2 py-0.5 rounded bg-white/60 dark:bg-black/20 font-medium">
-        {{ chartType }}
-      </span>
-    </div>
-
-    <!-- Chart area -->
-    <div class="px-2 pt-2 pb-1">
-      <!-- No data state -->
-      <div
-        v-if="!hasData"
-        class="h-36 flex flex-col items-center justify-center gap-2 text-muted-foreground rounded-lg border border-dashed"
-      >
-        <Unplug class="size-6 opacity-25" />
-        <p class="text-xs">เชื่อมต่อ Data Source</p>
-      </div>
-
-      <!-- Chart -->
-      <CanvasMiniChart
-        v-else
-        :rows="rows"
-        :x-field="xField"
-        :y-field="yField"
-        :chart-type="chartType"
-        class="w-full"
-      />
-    </div>
-
-    <!-- Footer: field labels -->
-    <div v-if="hasData" class="px-3 pb-2.5 flex gap-3 text-[10px] text-muted-foreground">
-      <span>X: <strong class="text-foreground/70">{{ xField }}</strong></span>
-      <span>Y: <strong class="text-foreground/70">{{ yField }}</strong></span>
-    </div>
+      class="absolute right-0 top-0 h-full w-2 cursor-ew-resize hover:bg-blue-400/40 rounded-r-xl nodrag z-10"
+      @mousedown.stop="onDragStart"
+    />
   </div>
 </template>

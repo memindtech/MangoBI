@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { Handle, Position } from '@vue-flow/core'
-import { NodeResizer } from '@vue-flow/node-resizer'
-import '@vue-flow/node-resizer/dist/style.css'
 import { Shuffle, ChevronDown, Plus, X } from 'lucide-vue-next'
+
+const { nodeEl, width, onDragStart } = useNodeResize(200)
 
 const props = defineProps<{
   id: string
   data: Record<string, any>
   selected: boolean
+  dragging?: boolean
 }>()
 
 const canvasStore = useCanvasStore()
@@ -43,8 +44,14 @@ const OP_OPTIONS: { value: FilterOp; label: string }[] = [
 ]
 
 // ── Input ────────────────────────────────────────────────────────
-const inputRows = computed<any[]>(() => canvasStore.nodeInputs[props.id] ?? [])
-const columns   = computed(() => inputRows.value.length ? Object.keys(inputRows.value[0]) : [])
+const inputRows       = computed<any[]>(() => canvasStore.nodeInputs[props.id] ?? [])
+const columns         = computed(() => inputRows.value.length ? Object.keys(inputRows.value[0]) : [])
+const colSearch       = ref('')
+const filteredColumns = computed(() =>
+  colSearch.value.trim()
+    ? columns.value.filter(c => c.toLowerCase().includes(colSearch.value.toLowerCase()))
+    : columns.value
+)
 
 // ── Filters ──────────────────────────────────────────────────────
 const filters = ref<FilterRow[]>([])
@@ -144,14 +151,10 @@ const outputRows = computed(() => canvasStore.nodeOutputs[props.id] ?? [])
 </script>
 
 <template>
-  <NodeResizer
-    :min-width="200" :min-height="80"
-    :is-visible="selected"
-    :handle-style="{ width: '8px', height: '8px', borderRadius: '2px' }"
-    :line-style="{ borderColor: '#8b5cf6' }"
-  />
+  <div ref="nodeEl" class="relative" :style="{ width }">
   <div
-    class="rounded-xl border-2 bg-background shadow-md transition-all overflow-hidden" style="width:100%;min-height:100%;"
+    class="rounded-xl border-2 bg-background shadow-md transition-[border-color,box-shadow] overflow-hidden"
+    style="will-change: transform;"
     :class="selected ? 'border-violet-400 shadow-lg' : 'border-border'"
   >
     <!-- Header -->
@@ -163,7 +166,12 @@ const outputRows = computed(() => canvasStore.nodeOutputs[props.id] ?? [])
       </span>
     </div>
 
-    <div class="p-3 flex flex-col gap-2.5">
+    <!-- Drag placeholder -->
+    <div v-if="dragging" class="px-3 py-4 text-center text-[10px] text-muted-foreground">
+      {{ outputRows.length ? `${outputRows.length.toLocaleString()} rows out` : 'Transform' }}
+    </div>
+
+    <div v-else class="p-3 flex flex-col gap-2.5">
 
       <!-- No input -->
       <div v-if="!columns.length" class="text-[10px] text-center text-muted-foreground py-2 border border-dashed rounded-lg">
@@ -171,6 +179,20 @@ const outputRows = computed(() => canvasStore.nodeOutputs[props.id] ?? [])
       </div>
 
       <template v-else>
+
+        <!-- ── Column Search ── -->
+        <div class="relative">
+          <input
+            v-model="colSearch"
+            placeholder="ค้นหา column..."
+            class="w-full text-[10px] border rounded-lg pl-2 pr-2 py-1 bg-background nodrag
+                   focus:outline-none focus:ring-1 focus:ring-violet-400 placeholder:text-muted-foreground/60"
+            @click.stop @mousedown.stop @keydown.stop
+          />
+          <span v-if="colSearch" class="absolute right-1.5 top-1/2 -translate-y-1/2 text-[9px] text-violet-500 font-mono pointer-events-none">
+            {{ filteredColumns.length }}/{{ columns.length }}
+          </span>
+        </div>
 
         <!-- ── Filter ── -->
         <div>
@@ -194,7 +216,7 @@ const outputRows = computed(() => canvasStore.nodeOutputs[props.id] ?? [])
                 class="text-[10px] border rounded px-1 py-0.5 bg-background nodrag focus:outline-none focus:ring-1 focus:ring-violet-400 flex-1 min-w-0"
                 @click.stop @mousedown.stop
               >
-                <option v-for="col in columns" :key="col" :value="col">{{ col }}</option>
+                <option v-for="col in filteredColumns" :key="col" :value="col">{{ col }}</option>
               </select>
               <!-- Operator -->
               <select
@@ -230,7 +252,7 @@ const outputRows = computed(() => canvasStore.nodeOutputs[props.id] ?? [])
               @click.stop @mousedown.stop
             >
               <option value="">(ไม่ Group)</option>
-              <option v-for="col in columns" :key="col" :value="col">{{ col }}</option>
+              <option v-for="col in filteredColumns" :key="col" :value="col">{{ col }}</option>
             </select>
             <ChevronDown class="absolute right-1.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground pointer-events-none" />
           </div>
@@ -241,7 +263,7 @@ const outputRows = computed(() => canvasStore.nodeOutputs[props.id] ?? [])
           <p class="text-[10px] font-semibold text-muted-foreground mb-1">Aggregate</p>
           <div class="space-y-1 max-h-36 overflow-y-auto pr-0.5">
             <div
-              v-for="col in columns.filter(c => c !== groupByField)"
+              v-for="col in filteredColumns.filter(c => c !== groupByField)"
               :key="col"
               class="flex items-center gap-1.5"
             >
@@ -266,12 +288,20 @@ const outputRows = computed(() => canvasStore.nodeOutputs[props.id] ?? [])
         </div>
 
       </template>
-    </div>
+    </div><!-- end v-else dragging -->
 
-    <!-- Handles -->
-    <Handle id="in"  type="target" :position="Position.Left"
-      style="left: -6px; width: 12px; height: 12px; background: #8b5cf6; border: 2px solid white;" />
-    <Handle id="out" type="source" :position="Position.Right"
-      style="right: -6px; width: 12px; height: 12px; background: #8b5cf6; border: 2px solid white;" />
-  </div>
+  </div><!-- end card -->
+
+  <!-- Handles outside overflow-hidden -->
+  <Handle id="in"  type="target" :position="Position.Left"
+    style="left: -6px; width: 12px; height: 12px; background: #8b5cf6; border: 2px solid white;" />
+  <Handle id="out" type="source" :position="Position.Right"
+    style="right: -6px; width: 12px; height: 12px; background: #8b5cf6; border: 2px solid white;" />
+
+  <!-- Right-edge resize strip -->
+  <div
+    class="absolute right-0 top-0 h-full w-2 cursor-ew-resize hover:bg-violet-400/40 rounded-r-xl nodrag z-10"
+    @mousedown.stop="onDragStart"
+  />
+  </div><!-- end root -->
 </template>
