@@ -26,23 +26,70 @@ export const useAuthStore = defineStore('auth', () => {
   /**
    * ฟังก์ชันหลักสำหรับดึงข้อมูลการเข้าถึงและสิทธิ์
    */
+  const SESSION_KEY = 'mango_auth_session'
+
+  // โหลด auth state จาก sessionStorage (ใช้ตอน refresh ให้ไม่ต้อง hit API ซ้ำ)
+  function restoreFromSession(): boolean {
+    try {
+      const raw = sessionStorage.getItem(SESSION_KEY)
+      if (!raw) return false
+      const cached = JSON.parse(raw)
+      if (!cached?.auth?.is_authen) return false
+      auth.value       = cached.auth
+      appinfo.value    = cached.appinfo    || {}
+      userRight.value  = cached.userRight  || []
+      projectRight.value = cached.projectRight || []
+      controlMenu.value  = cached.controlMenu  ?? null
+      otherMenu.value    = cached.otherMenu    ?? null
+      indexRight.value   = cached.indexRight   ?? null
+      reportRight.value  = cached.reportRight  ?? null
+      config.value       = cached.config       || []
+      decimal.value      = cached.decimal      ?? 2
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  function saveToSession() {
+    try {
+      sessionStorage.setItem(SESSION_KEY, JSON.stringify({
+        auth: auth.value,
+        appinfo: appinfo.value,
+        userRight: userRight.value,
+        projectRight: projectRight.value,
+        controlMenu: controlMenu.value,
+        otherMenu: otherMenu.value,
+        indexRight: indexRight.value,
+        reportRight: reportRight.value,
+        config: config.value,
+        decimal: decimal.value,
+      }))
+    } catch { /* sessionStorage full — ไม่ critical */ }
+  }
+
   const fetchUserAuth = async (menuName: string, menuId: string, moduleName?: string) => {
-    const headers = useRequestHeaders(['cookie']) as HeadersInit
-    
     const langKey = $i18n.locale.value || $i18n.locale;
 
     const token = localStorage.getItem('mango_auth')
     if (!token) {
       auth.value = { is_authen: false }
+      sessionStorage.removeItem(SESSION_KEY)
       return false
     }
 
+    // ถ้า store ยังมี auth อยู่ (same-session navigation) ไม่ต้อง hit API ซ้ำ
+    if (auth.value?.is_authen) return true
+
+    // refresh → ลอง restore จาก sessionStorage ก่อน
+    if (restoreFromSession()) return true
+
     try {
-      // 1. เรียก API ViewUserAuthentication ตาม Logic ใหม่
+      // 1. เรียก API ViewInitData2
       const respInit: any = await $xt.getServer(
         `api/public/ViewInitData2?menu_name=${encodeURIComponent(menuName)}&lang_code=&menu_id=${encodeURIComponent(menuId)}`
       )
-      
+
       if (!respInit?.data?.auth) throw new Error('Missing Auth Data')
 
       const data = respInit.data
@@ -72,29 +119,22 @@ export const useAuthStore = defineStore('auth', () => {
           })())
         }
         
-        // C. โหลด PPN Config (คงเดิมจากเวอร์ชันก่อนหน้า)
-        promises.push((async () => {
+        // C. โหลด PPN Config แบบ background (ไม่ block การเข้าระบบ)
+        ;(async () => {
           const res: any = await $xt.getServer(`Planning/Plan/ppn_config`)
           config.value = res?.config || []
-          const decObj = config.value.find(x => x.code === "PPN_DECIMAL" && x.active === "Y")
+          const decObj = config.value.find((x: any) => x.code === "PPN_DECIMAL" && x.active === "Y")
           decimal.value = decObj ? parseInt(decObj.value_data) : 2
-        })())
+        })()
       }
 
       await Promise.all(promises)
 
-      // 4. บันทึก Log การเข้าใช้งาน (UserInsertLogs)
-      // if (moduleName && menuId) {
-      //   $xt.postServerJson('API/Public/UserInsertLogs', {
-      //     module: moduleName || 'MG',
-      //     menu_name: menuName,
-      //     menu_id: menuId
-      //   }).catch(() => {}) // บันทึก Log ล้มเหลวไม่ต้องดีดออก
-      // }
+      // บันทึก session cache ไว้ใช้ตอน refresh
+      saveToSession()
 
-      // 5. Mapping ข้อมูลลง Window (Legacy Support สำหรับไฟล์เก่า)
+      // Mapping ข้อมูลลง Window (Legacy Support)
       if (import.meta.client) {
-        window.ui = uiLang.value
         window.auth = data.auth
         window.userRight = data.menu_right
         window.projectRight = data.project_right
@@ -127,23 +167,27 @@ export const useAuthStore = defineStore('auth', () => {
 
   const handleLogout = async (isAllDevices: boolean) => {
     showSpinner.value = true
-    try {
-      const url = `api/public/logout?all=${isAllDevices}&is_api=N`
-      const rs: any = await $xt.getServer(url)
 
-      if (rs.success) {
-        localStorage.removeItem('mango_auth')
-        localStorage.removeItem('auth_token')
-        auth.value = { is_authen: false }
-        
-        // Redirect ไปหน้า Login
-        const logoutUrl = config.value.find(x => x.code === "PPN_LOGIN")?.value_data || '/login'
-        window.location.href = logoutUrl
-      }
+    // ล้าง state ทันทีเสมอ ไม่รอผล API (ป้องกัน 2-click login หลัง logout)
+    const raw = config.value.find((x: any) => x.code === "PPN_LOGIN")?.value_data ?? ''
+    const logoutUrl = raw.startsWith('/') || raw.startsWith('http') ? raw : '/login'
+
+    localStorage.removeItem('mango_auth')
+    localStorage.removeItem('auth_token')
+    sessionStorage.removeItem(SESSION_KEY)
+    auth.value = { is_authen: false }
+
+    // ล้าง cookie ด้วย (ป้องกัน token เก่าค้างอยู่)
+    const authCookie = useCookie('mango_auth')
+    authCookie.value = null
+
+    try {
+      await $xt.getServer(`api/public/logout?all=${isAllDevices}&is_api=N`)
     } catch (ex) {
       console.error("Logout Error:", ex)
     } finally {
       showSpinner.value = false
+      window.location.href = logoutUrl
     }
   }
 

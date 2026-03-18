@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { Handle, Position } from '@vue-flow/core'
+import { NodeResizer } from '@vue-flow/node-resizer'
+import '@vue-flow/node-resizer/dist/style.css'
 import { BarChart2, TrendingUp, PieChart, Unplug } from 'lucide-vue-next'
 import type { ChartType } from '~/stores/canvas'
 
@@ -41,8 +43,14 @@ const headerBg: Record<ChartType, string> = {
 </script>
 
 <template>
+  <NodeResizer
+    :min-width="200" :min-height="80"
+    :is-visible="selected"
+    :handle-style="{ width: '8px', height: '8px', borderRadius: '2px' }"
+    :line-style="{ borderColor: '#6366f1' }"
+  />
   <div
-    class="w-72 rounded-xl border-2 bg-background shadow-md transition-all"
+    class="rounded-xl border-2 bg-background shadow-md transition-all overflow-hidden" style="width:100%;min-height:100%;"
     :class="selected ? 'border-primary shadow-lg' : 'border-border'"
   >
     <!-- Input handle -->

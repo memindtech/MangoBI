@@ -6,11 +6,12 @@ import { Controls }   from '@vue-flow/controls'
 import '@vue-flow/controls/dist/style.css'
 import {
   Database, BarChart2, Table2, ArrowLeft, Trash2,
-  TrendingUp, PieChart, Workflow,
+  TrendingUp, PieChart, Workflow, Bug, Shuffle,
 } from 'lucide-vue-next'
 import CanvasDataSourceNode from '~/components/canvas/CanvasDataSourceNode.vue'
 import CanvasChartNode      from '~/components/canvas/CanvasChartNode.vue'
 import CanvasTableNode      from '~/components/canvas/CanvasTableNode.vue'
+import CanvasTransformNode  from '~/components/canvas/CanvasTransformNode.vue'
 import { type ChartType }   from '~/stores/canvas'
 
 // ─── Page meta ────────────────────────────────────────────────────────────────
@@ -32,6 +33,7 @@ const {
 // Node type registry — must use markRaw to prevent Vue from making components reactive
 const nodeTypes = {
   dataSource: markRaw(CanvasDataSourceNode),
+  transform:  markRaw(CanvasTransformNode),
   chart:      markRaw(CanvasChartNode),
   table:      markRaw(CanvasTableNode),
 }
@@ -126,7 +128,8 @@ function updateConfig(key: string, value: any) {
 
 // ─── Palette items ────────────────────────────────────────────────────────────
 const palette = [
-  { type: 'dataSource', label: 'Data Source', icon: Database,  desc: 'โหลดข้อมูล (Mock / API)' },
+  { type: 'dataSource', label: 'Data Source', icon: Database,  desc: 'โหลดข้อมูล (Mock / API / SQL)' },
+  { type: 'transform',  label: 'Transform',   icon: Shuffle,   desc: 'Group By · Sum · Avg · Count' },
   { type: 'chart',      label: 'Chart',       icon: BarChart2, desc: 'Bar · Line · Pie' },
   { type: 'table',      label: 'Table',       icon: Table2,    desc: 'ตาราง Raw Data' },
 ]
@@ -136,13 +139,25 @@ const chartTypeOptions: { value: ChartType; label: string; icon: any }[] = [
   { value: 'line', label: 'Line', icon: TrendingUp },
   { value: 'pie',  label: 'Pie',  icon: PieChart   },
 ]
+
+// ─── Debug ────────────────────────────────────────────────────────────────────
+const { $xt } = useNuxtApp() as any
+const debugResult  = ref<any>(null)
+const debugLoading = ref(false)
+
+async function runDebug() {
+  debugLoading.value = true
+  debugResult.value  = null
+  debugResult.value  = await $xt.getServer('Planning/Master/GetSqlFlowTemplateDebug')
+  debugLoading.value = false
+}
 </script>
 
 <template>
   <div class="flex h-screen w-screen overflow-hidden bg-muted/10" style="font-family: inherit">
 
     <!-- ── LEFT PANEL: Palette ──────────────────────────────────────── -->
-    <aside class="w-56 shrink-0 border-r bg-background flex flex-col shadow-sm z-10">
+    <aside aria-label="Node palette" class="w-56 shrink-0 border-r bg-background flex flex-col shadow-sm z-10">
       <!-- Top bar -->
       <div class="flex items-center gap-2 px-3 h-12 border-b shrink-0">
         <button
@@ -185,6 +200,23 @@ const chartTypeOptions: { value: ChartType; label: string; icon: any }[] = [
         <p>• คลิก node เพื่อตั้งค่า</p>
         <p>• Ctrl+B เปิด/ปิด sidebar</p>
       </div>
+
+      <!-- Debug panel -->
+      <div class="p-3 border-t space-y-2">
+        <button
+          @click="runDebug"
+          :disabled="debugLoading"
+          class="w-full flex items-center justify-center gap-1.5 text-[10px] py-1.5
+                 border rounded-lg hover:bg-accent transition-colors disabled:opacity-60"
+        >
+          <Bug class="size-3" />
+          {{ debugLoading ? 'Testing...' : 'Debug Auth' }}
+        </button>
+        <pre
+          v-if="debugResult"
+          class="text-[9px] bg-muted rounded p-2 overflow-x-auto max-h-48 overflow-y-auto leading-relaxed"
+        >{{ JSON.stringify(debugResult, null, 2) }}</pre>
+      </div>
     </aside>
 
     <!-- ── CENTER: Vue Flow Canvas ────────────────────────────────── -->
@@ -225,6 +257,7 @@ const chartTypeOptions: { value: ChartType; label: string; icon: any }[] = [
     <Transition name="slide-right">
       <aside
         v-if="canvasStore.selectedNodeId"
+        aria-label="Node properties"
         class="w-72 shrink-0 border-l bg-background flex flex-col shadow-sm z-10"
       >
         <!-- Panel header -->
@@ -286,8 +319,9 @@ const chartTypeOptions: { value: ChartType; label: string; icon: any }[] = [
               <!-- Field selectors (only when connected) -->
               <template v-if="selectedCols.length">
                 <div>
-                  <label class="text-xs font-medium text-muted-foreground">X Axis (Category)</label>
+                  <label for="cfg-xfield" class="text-xs font-medium text-muted-foreground">X Axis (Category)</label>
                   <select
+                    id="cfg-xfield"
                     class="mt-1 w-full text-xs border rounded-lg px-2 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-primary"
                     :value="selectedConfig?.xField ?? selectedCols[0]"
                     @change="updateConfig('xField', ($event.target as HTMLSelectElement).value)"
@@ -297,8 +331,9 @@ const chartTypeOptions: { value: ChartType; label: string; icon: any }[] = [
                 </div>
 
                 <div>
-                  <label class="text-xs font-medium text-muted-foreground">Y Axis (Value)</label>
+                  <label for="cfg-yfield" class="text-xs font-medium text-muted-foreground">Y Axis (Value)</label>
                   <select
+                    id="cfg-yfield"
                     class="mt-1 w-full text-xs border rounded-lg px-2 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-primary"
                     :value="selectedConfig?.yField ?? selectedNumericCols[0]"
                     @change="updateConfig('yField', ($event.target as HTMLSelectElement).value)"
@@ -320,8 +355,9 @@ const chartTypeOptions: { value: ChartType; label: string; icon: any }[] = [
           <!-- ── TABLE CONFIG ── -->
           <template v-else-if="selectedNode?.type === 'table'">
             <div>
-              <label class="text-xs font-medium text-muted-foreground">Max Rows Displayed</label>
+              <label for="cfg-maxrows" class="text-xs font-medium text-muted-foreground">Max Rows Displayed</label>
               <input
+                id="cfg-maxrows"
                 type="number"
                 class="mt-1 w-full text-xs border rounded-lg px-2 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-primary"
                 :value="selectedConfig?.maxRows ?? 8"

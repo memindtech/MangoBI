@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { Handle, Position } from '@vue-flow/core'
+import { NodeResizer } from '@vue-flow/node-resizer'
+import '@vue-flow/node-resizer/dist/style.css'
 import { Database, Download, CheckCircle2, Loader2, AlertCircle } from 'lucide-vue-next'
 import { MOCK_DATA, DATASET_META, type DatasetKey } from '~/stores/canvas'
 
@@ -13,7 +15,7 @@ const canvasStore = useCanvasStore()
 const { $xt } = useNuxtApp() as any
 
 // ── Mode ──────────────────────────────────────────────────────────
-const mode     = ref<'mock' | 'api'>('mock')
+const mode     = ref<'mock' | 'api' | 'sql'>('mock')
 const loading  = ref(false)
 const errorMsg = ref('')
 
@@ -52,6 +54,29 @@ watch(selectedPreset, (idx) => {
   apiPath.value   = p.path
   apiBody.value   = p.body
 })
+
+// ── SQL Template mode ─────────────────────────────────────────────
+const sqlPasscode        = ref('')
+const sqlTemplates       = ref<{ template_id: number; template_name: string }[]>([])
+const selectedTemplateId = ref<number | null>(null)
+const sqlTemplatesLoaded = ref(false)
+
+async function fetchSqlTemplates() {
+  if (!sqlPasscode.value.trim()) return
+  sqlTemplatesLoaded.value = false
+  sqlTemplates.value = []
+  selectedTemplateId.value = null
+  try {
+    const res: any = await $xt.getServer(`Planning/Master/GetSqlFlowTemplate?passcode=${encodeURIComponent(sqlPasscode.value.trim())}`)
+    sqlTemplates.value = Array.isArray(res?.data) ? res.data : []
+    if (sqlTemplates.value.length) selectedTemplateId.value = sqlTemplates.value[0].template_id
+  } catch {
+    sqlTemplates.value = []
+  }
+  sqlTemplatesLoaded.value = true
+}
+
+watch(mode, (m) => { if (m === 'sql') sqlTemplatesLoaded.value = false })
 
 // ── Output state ──────────────────────────────────────────────────
 const output   = computed(() => canvasStore.nodeOutputs[props.id] ?? [])
@@ -115,34 +140,64 @@ function extractRows(res: any): any[] | null {
   return null
 }
 
+// ── Load: SQL Template ────────────────────────────────────────────
+async function loadSQL() {
+  if (!selectedTemplateId.value) { errorMsg.value = 'กรุณาเลือก Template'; return }
+  loading.value = true
+  errorMsg.value = ''
+  try {
+    const res: any = await $xt.getServer(`Planning/Master/ExecuteSqlFlowTemplate?template_id=${selectedTemplateId.value}&passcode=${encodeURIComponent(sqlPasscode.value.trim())}`)
+    if (res?.error) throw new Error(res.error)
+    const rows = extractRows(res)
+    if (!rows) throw new Error('ไม่พบข้อมูล')
+    canvasStore.setNodeOutput(props.id, rows)
+  } catch (e: any) {
+    errorMsg.value = e?.message ?? 'เกิดข้อผิดพลาด'
+  } finally {
+    loading.value = false
+  }
+}
+
 function loadData() {
-  mode.value === 'api' ? loadAPI() : loadMock()
+  if (mode.value === 'api') loadAPI()
+  else if (mode.value === 'sql') loadSQL()
+  else loadMock()
 }
 </script>
 
 <template>
+  <NodeResizer
+    :min-width="200" :min-height="80"
+    :is-visible="selected"
+    :handle-style="{ width: '8px', height: '8px', borderRadius: '2px' }"
+    :line-style="{ borderColor: '#f97316' }"
+  />
   <div
-    class="w-60 rounded-xl border-2 bg-background shadow-md transition-all"
+    class="rounded-xl border-2 bg-background shadow-md transition-all overflow-hidden" style="width:100%;min-height:100%;"
     :class="selected ? 'border-orange-400 shadow-lg' : 'border-border'"
   >
     <!-- Header -->
     <div class="flex items-center gap-2 px-3 py-2 bg-orange-50 dark:bg-orange-950/30 rounded-t-xl border-b">
       <Database class="size-4 text-orange-500 shrink-0" />
       <span class="text-xs font-semibold text-orange-700 dark:text-orange-400">Data Source</span>
-      <CheckCircle2 v-if="isLoaded" class="ml-auto size-3.5 text-green-500 shrink-0" />
+      <div v-if="isLoaded" class="ml-auto flex items-center gap-1.5">
+        <span class="text-[10px] font-mono text-green-600 dark:text-green-400">{{ output.length.toLocaleString() }} rows</span>
+        <CheckCircle2 class="size-3.5 text-green-500 shrink-0" />
+      </div>
     </div>
 
     <!-- Mode tabs -->
     <div class="flex border-b text-[10px]">
       <button
-        v-for="m in (['mock', 'api'] as const)" :key="m"
+        v-for="[m, label] in ([['mock','📦 Demo'],['api','🔗 API'],['sql','🗄️ SQL']] as const)"
+        :key="m"
         @click.stop="mode = m; errorMsg = ''"
         :class="[
           'flex-1 py-1.5 font-semibold transition-colors',
           mode === m ? 'bg-orange-500 text-white' : 'text-muted-foreground hover:bg-accent',
         ]"
       >
-        {{ m === 'mock' ? '📦 Demo' : '🔗 Planning API' }}
+        {{ label }}
       </button>
     </div>
 
@@ -162,8 +217,58 @@ function loadData() {
         </select>
       </template>
 
+      <!-- SQL Template mode -->
+      <template v-else-if="mode === 'sql'">
+        <!-- Passcode -->
+        <div class="space-y-1">
+          <p class="text-[10px] font-semibold text-muted-foreground">Passcode</p>
+          <div class="flex gap-1.5">
+            <input
+              v-model="sqlPasscode"
+              type="text"
+              placeholder="กรอก passcode..."
+              class="flex-1 text-xs border rounded-lg px-2 py-1.5 bg-background nodrag
+                     focus:outline-none focus:ring-1 focus:ring-orange-400 min-w-0 font-mono tracking-wider"
+              @click.stop @mousedown.stop @keydown.stop
+              @keydown.enter.stop="fetchSqlTemplates"
+            />
+            <button
+              @click.stop="fetchSqlTemplates"
+              class="px-2.5 text-[10px] font-semibold bg-orange-100 dark:bg-orange-900/40
+                     text-orange-700 dark:text-orange-300 border border-orange-200 dark:border-orange-700
+                     rounded-lg hover:bg-orange-200 dark:hover:bg-orange-800/50 transition-colors nodrag shrink-0"
+            >
+              ค้นหา
+            </button>
+          </div>
+        </div>
+
+        <!-- Template -->
+        <template v-if="sqlTemplatesLoaded">
+          <div v-if="sqlTemplates.length" class="space-y-1">
+            <div class="flex items-center justify-between">
+              <p class="text-[10px] font-semibold text-muted-foreground">Template</p>
+              <span class="text-[10px] text-orange-500">{{ sqlTemplates.length }} รายการ</span>
+            </div>
+            <select
+              v-model="selectedTemplateId"
+              class="w-full text-xs border rounded-lg px-2 py-1.5 bg-background nodrag
+                     focus:outline-none focus:ring-1 focus:ring-orange-400"
+              @click.stop @mousedown.stop
+            >
+              <option v-for="t in sqlTemplates" :key="t.template_id" :value="t.template_id">
+                {{ t.template_name }}
+              </option>
+            </select>
+          </div>
+          <div v-else class="flex items-center justify-center gap-1.5 py-2 text-[10px] text-muted-foreground border border-dashed rounded-lg">
+            ไม่พบ Template สำหรับ passcode นี้
+          </div>
+        </template>
+      </template>
+
       <!-- API mode -->
-      <template v-else>
+      <template v-else-if="mode === 'api'">
         <!-- Preset selector -->
         <select
           v-model="selectedPreset"
@@ -229,22 +334,6 @@ function loadData() {
         <span class="break-all">{{ errorMsg }}</span>
       </div>
 
-      <!-- Loaded status -->
-      <div v-if="isLoaded" class="rounded-lg bg-green-50 dark:bg-green-950/30 px-2.5 py-2 space-y-1.5">
-        <p class="text-[10px] font-semibold text-green-700 dark:text-green-400">
-          ✓ {{ output.length }} rows · {{ columns.length }} cols
-        </p>
-        <div class="flex flex-wrap gap-1">
-          <span
-            v-for="col in columns" :key="col"
-            class="text-[9px] px-1.5 py-0.5 bg-white dark:bg-green-900/40 border rounded text-muted-foreground font-mono"
-          >{{ col }}</span>
-        </div>
-      </div>
-
-      <div v-else-if="!errorMsg" class="text-[10px] text-center text-muted-foreground py-0.5">
-        {{ mode === 'mock' ? 'เลือก dataset แล้วกด Load' : 'เลือก endpoint แล้วกด Load' }}
-      </div>
     </div>
 
     <!-- Output handle -->
