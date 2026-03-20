@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import {
   LayoutDashboard, BarChart2, TrendingUp, FileText, Settings,
-  Sun, Moon, LogOut, ChevronUp, Languages, GitMerge,
+  Sun, Moon, LogOut, ChevronUp, Languages, GitMerge, Share2,
 } from 'lucide-vue-next'
 import {
   Sidebar, SidebarContent, SidebarFooter, SidebarGroup,
@@ -34,7 +34,9 @@ const navItems = computed(() => [
   { icon: LayoutDashboard, label: t('nav_dashboard'), path: '/' },
   { icon: BarChart2,       label: t('nav_reports'),   path: '/reports' },
   { icon: TrendingUp,      label: t('nav_analytics'), path: '/analytics' },
-  { icon: GitMerge,        label: 'BI Canvas',         path: '/canvas' },
+  { icon: GitMerge,        label: 'BI Canvas',         path: '/canvas'     },
+  { icon: Share2,          label: 'Data Model',        path: '/datamodel'  },
+  { icon: LayoutDashboard, label: 'Report Builder',    path: '/report'     },
   { icon: FileText,        label: t('nav_documents'), path: '/documents' },
   { icon: Settings,        label: t('nav_settings'),  path: '/settings' },
 ])

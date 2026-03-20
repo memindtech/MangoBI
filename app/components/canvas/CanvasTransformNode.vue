@@ -165,12 +165,14 @@ const outputRows = computed(() => canvasStore.nodeOutputs[props.id] ?? [])
 </script>
 
 <template>
-  <div ref="nodeEl" class="relative" :style="{ width, height }">
+  <div ref="nodeEl" class="relative" :style="{ width, height }" style="will-change: transform; contain: layout;">
   <div
-    class="rounded-xl border-2 bg-background shadow-md transition-[border-color,box-shadow] overflow-hidden flex flex-col"
-    style="will-change: transform;"
+    class="rounded-xl border-2 bg-background shadow-md overflow-hidden flex flex-col"
     :style="isSized ? { height: '100%' } : {}"
-    :class="selected ? 'border-violet-400 shadow-lg' : 'border-border'"
+    :class="[
+      dragging ? '' : 'transition-[border-color,box-shadow]',
+      selected  ? 'border-violet-400 shadow-lg' : 'border-border',
+    ]"
     @wheel.stop
   >
     <!-- Header -->

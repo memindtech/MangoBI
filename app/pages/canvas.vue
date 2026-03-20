@@ -7,6 +7,7 @@ import '@vue-flow/controls/dist/style.css'
 import {
   Database, BarChart2, Table2, ArrowLeft, Trash2,
   TrendingUp, PieChart, Workflow, Bug, Shuffle,
+  Layers, Activity, Network, Code2,
 } from 'lucide-vue-next'
 import CanvasDataSourceNode from '~/components/canvas/CanvasDataSourceNode.vue'
 import CanvasChartNode      from '~/components/canvas/CanvasChartNode.vue'
@@ -53,11 +54,14 @@ const edges = ref<Edge[]>([])
 // are added. No { deep:true } so Vue Flow's per-frame edge position mutations
 // don't trigger this.
 watchEffect(() => {
-  const outputs   = canvasStore.nodeOutputs  // track shallowRef reference
-  const edgeList  = edges.value              // track edges array reference
+  const outputs      = canvasStore.nodeOutputs       // track shallowRef reference
+  const labelOutputs = canvasStore.nodeOutputLabels  // track label ref
+  const edgeList     = edges.value                   // track edges array reference
   for (const edge of edgeList) {
-    const data = outputs[edge.source]
-    if (data) canvasStore.setNodeInput(edge.target, data)
+    const data   = outputs[edge.source]
+    const labels = labelOutputs[edge.source]
+    if (data)   canvasStore.setNodeInput(edge.target, data)
+    if (labels) canvasStore.setNodeInputLabels(edge.target, labels)
   }
 })
 
@@ -136,10 +140,20 @@ const palette = [
 ]
 
 const chartTypeOptions: { value: ChartType; label: string; icon: any }[] = [
-  { value: 'bar',  label: 'Bar',  icon: BarChart2  },
-  { value: 'line', label: 'Line', icon: TrendingUp },
-  { value: 'pie',  label: 'Pie',  icon: PieChart   },
+  { value: 'bar',          label: 'Bar',          icon: BarChart2  },
+  { value: 'line',         label: 'Line',         icon: TrendingUp },
+  { value: 'pie',          label: 'Pie',          icon: PieChart   },
+  { value: 'stackedBar',   label: 'Stacked 100%', icon: Layers     },
+  { value: 'stackedHBar',  label: 'H-Stack',      icon: Layers     },
+  { value: 'stackedLine',  label: 'Stack Line',   icon: Layers     },
+  { value: 'halfDoughnut', label: 'Half Donut',   icon: PieChart   },
+  { value: 'scatter',      label: 'Scatter',      icon: Activity   },
+  { value: 'tree',         label: 'Tree',         icon: Network    },
+  { value: 'ecOption',     label: 'ECharts JSON', icon: Code2      },
 ]
+
+const stackedTypes: ChartType[] = ['stackedBar', 'stackedHBar', 'stackedLine']
+const isStackedType = computed(() => stackedTypes.includes(selectedConfig.value?.chartType ?? 'bar' as ChartType))
 
 // ─── Debug ────────────────────────────────────────────────────────────────────
 const { $xt } = useNuxtApp() as any
@@ -300,52 +314,93 @@ async function runDebug() {
               <!-- Chart type selector -->
               <div>
                 <p class="text-xs font-medium mb-1.5">Chart Type</p>
-                <div class="grid grid-cols-3 gap-1.5">
+                <div class="grid grid-cols-2 gap-1">
                   <button
                     v-for="ct in chartTypeOptions" :key="ct.value"
                     @click="updateConfig('chartType', ct.value)"
                     :class="[
-                      'flex flex-col items-center gap-1 py-2 text-[10px] rounded-lg border transition-colors',
+                      'flex items-center gap-1.5 px-2 py-1.5 text-[10px] rounded-lg border transition-colors',
                       (selectedConfig?.chartType ?? 'bar') === ct.value
                         ? 'bg-primary text-primary-foreground border-primary'
                         : 'hover:bg-accent border-border'
                     ]"
                   >
-                    <component :is="ct.icon" class="size-3.5" />
+                    <component :is="ct.icon" class="size-3 shrink-0" />
                     {{ ct.label }}
                   </button>
                 </div>
               </div>
 
-              <!-- Field selectors (only when connected) -->
-              <template v-if="selectedCols.length">
+              <!-- ECharts raw JSON (ecOption type) -->
+              <template v-if="(selectedConfig?.chartType ?? 'bar') === 'ecOption'">
+                <div>
+                  <label class="text-xs font-medium text-muted-foreground">ECharts Option (JSON)</label>
+                  <textarea
+                    rows="10"
+                    placeholder="{&#10;  &quot;series&quot;: [...]&#10;}"
+                    class="mt-1 w-full text-[10px] font-mono border rounded-lg px-2 py-1.5 bg-background
+                           focus:outline-none focus:ring-1 focus:ring-primary resize-none"
+                    :value="selectedConfig?.ecOptionJson ?? ''"
+                    @input="updateConfig('ecOptionJson', ($event.target as HTMLTextAreaElement).value)"
+                  />
+                </div>
+              </template>
+
+              <!-- Field selectors (only when connected + not ecOption) -->
+              <template v-else-if="selectedCols.length">
                 <div>
                   <label for="cfg-xfield" class="text-xs font-medium text-muted-foreground">X Axis (Category)</label>
                   <select
                     id="cfg-xfield"
                     class="mt-1 w-full text-xs border rounded-lg px-2 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-primary"
-                    :value="selectedConfig?.xField ?? selectedCols[0]"
+                    :value="selectedConfig?.xField ?? ''"
                     @change="updateConfig('xField', ($event.target as HTMLSelectElement).value)"
                   >
+                    <option value="">-- เลือก field --</option>
                     <option v-for="col in selectedCols" :key="col" :value="col">{{ col }}</option>
                   </select>
                 </div>
 
-                <div>
+                <!-- Single Y field (non-stacked charts) -->
+                <div v-if="!isStackedType">
                   <label for="cfg-yfield" class="text-xs font-medium text-muted-foreground">Y Axis (Value)</label>
                   <select
                     id="cfg-yfield"
                     class="mt-1 w-full text-xs border rounded-lg px-2 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-primary"
-                    :value="selectedConfig?.yField ?? selectedNumericCols[0]"
+                    :value="selectedConfig?.yField ?? ''"
                     @change="updateConfig('yField', ($event.target as HTMLSelectElement).value)"
                   >
+                    <option value="">-- เลือก field --</option>
                     <option v-for="col in selectedNumericCols" :key="col" :value="col">{{ col }}</option>
                   </select>
+                </div>
+
+                <!-- Multiple Y fields (stacked charts) -->
+                <div v-else>
+                  <p class="text-xs font-medium text-muted-foreground mb-1">Y Series (เลือกหลาย field)</p>
+                  <div class="space-y-0.5 max-h-36 overflow-auto border rounded-lg p-1.5">
+                    <label
+                      v-for="col in selectedNumericCols" :key="col"
+                      class="flex items-center gap-2 px-1 py-0.5 rounded hover:bg-accent cursor-pointer"
+                    >
+                      <input
+                        type="checkbox"
+                        class="size-3"
+                        :checked="(selectedConfig?.yFields ?? []).includes(col)"
+                        @change="updateConfig('yFields',
+                          (selectedConfig?.yFields ?? []).includes(col)
+                            ? (selectedConfig?.yFields ?? []).filter((f: string) => f !== col)
+                            : [...(selectedConfig?.yFields ?? []), col]
+                        )"
+                      />
+                      <span class="text-[10px]">{{ col }}</span>
+                    </label>
+                  </div>
                 </div>
               </template>
 
               <div
-                v-if="!selectedInputRows.length"
+                v-if="!selectedInputRows.length && (selectedConfig?.chartType ?? 'bar') !== 'ecOption'"
                 class="text-xs text-muted-foreground text-center py-4 border border-dashed rounded-lg"
               >
                 เชื่อมต่อ Data Source<br>เพื่อเลือก field ได้

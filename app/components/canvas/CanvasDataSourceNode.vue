@@ -2,6 +2,7 @@
 import { Handle, Position } from '@vue-flow/core'
 import { Database, Download, CheckCircle2, Loader2, AlertCircle } from 'lucide-vue-next'
 import { MOCK_DATA, DATASET_META, type DatasetKey } from '~/stores/canvas'
+import { parseColumnMapping } from '~/utils/columnMapping'
 
 const { nodeEl, width, height, onDragStart, onDragStartHeight, onDragStartCorner } = useNodeResize(200)
 const isSized = computed(() => height.value !== 'auto')
@@ -150,9 +151,18 @@ async function loadSQL() {
   try {
     const res: any = await $xt.getServer(`Planning/Master/ExecuteSqlFlowTemplate?template_id=${selectedTemplateId.value}&passcode=${encodeURIComponent(sqlPasscode.value.trim())}`)
     if (res?.error) throw new Error(res.error)
-    const rows = extractRows(res)
+    // unwrap JsonContentResult: { success, data: { data: [...], column_mapping_json: "..." } }
+    const inner = res?.data ?? res
+    const rows  = extractRows(inner)
     if (!rows) throw new Error('ไม่พบข้อมูล')
+    // build label map: ColumnName → Remark
+    const mapping = parseColumnMapping(inner?.column_mapping_json)
+    const labels: Record<string, string> = {}
+    for (const [col, meta] of Object.entries(mapping)) {
+      labels[col] = meta.label
+    }
     canvasStore.setNodeOutput(props.id, rows)
+    canvasStore.setNodeOutputLabels(props.id, labels)
   } catch (e: any) {
     errorMsg.value = e?.message ?? 'เกิดข้อผิดพลาด'
   } finally {
@@ -168,12 +178,14 @@ function loadData() {
 </script>
 
 <template>
-  <div ref="nodeEl" class="relative" :style="{ width, height }">
+  <div ref="nodeEl" class="relative" :style="{ width, height }" style="will-change: transform; contain: layout;">
   <div
-    class="rounded-xl border-2 bg-background shadow-md transition-[border-color,box-shadow] overflow-hidden flex flex-col"
-    style="will-change: transform;"
+    class="rounded-xl border-2 bg-background shadow-md overflow-hidden flex flex-col"
     :style="isSized ? { height: '100%' } : {}"
-    :class="selected ? 'border-orange-400 shadow-lg' : 'border-border'"
+    :class="[
+      dragging ? '' : 'transition-[border-color,box-shadow]',
+      selected  ? 'border-orange-400 shadow-lg' : 'border-border',
+    ]"
     @wheel.stop
   >
     <!-- Header -->

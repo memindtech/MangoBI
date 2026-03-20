@@ -3,6 +3,7 @@
 const authStore = useAuthStore()
 const route = useRoute()
 const { locale } = useI18n()
+const { start: startSessionGuard } = useSessionGuard()
 
 // สถานะการโหลดแอป
 const isReady = ref(false)
@@ -25,10 +26,13 @@ onBeforeMount(async () => {
 
       // เรียกใช้ fetchUserAuth ตัวใหม่ที่คุณอัปเดตใน Store
       const success = await authStore.fetchUserAuth(menuName, menuId, moduleName)
-      
+
       if (!success && route.meta.auth) {
         // ถ้าโหลดข้อมูลไม่สำเร็จและหน้านี้ต้องใช้ Auth ให้ดีดไป Login
         await navigateTo('/login')
+      } else if (success) {
+        // เริ่ม background session guard เมื่อ login สำเร็จ
+        startSessionGuard()
       }
     } catch (error) {
       console.error("App Initialization Failed:", error)

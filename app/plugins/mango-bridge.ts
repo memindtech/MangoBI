@@ -5,7 +5,7 @@ import Decimal from 'decimal.js'
 // ที่เหลือ (api/public/..., etc.) → ส่งไปยัง main service (localhost/service/)
 const PLANNING_PREFIXES = ['Planning/', 'planning/']
 
-function makeFetcher(baseURL: string, getToken: () => string) {
+function makeFetcher(baseURL: string, getToken: () => string, onUnauthorized?: () => void) {
   return $fetch.create({
     baseURL,
     async onRequest({ options }) {
@@ -19,6 +19,9 @@ function makeFetcher(baseURL: string, getToken: () => string) {
       options.headers = { ...(options.headers as Record<string, string>), ...extra }
     },
     async onResponseError({ response }) {
+      if (response.status === 401 && onUnauthorized) {
+        onUnauthorized()
+      }
       throw response._data
     }
   })
@@ -29,8 +32,22 @@ export default defineNuxtPlugin((_nuxtApp) => {
   const authCookie  = useCookie('mango_auth')
   const getToken    = () => authCookie.value || (import.meta.client ? localStorage.getItem('mango_auth') ?? '' : '')
 
-  const mainFetcher     = makeFetcher(config.public.apiBase,      getToken)
-  const planningFetcher = makeFetcher(config.public.planningBase, getToken)
+  // ป้องกัน redirect ซ้ำเมื่อหลาย request ล้มพร้อมกัน
+  let _loggingOut = false
+  function handleUnauthorized() {
+    if (!import.meta.client || _loggingOut) return
+    // หยุด request อื่นทันที ก่อน redirect
+    if (window.location.pathname.includes('/login')) return
+    _loggingOut = true
+    localStorage.removeItem('mango_auth')
+    sessionStorage.removeItem('mango_auth_session')
+    authCookie.value = null
+    // hard redirect เหมือน handleLogout — ให้ plugin re-init ใหม่ ไม่ค้าง state เดิม
+    window.location.href = '/login'
+  }
+
+  const mainFetcher     = makeFetcher(config.public.apiBase,      getToken, handleUnauthorized)
+  const planningFetcher = makeFetcher(config.public.planningBase, getToken, handleUnauthorized)
 
   function getFetcher(url: string) {
     return PLANNING_PREFIXES.some(p => url.startsWith(p)) ? planningFetcher : mainFetcher

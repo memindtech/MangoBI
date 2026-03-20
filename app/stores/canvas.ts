@@ -2,13 +2,19 @@ import { defineStore } from 'pinia'
 
 export type DataRow = Record<string, string | number>
 export type DatasetKey = 'sales_monthly' | 'sales_category' | 'sales_regional' | 'employees'
-export type ChartType = 'bar' | 'line' | 'pie'
+export type ChartType =
+  | 'bar' | 'line' | 'pie'
+  | 'stackedBar' | 'stackedHBar' | 'stackedLine'
+  | 'halfDoughnut' | 'scatter' | 'tree' | 'ecOption'
 
 export interface CanvasNodeConfig {
-  chartType?: ChartType
-  xField?: string
-  yField?: string
-  maxRows?: number
+  chartType?:    ChartType
+  xField?:       string
+  yField?:       string
+  yFields?:      string[]    // stacked / multi-series
+  ecOptionJson?: string      // raw ECharts option JSON
+  maxRows?:      number
+  columnWidths?: Record<string, number>
 }
 
 export const DATASET_META: Record<DatasetKey, { label: string }> = {
@@ -52,11 +58,17 @@ export const MOCK_DATA: Record<DatasetKey, DataRow[]> = {
   ],
 }
 
+// column label map: ColumnName → display label (Remark)
+export type ColumnLabelMap = Record<string, string>
+
 export const useCanvasStore = defineStore('canvas', () => {
   // Written ONLY by DataSourceNode → triggers edge propagation watcher
   const nodeOutputs = ref<Record<string, DataRow[]>>({})
   // Written ONLY by canvas.vue watcher (edge propagation) → avoids infinite loop
   const nodeInputs = ref<Record<string, DataRow[]>>({})
+  // Column labels that flow alongside data through edges
+  const nodeOutputLabels = ref<Record<string, ColumnLabelMap>>({})
+  const nodeInputLabels  = ref<Record<string, ColumnLabelMap>>({})
   // Node configs (chart type, field selections, etc.)
   const nodeConfigs = ref<Record<string, CanvasNodeConfig>>({})
   // Currently selected node ID
@@ -70,6 +82,14 @@ export const useCanvasStore = defineStore('canvas', () => {
     nodeInputs.value[nodeId] = rows
   }
 
+  function setNodeOutputLabels(nodeId: string, labels: ColumnLabelMap) {
+    nodeOutputLabels.value[nodeId] = labels
+  }
+
+  function setNodeInputLabels(nodeId: string, labels: ColumnLabelMap) {
+    nodeInputLabels.value[nodeId] = labels
+  }
+
   function setNodeConfig(nodeId: string, config: Partial<CanvasNodeConfig>) {
     nodeConfigs.value[nodeId] = { ...(nodeConfigs.value[nodeId] ?? {}), ...config }
   }
@@ -81,12 +101,17 @@ export const useCanvasStore = defineStore('canvas', () => {
   function removeNodeData(nodeId: string) {
     delete nodeOutputs.value[nodeId]
     delete nodeInputs.value[nodeId]
+    delete nodeOutputLabels.value[nodeId]
+    delete nodeInputLabels.value[nodeId]
     delete nodeConfigs.value[nodeId]
     if (selectedNodeId.value === nodeId) selectedNodeId.value = null
   }
 
   return {
-    nodeOutputs, nodeInputs, nodeConfigs, selectedNodeId,
-    setNodeOutput, setNodeInput, setNodeConfig, setSelectedNode, removeNodeData,
+    nodeOutputs, nodeInputs, nodeOutputLabels, nodeInputLabels,
+    nodeConfigs, selectedNodeId,
+    setNodeOutput, setNodeInput,
+    setNodeOutputLabels, setNodeInputLabels,
+    setNodeConfig, setSelectedNode, removeNodeData,
   }
 })

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Handle, Position } from '@vue-flow/core'
-import { BarChart2, TrendingUp, PieChart, Unplug } from 'lucide-vue-next'
+import { BarChart2, TrendingUp, PieChart, Unplug, Layers, Activity, Network, Code2 } from 'lucide-vue-next'
 import type { ChartType } from '~/stores/canvas'
 
 const { nodeEl, width, height, onDragStart, onDragStartHeight, onDragStartCorner } = useNodeResize(200, 80)
@@ -22,27 +22,87 @@ const hasData  = computed(() => rows.value.length > 0)
 const columns     = computed(() => rows.value.length ? Object.keys(rows.value[0]) : [])
 const numericCols = computed(() => columns.value.filter(k => typeof rows.value[0]?.[k] === 'number'))
 
-const xField    = computed(() => config.value.xField ?? columns.value[0] ?? '')
-const yField    = computed(() => config.value.yField ?? numericCols.value[0] ?? '')
+const xField    = computed(() => config.value.xField    ?? '')
+const yField    = computed(() => config.value.yField    ?? '')
+const yFields   = computed(() => config.value.yFields   ?? [])
+const ecOptionJson = computed(() => config.value.ecOptionJson ?? '')
 const chartType = computed<ChartType>(() => config.value.chartType ?? 'bar')
 
-const chartIcon: Record<ChartType, any> = { bar: BarChart2, line: TrendingUp, pie: PieChart }
-const chartColor: Record<ChartType, string> = { bar: 'text-blue-500', line: 'text-teal-500', pie: 'text-violet-500' }
+// ต้อง configure แล้วเท่านั้นถึงจะ render chart
+const isConfigured = computed(() => {
+  if (chartType.value === 'ecOption') return ecOptionJson.value.trim().length > 0
+  const stackedTypes: ChartType[] = ['stackedBar', 'stackedHBar', 'stackedLine']
+  if (stackedTypes.includes(chartType.value)) return xField.value !== '' && yFields.value.length > 0
+  return xField.value !== '' && yField.value !== ''
+})
+
+// ── Limit data points sent to chart (prevents browser freeze) ────────────────
+const MAX_CHART_POINTS = 50
+
+const chartRows = computed(() => {
+  const all = rows.value
+  if (!all.length || all.length <= MAX_CHART_POINTS) return all
+
+  const x = xField.value
+  const y = yField.value
+
+  if (chartType.value === 'line') {
+    // Evenly sample across full range
+    const step = Math.ceil(all.length / MAX_CHART_POINTS)
+    const sampled: typeof all = []
+    for (let i = 0; i < all.length && sampled.length < MAX_CHART_POINTS; i += step)
+      sampled.push(all[i])
+    return sampled
+  }
+
+  // bar / pie: group by xField → sum yField → top N
+  const groups = new Map<string, number>()
+  for (const row of all) {
+    const key = String(row[x] ?? '')
+    groups.set(key, (groups.get(key) ?? 0) + (Number(row[y]) || 0))
+  }
+  return Array.from(groups.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, MAX_CHART_POINTS)
+    .map(([xVal, yVal]) => ({ [x]: xVal, [y]: yVal } as any))
+})
+
+const isSampled = computed(() => rows.value.length > MAX_CHART_POINTS)
+
+const chartIcon: Record<ChartType, any> = {
+  bar: BarChart2, line: TrendingUp, pie: PieChart,
+  stackedBar: Layers, stackedHBar: Layers, stackedLine: Layers,
+  halfDoughnut: PieChart, scatter: Activity, tree: Network, ecOption: Code2,
+}
+const chartColor: Record<ChartType, string> = {
+  bar: 'text-blue-500',   line: 'text-teal-500',   pie: 'text-violet-500',
+  stackedBar: 'text-blue-500', stackedHBar: 'text-blue-500', stackedLine: 'text-teal-500',
+  halfDoughnut: 'text-violet-500', scatter: 'text-orange-500', tree: 'text-green-500', ecOption: 'text-slate-500',
+}
 const headerBg: Record<ChartType, string> = {
   bar:  'bg-blue-50 dark:bg-blue-950/30',
   line: 'bg-teal-50 dark:bg-teal-950/30',
   pie:  'bg-violet-50 dark:bg-violet-950/30',
+  stackedBar:  'bg-blue-50 dark:bg-blue-950/30',
+  stackedHBar: 'bg-blue-50 dark:bg-blue-950/30',
+  stackedLine: 'bg-teal-50 dark:bg-teal-950/30',
+  halfDoughnut: 'bg-violet-50 dark:bg-violet-950/30',
+  scatter:  'bg-orange-50 dark:bg-orange-950/30',
+  tree:     'bg-green-50 dark:bg-green-950/30',
+  ecOption: 'bg-slate-50 dark:bg-slate-950/30',
 }
 </script>
 
 <template>
-  <div ref="nodeEl" class="relative" :style="{ width, height }">
+  <div ref="nodeEl" class="relative" :style="{ width, height }" style="will-change: transform; contain: layout;">
 
     <div
-      class="rounded-xl border-2 bg-background shadow-md transition-[border-color,box-shadow] overflow-hidden flex flex-col"
-      style="will-change: transform;"
+      class="rounded-xl border-2 bg-background shadow-md overflow-hidden flex flex-col"
       :style="isSized ? { height: '100%' } : {}"
-      :class="selected ? 'border-primary shadow-lg' : 'border-border'"
+      :class="[
+        dragging ? '' : 'transition-[border-color,box-shadow]',
+        selected  ? 'border-primary shadow-lg' : 'border-border',
+      ]"
       @wheel.stop
     >
       <!-- Header -->
@@ -69,11 +129,21 @@ const headerBg: Record<ChartType, string> = {
             <p class="text-xs">เชื่อมต่อ Data Source</p>
           </div>
 
+          <div
+            v-else-if="!isConfigured"
+            class="h-36 flex flex-col items-center justify-center gap-2 text-muted-foreground rounded-lg border border-dashed"
+          >
+            <component :is="chartIcon[chartType]" class="size-5 opacity-25" />
+            <p class="text-xs">กำหนด Field ที่แผงซ้าย</p>
+          </div>
+
           <CanvasMiniChart
             v-else
-            :rows="rows"
+            :rows="chartRows"
             :x-field="xField"
             :y-field="yField"
+            :y-fields="yFields"
+            :ec-option-json="ecOptionJson"
             :chart-type="chartType"
             :class="['w-full', isSized ? 'flex-1 min-h-0' : '']"
           />
@@ -82,6 +152,9 @@ const headerBg: Record<ChartType, string> = {
         <div v-if="hasData" class="px-3 pb-2.5 flex gap-3 text-[10px] text-muted-foreground shrink-0">
           <span>X: <strong class="text-foreground/70">{{ xField }}</strong></span>
           <span>Y: <strong class="text-foreground/70">{{ yField }}</strong></span>
+          <span v-if="isSampled" class="ml-auto text-amber-500 font-medium">
+            sample {{ MAX_CHART_POINTS }}/{{ rows.length.toLocaleString() }}
+          </span>
         </div>
       </template>
     </div>

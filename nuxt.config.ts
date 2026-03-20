@@ -22,7 +22,11 @@ export default defineNuxtConfig({
   },
 
   devtools: { enabled: true },
-  css: ['~/assets/css/tailwind.css'],
+  css: [
+    '~/assets/css/tailwind.css',
+    'ag-grid-community/styles/ag-grid.css',
+    'ag-grid-community/styles/ag-theme-quartz.css',
+  ],
 
   fontFamily: "THSarabunNew, sans-serif",
 
