@@ -18,6 +18,9 @@ import { type ChartType }   from '~/stores/canvas'
 // ─── Page meta ────────────────────────────────────────────────────────────────
 definePageMeta({ layout: false, auth: true })
 
+const { t } = useI18n()
+useHead({ title: computed(() => `${t('page_title_canvas')} | MangoBI`) })
+
 // ─── Stores / Router ──────────────────────────────────────────────────────────
 const canvasStore = useCanvasStore()
 const router      = useRouter()

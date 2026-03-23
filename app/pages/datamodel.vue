@@ -5,20 +5,32 @@ import { Background } from '@vue-flow/background'
 import { Controls }   from '@vue-flow/controls'
 import '@vue-flow/controls/dist/style.css'
 import {
-  Database, Download, Loader2, AlertCircle,
-  GitMerge, ArrowLeft, Trash2, Link2, X, Table2, Search, ArrowRight,
+  Database, Download, Loader2, AlertCircle, Bug,
+  GitMerge, ArrowLeft, Trash2, Link2, X, Table2, ArrowRight,
+  Shuffle, Plus, ChevronDown, Layers,
 } from 'lucide-vue-next'
+import {
+  applyTransform, componentKey,
+  accumulateRow, materializeAccumulators, matchFilters, normDateStr,
+  type TransformConfig, type TransformFilter, type AggFn,
+  AGG_OPTIONS, OP_OPTIONS,
+  DATE_TOKEN_TODAY, DATE_TOKEN_YESTERDAY, DATE_TOKEN_LABELS,
+} from '~/utils/transformData'
 import ModelTableNode from '~/components/datamodel/ModelTableNode.vue'
 import { MOCK_DATA, DATASET_META, type DatasetKey } from '~/stores/canvas'
 import { AgGridVue } from 'ag-grid-vue3'
 import { ClientSideRowModelModule, CommunityFeaturesModule, ModuleRegistry } from 'ag-grid-community'
 import type { ColDef } from 'ag-grid-community'
-import { parseColumnMapping } from '~/utils/columnMapping'
+import { parseColumnMapping, isDateMeta } from '~/utils/columnMapping'
 
 ModuleRegistry.registerModules([ClientSideRowModelModule, CommunityFeaturesModule])
 
 // ─── Page meta ────────────────────────────────────────────────────────────────
 definePageMeta({ layout: false, auth: true })
+
+// ─── i18n ─────────────────────────────────────────────────────────────────────
+const { t } = useI18n()
+useHead({ title: computed(() => `${t('page_title_datamodel')} | MangoBI`) })
 
 // ─── Stores / Router ──────────────────────────────────────────────────────────
 const dmStore     = useDataModelStore()
@@ -32,6 +44,7 @@ const {
   onConnect, onNodeClick, onEdgeClick, onPaneClick,
   onNodesChange, onEdgesChange,
   screenToFlowCoordinate,
+  fitView,
 } = useVueFlow({ id: 'data-model' })
 
 const nodeTypes = { modelTable: markRaw(ModelTableNode) }
@@ -47,28 +60,246 @@ const selectedEdge   = computed(() => selectedEdgeId.value ? dmStore.relations[s
 const selectedNodeId   = ref<string | null>(null)
 const selectedNodeData = computed(() => selectedNodeId.value ? dmStore.getTable(selectedNodeId.value) : null)
 const nodePreviewCols  = computed(() => selectedNodeId.value ? dmStore.columnsOf(selectedNodeId.value) : [])
-const nodeSearchQuery  = ref('')
+
+// ─── Node pre-filters (applied before join) ───────────────────────────────────
+const nodePreFilters = computed({
+  get: () => selectedNodeId.value ? dmStore.getNodeFilters(selectedNodeId.value) : [],
+  set: (v: TransformFilter[]) => {
+    if (selectedNodeId.value) dmStore.setNodeFilters(selectedNodeId.value, v)
+  },
+})
+function nodeAddPreFilter() {
+  if (!selectedNodeId.value) return
+  const current = [...dmStore.getNodeFilters(selectedNodeId.value)]
+  current.push({ field: nodePreviewCols.value[0]?.name ?? '', op: '=', value: '' })
+  dmStore.setNodeFilters(selectedNodeId.value, current)
+}
+function nodeRemovePreFilter(i: number) {
+  if (!selectedNodeId.value) return
+  const current = [...dmStore.getNodeFilters(selectedNodeId.value)]
+  current.splice(i, 1)
+  dmStore.setNodeFilters(selectedNodeId.value, current)
+}
+function nodeUpdatePreFilter(i: number, patch: Partial<TransformFilter>) {
+  if (!selectedNodeId.value) return
+  const current = dmStore.getNodeFilters(selectedNodeId.value).map((f, idx) =>
+    idx === i ? { ...f, ...patch } : f,
+  )
+  dmStore.setNodeFilters(selectedNodeId.value, current)
+}
+const nodeHasPreFilters = computed(() => nodePreFilters.value.length > 0)
+
+function isNodeDateField(col: string): boolean {
+  if (!selectedNodeId.value) return false
+  const t = dmStore.getTable(selectedNodeId.value)
+  if (isDateMeta(t?.columnLabels?.[col], undefined)) return true
+  const sample = t?.rows[0]?.[col]
+  return typeof sample === 'string' && /^\d{4}-\d{2}-\d{2}/.test(sample)
+}
+
+// ─── Transform modal ──────────────────────────────────────────────────────────
+const showTxModal  = ref(false)
+const txModalTab   = ref<'before' | 'after'>('before')
+
+// ─── Transform ────────────────────────────────────────────────────────────────
+// Component key for the selected table (BFS over current relations)
+const selectedCompKey = computed(() => {
+  if (!selectedNodeId.value) return null
+  return componentKey(
+    selectedNodeId.value,
+    dmStore.tables.map(t => t.id),
+    Object.values(dmStore.relations),
+  )
+})
+
+// All columns available in the component (union of all tables in component)
+// Build the actual joined rows for the selected component so Transform preview
+// matches what buildJoinedDatasets will produce (single-table = just that table).
+const txJoinedRows = computed(() => {
+  const key = selectedCompKey.value
+  if (!key) return selectedNodeData.value?.rows ?? []
+  const compIds = key.split('+')
+  if (compIds.length === 1) return selectedNodeData.value?.rows ?? []
+  const rels = Object.values(dmStore.relations)
+  const compRels = rels.filter(r => compIds.includes(r.fromTable) && compIds.includes(r.toTable))
+  if (!compRels.length) return selectedNodeData.value?.rows ?? []
+  // Use the same caps as buildJoinedDatasets so the preview matches the export exactly
+  const _fromFilters0 = dmStore.getNodeFilters(compRels[0]!.fromTable)
+  let rows: any[] = (dmStore.getTable(compRels[0]!.fromTable)?.rows ?? [])
+    .filter(r => matchFilters(r, _fromFilters0))
+    .slice(0, MAX_SOURCE_ROWS)
+  const joined = new Set([compRels[0]!.fromTable])
+  for (const rel of compRels) {
+    if (joined.has(rel.toTable)) continue
+    joined.add(rel.toTable)
+    const _toFilters = dmStore.getNodeFilters(rel.toTable)
+    const toRows = (dmStore.getTable(rel.toTable)?.rows ?? [])
+      .filter(r => matchFilters(r, _toFilters))
+      .slice(0, MAX_SOURCE_ROWS)
+    const { result } = joinStep(rows, rel, toRows, MAX_JOIN_ROWS)
+    rows = result
+  }
+  return rows
+})
+
+// Column source map for the joined result (mirrors buildJoinedDatasets tracking)
+const txColumnSources = computed<Record<string, string>>(() => {
+  const key = selectedCompKey.value
+  if (!key) return {}
+  const compIds = key.split('+')
+  const rels = Object.values(dmStore.relations)
+  const compRels = rels.filter(r => compIds.includes(r.fromTable) && compIds.includes(r.toTable))
+  const sources: Record<string, string> = {}
+  if (!compRels.length) {
+    const t = dmStore.getTable(compIds[0]!)
+    for (const col of Object.keys(t?.rows[0] ?? {})) sources[col] = t?.name ?? compIds[0]!
+    return sources
+  }
+  const firstTableId = compRels[0]!.fromTable
+  const firstTable   = dmStore.getTable(firstTableId)
+  let currentKeys    = Object.keys(firstTable?.rows[0] ?? {})
+  for (const col of currentKeys) sources[col] = firstTable?.name ?? firstTableId
+  const joined = new Set([firstTableId])
+  for (const rel of compRels) {
+    if (joined.has(rel.toTable)) continue
+    joined.add(rel.toTable)
+    const toTable = dmStore.getTable(rel.toTable)
+    const toKeys  = Object.keys(toTable?.rows[0] ?? {})
+    const newKeys: string[] = []
+    for (const k of toKeys) {
+      const finalKey = currentKeys.includes(k) ? `${rel.toTable}_${k}` : k
+      sources[finalKey] = toTable?.name ?? rel.toTable
+      newKeys.push(finalKey)
+    }
+    currentKeys = [...currentKeys, ...newKeys]
+  }
+  return sources
+})
+
+// Actual joined column names (matches what buildJoinedDatasets produces)
+const txColumns = computed(() =>
+  txJoinedRows.value.length ? Object.keys(txJoinedRows.value[0]) : [],
+)
+
+const txFilters      = ref<TransformFilter[]>([])
+const txGroupBy      = ref('')
+const txAggregations = ref<Record<string, AggFn>>({})
+
+// Load config when component selection changes
+watch(selectedCompKey, (key) => {
+  const cfg = key ? dmStore.getTransform(key) : null
+  txFilters.value      = cfg ? [...cfg.filters]      : []
+  txGroupBy.value      = cfg?.groupByField            ?? ''
+  txAggregations.value = cfg ? { ...cfg.aggregations } : {}
+}, { immediate: true })
+
+// Auto-init aggregations when columns change (use joined row sample for correct type detection)
+watch(txColumns, (cols) => {
+  for (const col of cols) {
+    if (!(col in txAggregations.value)) {
+      const sample = txJoinedRows.value[0]?.[col]
+      txAggregations.value[col] = typeof sample === 'number' ? 'sum' : 'first'
+    }
+  }
+})
+
+// Save config whenever it changes
+watch([txFilters, txGroupBy, txAggregations], () => {
+  if (!selectedCompKey.value) return
+  dmStore.setTransform(selectedCompKey.value, {
+    filters:      txFilters.value,
+    groupByField: txGroupBy.value,
+    aggregations: txAggregations.value,
+  })
+}, { deep: true })
+
+const txHasConfig = computed(() =>
+  txFilters.value.length > 0 || txGroupBy.value !== '',
+)
+
+// Resolve display label — search all tables in the component
+function txColLabel(col: string): string {
+  for (const id of (selectedCompKey.value ?? '').split('+')) {
+    const lbl = dmStore.getTable(id)?.columnLabels?.[col]?.label
+    if (lbl) return lbl
+  }
+  return col
+}
+
+// Columns grouped by source table using the accurate join-aware source map
+const txColGroups = computed(() => {
+  const groups = new Map<string, string[]>()
+  for (const col of txColumns.value) {
+    const source = txColumnSources.value[col] ?? '—'
+    if (!groups.has(source)) groups.set(source, [])
+    groups.get(source)!.push(col)
+  }
+  return [...groups.entries()].map(([sourceName, cols]) => ({ sourceName, cols }))
+})
+
+// Returns true if the column (from the joined input) is a date type
+function isDateField(col: string): boolean {
+  for (const id of (selectedCompKey.value ?? '').split('+')) {
+    const t = dmStore.getTable(id)
+    if (isDateMeta(t?.columnLabels?.[col], undefined)) return true
+  }
+  const sample = txJoinedRows.value[0]?.[col]
+  return typeof sample === 'string' && /^\d{4}-\d{2}-\d{2}/.test(sample)
+}
+
+// Same but for the join transform modal
+function isJoinDateField(col: string): boolean {
+  for (const id of joinTxCompKey.value.split('+')) {
+    const t = dmStore.getTable(id)
+    if (isDateMeta(t?.columnLabels?.[col], undefined)) return true
+  }
+  const sample = joinTxRows.value[0]?.[col]
+  return typeof sample === 'string' && /^\d{4}-\d{2}-\d{2}/.test(sample)
+}
+
+function txAddFilter() {
+  txFilters.value.push({ field: txColumns.value[0] ?? '', op: '=', value: '' })
+}
+function txRemoveFilter(i: number) { txFilters.value.splice(i, 1) }
+
+// Input sample = the actual joined rows the transform will be applied to
+const txInputSample = computed(() => txJoinedRows.value.slice(0, 200))
+
+// AG Grid col defs for modal — based on joined rows
+const txInputColDefs = computed<ColDef[]>(() =>
+  txColumns.value.map(col => ({
+    field: col, headerName: txColLabel(col),
+    sortable: true, resizable: true, filter: true, minWidth: 60,
+  }))
+)
+
+// Output sample as computed — auto-tracks all reactive dependencies (filters, groupBy, aggs, rows)
+const txOutputSample = computed<any[]>(() => {
+  if (!txHasConfig.value || !txJoinedRows.value.length) return []
+  return applyTransform(
+    txJoinedRows.value,
+    { filters: txFilters.value, groupByField: txGroupBy.value, aggregations: { ...txAggregations.value } },
+  ).slice(0, 200)
+})
+
+const txOutputColDefs = computed<ColDef[]>(() => {
+  if (!txOutputSample.value.length) return []
+  return Object.keys(txOutputSample.value[0]).map(col => ({
+    field: col, headerName: txColLabel(col),
+    sortable: true, resizable: true, filter: true, minWidth: 60,
+  }))
+})
+
+// Lazy-mount flag: output grid mounts only when user first visits the results tab
+// — ensures AG Grid initialises with a visible (non-zero-size) container
+const txAfterMounted = ref(false)
+watch(() => txModalTab.value, (tab) => {
+  if (tab === 'after') txAfterMounted.value = true
+})
 
 const colorMode = useColorMode()
 const isDark     = computed(() => colorMode.value === 'dark')
 const themeClass = computed(() => isDark.value ? 'ag-theme-quartz-dark' : 'ag-theme-quartz')
-
-const nodePreviewColDefs = computed<ColDef[]>(() =>
-  nodePreviewCols.value.map(col => ({
-    field: col.name,
-    headerName: col.label,
-    sortable: true,
-    resizable: true,
-    filter: false,
-    minWidth: 72,
-    flex: 1,
-    cellStyle: col.type === 'number' ? { textAlign: 'right', fontFamily: 'monospace' } : {},
-    valueFormatter: (p: any) =>
-      p.value === null || p.value === undefined ? '—' : String(p.value),
-  }))
-)
-
-const nodePreviewRowData = computed(() => selectedNodeData.value?.rows ?? [])
 
 const sampleJoinColDefs = computed<ColDef[]>(() =>
   (sampleJoin.value?.headers ?? []).map(h => ({
@@ -108,7 +339,7 @@ const filteredToCols = computed(() => {
     : toCols.value
 })
 
-// helper: แปลง column name → label สำหรับแสดงผล
+// helper: resolve column name → display label
 function colLabel(tableId: string, colName: string): string {
   return dmStore.columnsOf(tableId).find(c => c.name === colName)?.label ?? colName
 }
@@ -130,7 +361,8 @@ watch(selectedEdgeId, () => {
 })
 
 // ─── Add Table panel ─────────────────────────────────────────────────────────
-const showAddPanel  = ref(false)
+const showAddPanel    = ref(false)
+const showLayersPanel = ref(false)
 const addMode       = ref<'mock' | 'sql'>('mock')
 const customName    = ref('')
 const selectedKey   = ref<DatasetKey>('sales_monthly')
@@ -159,7 +391,7 @@ async function fetchSqlTemplates() {
       `Planning/Master/GetSqlFlowTemplate?passcode=${encodeURIComponent(sqlPasscode.value.trim())}`,
     )
     sqlTemplates.value = Array.isArray(res?.data) ? res.data : []
-    if (sqlTemplates.value.length) selectedTemplateId.value = sqlTemplates.value[0].template_id
+    if (sqlTemplates.value.length) selectedTemplateId.value = sqlTemplates.value[0]!.template_id
   } catch {
     sqlTemplates.value = []
   } finally {
@@ -206,7 +438,7 @@ function addMockTable() {
 
 // ─── Add from SQL Template ────────────────────────────────────────────────────
 async function addSQLTable() {
-  if (!selectedTemplateId.value) { errorMsg.value = 'กรุณาเลือก Template'; return }
+  if (!selectedTemplateId.value) { errorMsg.value = t('bi_please_select_template'); return }
   loading.value  = true
   errorMsg.value = ''
   try {
@@ -215,14 +447,36 @@ async function addSQLTable() {
     )
     if (res?.error) throw new Error(res.error)
     const payload = extractSqlPayload(res)
-    if (!payload?.rows) throw new Error('ไม่พบข้อมูล')
+    if (!payload?.rows) throw new Error(t('bi_no_data_found'))
     const tmpl    = sqlTemplates.value.find(t => t.template_id === selectedTemplateId.value)
     const name    = customName.value.trim() || tmpl?.template_name || `Template ${selectedTemplateId.value}`
     placeTableNode(`sql_${Date.now()}`, name, payload.rows, parseColumnMapping(payload.column_mapping_json))
     showAddPanel.value = false
     customName.value   = ''
   } catch (e: any) {
-    errorMsg.value = e?.message ?? 'เกิดข้อผิดพลาด'
+    errorMsg.value = e?.message ?? t('bi_error')
+  } finally {
+    loading.value = false
+  }
+}
+
+async function debugDownloadSQL() {
+  if (!selectedTemplateId.value) { errorMsg.value = t('bi_please_select_template'); return }
+  loading.value  = true
+  errorMsg.value = ''
+  try {
+    const res: any = await $xt.getServer(
+      `Planning/Master/ExecuteSqlFlowTemplate?template_id=${selectedTemplateId.value}&passcode=${encodeURIComponent(sqlPasscode.value.trim())}`,
+    )
+    const tmpl = sqlTemplates.value.find(t => t.template_id === selectedTemplateId.value)
+    const filename = `debug_${tmpl?.template_name ?? selectedTemplateId.value}_${Date.now()}.json`
+    const blob = new Blob([JSON.stringify(res, null, 2)], { type: 'application/json' })
+    const url  = URL.createObjectURL(blob)
+    const a    = document.createElement('a')
+    a.href = url; a.download = filename; a.click()
+    URL.revokeObjectURL(url)
+  } catch (e: any) {
+    errorMsg.value = e?.message ?? t('bi_error')
   } finally {
     loading.value = false
   }
@@ -266,7 +520,7 @@ onConnect((conn: Connection) => {
 
 // ─── Click handlers ───────────────────────────────────────────────────────────
 onEdgeClick(({ edge })  => { selectedEdgeId.value = edge.id;   selectedNodeId.value = null })
-onNodeClick(({ node }) => { selectedNodeId.value  = node.id;  selectedEdgeId.value = null; nodeSearchQuery.value = '' })
+onNodeClick(({ node }) => { selectedNodeId.value  = node.id;  selectedEdgeId.value = null })
 onPaneClick(()          => { selectedEdgeId.value = null;     selectedNodeId.value = null })
 
 // ─── Sync deletions → store (listen to specific remove events only) ───────────
@@ -307,16 +561,226 @@ function deleteSelectedRelation() {
 const tableCount    = computed(() => dmStore.tables.length)
 const relationCount = computed(() => Object.keys(dmStore.relations).length)
 
+// Per-node relation count for the layers panel
+const nodeRelationCount = computed(() => {
+  const counts: Record<string, number> = {}
+  for (const rel of Object.values(dmStore.relations)) {
+    counts[rel.fromTable] = (counts[rel.fromTable] ?? 0) + 1
+    counts[rel.toTable]   = (counts[rel.toTable]   ?? 0) + 1
+  }
+  return counts
+})
+
+function focusNode(nodeId: string) {
+  selectedNodeId.value   = nodeId
+  selectedEdgeId.value   = null
+  fitView({ nodes: [nodeId], duration: 400, padding: 0.4 })
+}
+
 // ─── Export readiness ─────────────────────────────────────────────────────────
 const exportStatus = computed(() => {
   if (!dmStore.tables.length)
-    return { ready: false, reason: 'ยังไม่มีตาราง' }
+    return { ready: false, reason: t('bi_no_tables_yet') }
   const rels = Object.values(dmStore.relations)
   const incomplete = rels.filter(r => !r.fromColumn || !r.toColumn)
   if (incomplete.length)
-    return { ready: false, reason: `Relation ยังเลือก Column ไม่ครบ ${incomplete.length} รายการ` }
+    return { ready: false, reason: t('bi_relation_incomplete', { count: incomplete.length }) }
   return { ready: true, reason: '' }
 })
+
+// ─── Joined Components (BFS groups with 2+ tables) ───────────────────────────
+const joinedComponents = computed(() => {
+  const tables = dmStore.tables
+  if (!tables.length) return []
+  const rels = Object.values(dmStore.relations)
+  if (!rels.length) return []
+
+  const adj = new Map<string, Set<string>>()
+  for (const t of tables) adj.set(t.id, new Set())
+  for (const r of rels) {
+    adj.get(r.fromTable)?.add(r.toTable)
+    adj.get(r.toTable)?.add(r.fromTable)
+  }
+
+  const visited = new Set<string>()
+  const comps: { key: string; tableIds: string[]; relCount: number }[] = []
+  for (const t of tables) {
+    if (visited.has(t.id)) continue
+    const comp: string[] = []
+    const q = [t.id]
+    while (q.length) {
+      const id = q.shift()!
+      if (visited.has(id)) continue
+      visited.add(id); comp.push(id)
+      for (const nb of adj.get(id) ?? []) if (!visited.has(nb)) q.push(nb)
+    }
+    const compRels = rels.filter(r => comp.includes(r.fromTable) && comp.includes(r.toTable))
+    if (comp.length >= 2) {
+      comps.push({ key: [...comp].sort().join('+'), tableIds: comp, relCount: compRels.length })
+    }
+  }
+  return comps
+})
+
+// ─── Join Component Transform Modal ──────────────────────────────────────────
+const showJoinTxModal    = ref(false)
+const joinTxCompKey      = ref('')
+const joinTxTab          = ref<'before' | 'after'>('before')
+const joinTxAfterMounted = ref(false)
+const joinTxFilters      = ref<TransformFilter[]>([])
+const joinTxGroupBy      = ref('')
+const joinTxAggregations = ref<Record<string, AggFn>>({})
+
+const joinTxCompName = computed(() =>
+  joinTxCompKey.value.split('+')
+    .map(id => dmStore.getTable(id)?.name ?? id)
+    .join(' + '),
+)
+
+// Build joined rows for the active component without applying any transform
+const joinTxRows = computed(() => {
+  const key = joinTxCompKey.value
+  if (!key) return []
+  const compIds = key.split('+')
+  const rels = Object.values(dmStore.relations)
+  const compRels = rels.filter(r => compIds.includes(r.fromTable) && compIds.includes(r.toTable))
+  if (!compRels.length) {
+    const _f = dmStore.getNodeFilters(compIds[0]!)
+    const _r = dmStore.getTable(compIds[0]!)?.rows ?? []
+    return _f.length ? _r.filter(r => matchFilters(r, _f)) : _r
+  }
+  const _fromFilters1 = dmStore.getNodeFilters(compRels[0]!.fromTable)
+  let rows: any[] = (dmStore.getTable(compRels[0]!.fromTable)?.rows ?? [])
+    .filter(r => matchFilters(r, _fromFilters1))
+    .slice(0, MAX_SOURCE_ROWS)
+  const joined = new Set([compRels[0]!.fromTable])
+  for (const rel of compRels) {
+    if (joined.has(rel.toTable)) continue
+    joined.add(rel.toTable)
+    const _toFilters1 = dmStore.getNodeFilters(rel.toTable)
+    const toRows = (dmStore.getTable(rel.toTable)?.rows ?? [])
+      .filter(r => matchFilters(r, _toFilters1))
+      .slice(0, MAX_SOURCE_ROWS)
+    const { result } = joinStep(rows, rel, toRows, MAX_JOIN_ROWS)
+    rows = result
+  }
+  return rows
+})
+
+const joinTxColumns = computed(() =>
+  joinTxRows.value.length ? Object.keys(joinTxRows.value[0]) : [],
+)
+
+function joinTxColLabel(col: string): string {
+  for (const id of joinTxCompKey.value.split('+')) {
+    const lbl = dmStore.getTable(id)?.columnLabels?.[col]?.label
+    if (lbl) return lbl
+  }
+  return col
+}
+
+// Track which source table each final joined column came from
+const joinTxColumnSources = computed<Record<string, string>>(() => {
+  const key = joinTxCompKey.value
+  if (!key) return {}
+  const compIds = key.split('+')
+  const rels = Object.values(dmStore.relations)
+  const compRels = rels.filter(r => compIds.includes(r.fromTable) && compIds.includes(r.toTable))
+  const sources: Record<string, string> = {}
+  if (!compRels.length) {
+    const t = dmStore.getTable(compIds[0]!)
+    for (const col of Object.keys(t?.rows[0] ?? {})) sources[col] = t?.name ?? compIds[0]!
+    return sources
+  }
+  const firstTableId = compRels[0]!.fromTable
+  const firstTable   = dmStore.getTable(firstTableId)
+  let currentKeys: string[] = Object.keys(firstTable?.rows[0] ?? {})
+  for (const col of currentKeys) sources[col] = firstTable?.name ?? firstTableId
+  const joined = new Set([firstTableId])
+  for (const rel of compRels) {
+    if (joined.has(rel.toTable)) continue
+    joined.add(rel.toTable)
+    const toTable = dmStore.getTable(rel.toTable)
+    const toKeys  = Object.keys(toTable?.rows[0] ?? {})
+    const newKeys: string[] = []
+    for (const k of toKeys) {
+      const finalKey = currentKeys.includes(k) ? `${rel.toTable}_${k}` : k
+      sources[finalKey] = toTable?.name ?? rel.toTable
+      newKeys.push(finalKey)
+    }
+    currentKeys = [...currentKeys, ...newKeys]
+  }
+  return sources
+})
+
+// Columns grouped by source table for join transform dropdowns
+const joinTxColGroups = computed(() => {
+  const groups = new Map<string, string[]>()
+  for (const col of joinTxColumns.value) {
+    const source = joinTxColumnSources.value[col] ?? '—'
+    if (!groups.has(source)) groups.set(source, [])
+    groups.get(source)!.push(col)
+  }
+  return [...groups.entries()].map(([sourceName, cols]) => ({ sourceName, cols }))
+})
+
+const joinTxColDefs = computed<ColDef[]>(() =>
+  joinTxColumns.value.map(col => ({
+    field: col, headerName: joinTxColLabel(col),
+    sortable: true, resizable: true, filter: true, minWidth: 60,
+  })),
+)
+
+const joinTxHasConfig = computed(() =>
+  joinTxFilters.value.length > 0 || joinTxGroupBy.value !== '',
+)
+
+// Output sample as computed — auto-tracks all reactive dependencies
+const joinTxOutputSample = computed<any[]>(() => {
+  if (!joinTxHasConfig.value || !joinTxRows.value.length) return []
+  return applyTransform(
+    joinTxRows.value,
+    { filters: joinTxFilters.value, groupByField: joinTxGroupBy.value, aggregations: { ...joinTxAggregations.value } },
+  ).slice(0, 200)
+})
+
+// Output column defs derived from actual output (respects 'none' aggregation exclusions)
+const joinTxOutputColDefs = computed<ColDef[]>(() => {
+  if (!joinTxOutputSample.value.length) return []
+  return Object.keys(joinTxOutputSample.value[0]).map(col => ({
+    field: col, headerName: joinTxColLabel(col),
+    sortable: true, resizable: true, filter: true, minWidth: 60,
+  }))
+})
+
+// Persist transform config whenever it changes
+watch([joinTxFilters, joinTxGroupBy, joinTxAggregations], () => {
+  if (!joinTxCompKey.value) return
+  dmStore.setTransform(joinTxCompKey.value, {
+    filters:      joinTxFilters.value,
+    groupByField: joinTxGroupBy.value,
+    aggregations: joinTxAggregations.value,
+  })
+}, { deep: true })
+
+watch(() => joinTxTab.value, tab => { if (tab === 'after') joinTxAfterMounted.value = true })
+
+function openJoinTxModal(compKey: string) {
+  joinTxCompKey.value      = compKey
+  joinTxTab.value          = 'before'
+  joinTxAfterMounted.value = false
+  const cfg = dmStore.getTransform(compKey)
+  joinTxFilters.value      = cfg ? [...cfg.filters]        : []
+  joinTxGroupBy.value      = cfg?.groupByField              ?? ''
+  joinTxAggregations.value = cfg ? { ...cfg.aggregations }  : {}
+  for (const col of joinTxColumns.value) {
+    if (!(col in joinTxAggregations.value)) {
+      const sample = joinTxRows.value[0]?.[col]
+      joinTxAggregations.value[col] = typeof sample === 'number' ? 'sum' : 'first'
+    }
+  }
+  showJoinTxModal.value = true
+}
 
 // ─── Build joined datasets from all tables + relations ────────────────────────
 // Hard cap per joined dataset to avoid browser OOM
@@ -325,6 +789,98 @@ const MAX_JOIN_ROWS   = 50_000
 const MAX_SOURCE_ROWS = 10_000
 
 const exportWarning = ref('')
+
+// ── Streaming join + GROUP BY ─────────────────────────────────────────────────
+// Joins all tables in a component row-by-row and feeds each joined row directly
+// into a GROUP BY accumulator — never materialises the full join result, so there
+// is no row-count cap and the result is always accurate regardless of join size.
+function joinStreamGroupBy(
+  firstTableId: string,
+  orderedRels:  ReturnType<typeof dmStore.getTable> extends undefined ? never : any[],
+  txCfg:        TransformConfig,
+): any[] {
+  const _preFirst = dmStore.getNodeFilters(firstTableId)
+  const allFirstRows = dmStore.getTable(firstTableId)?.rows ?? []
+  const firstRows = _preFirst.length ? allFirstRows.filter(r => matchFilters(r, _preFirst)) : allFirstRows
+  if (!firstRows.length) return []
+
+  // Pre-build hash indices + column key-maps for every "to" table
+  type Idx = Map<string, any[]>
+  const indices  = new Map<string, Idx>()
+  const keyMaps  = new Map<string, Record<string, string>>()
+  let currentKeys = Object.keys(firstRows[0] ?? {})
+
+  for (const rel of orderedRels) {
+    const _preTo = dmStore.getNodeFilters(rel.toTable)
+    const allToRows = dmStore.getTable(rel.toTable)?.rows ?? []
+    const toRows = _preTo.length ? allToRows.filter(r => matchFilters(r, _preTo)) : allToRows
+    const toKeys = toRows.length ? Object.keys(toRows[0]!) : []
+    const km: Record<string, string> = {}
+    for (const k of toKeys) km[k] = currentKeys.includes(k) ? `${rel.toTable}_${k}` : k
+    keyMaps.set(rel.toTable, km)
+    currentKeys = [...currentKeys, ...Object.values(km)]
+
+    // Right joins use the from-index; inner/left use the to-index
+    if (rel.joinType === 'right') {
+      // We'll build a from-index lazily during streaming — handled in streamJoin
+    } else {
+      const idx: Idx = new Map()
+      for (const row of toRows) {
+        const key = String(row[rel.toColumn] ?? '')
+        if (!idx.has(key)) idx.set(key, [])
+        idx.get(key)!.push(row)
+      }
+      indices.set(rel.toTable, idx)
+    }
+  }
+
+  // Streaming accumulator (reuses exported helpers from transformData)
+  const accs   = new Map<string, any>()
+  const colsRef = { v: [] as string[] }
+
+  // Recursive streaming probe — feeds completed joined rows into accumulator
+  function streamJoin(partial: any, relIdx: number): void {
+    if (relIdx >= orderedRels.length) {
+      accumulateRow(partial, txCfg, accs, colsRef)
+      return
+    }
+    const rel = orderedRels[relIdx]
+    const km  = keyMaps.get(rel.toTable)!
+
+    if (rel.joinType === 'right') {
+      // Right join: probe toRows against fromColumn value in partial
+      const toRows = dmStore.getTable(rel.toTable)?.rows ?? []
+      for (const toRow of toRows) {
+        if (String(partial[rel.fromColumn] ?? '') === String(toRow[rel.toColumn] ?? '')) {
+          const merged: any = { ...partial }
+          for (const [k, mk] of Object.entries(km)) merged[mk] = toRow[k]
+          streamJoin(merged, relIdx + 1)
+        }
+      }
+      return
+    }
+
+    const idx     = indices.get(rel.toTable)!
+    const matches = idx?.get(String(partial[rel.fromColumn] ?? ''))
+    if (matches?.length) {
+      for (const toRow of matches) {
+        const merged: any = { ...partial }
+        for (const [k, mk] of Object.entries(km)) merged[mk] = toRow[k]
+        streamJoin(merged, relIdx + 1)
+      }
+    } else if (rel.joinType === 'left') {
+      const merged: any = { ...partial }
+      for (const mk of Object.values(km)) merged[mk] = null
+      streamJoin(merged, relIdx + 1)
+    }
+    // inner join with no match → row excluded
+  }
+
+  for (const fromRow of firstRows) streamJoin(fromRow, 0)
+
+  if (!colsRef.v.length) return []
+  return materializeAccumulators(accs, colsRef.v, txCfg)
+}
 
 function joinStep(
   rows: any[], rel: ReturnType<typeof dmStore.getTable> extends undefined ? never : any,
@@ -389,9 +945,15 @@ function buildJoinedDatasets(): { id: string; name: string; rows: any[] }[] {
 
   const rels = Object.values(dmStore.relations)
 
-  // No relations → each table becomes its own dataset (share reference, no copy)
+  // No relations → each table becomes its own dataset
   if (!rels.length) {
-    return tables.map(t => ({ id: `dm_${t.id}_${Date.now()}`, name: t.name, rows: t.rows, columnLabels: t.columnLabels }))
+    return tables.map(t => {
+      const cfg = dmStore.getTransform(t.id)
+      const rows = cfg && (cfg.filters.length || cfg.groupByField)
+        ? applyTransform(t.rows, cfg)
+        : t.rows
+      return { id: `dm_${t.id}_${Date.now()}`, name: t.name, rows, columnLabels: t.columnLabels }
+    })
   }
 
   // Build undirected adjacency for connected-component detection
@@ -418,13 +980,13 @@ function buildJoinedDatasets(): { id: string; name: string; rows: any[] }[] {
     components.push(comp)
   }
 
-  const datasets: { id: string; name: string; rows: any[]; columnLabels?: ReturnType<typeof parseColumnMapping> }[] = []
+  const datasets: { id: string; name: string; rows: any[]; columnLabels?: ReturnType<typeof parseColumnMapping>; columnSources?: Record<string, string> }[] = []
   let anyTruncated = false
 
   for (const comp of components) {
     const compRels = rels.filter(r => comp.includes(r.fromTable) && comp.includes(r.toTable))
 
-    // รวม columnLabels จากทุกตารางใน component
+    // merge columnLabels from all tables in the component
     const mergedLabels: ReturnType<typeof parseColumnMapping> = {}
     for (const tableId of comp) {
       const t = dmStore.getTable(tableId)
@@ -433,31 +995,80 @@ function buildJoinedDatasets(): { id: string; name: string; rows: any[] }[] {
     const columnLabels = Object.keys(mergedLabels).length ? mergedLabels : undefined
 
     if (!compRels.length) {
-      const t = dmStore.getTable(comp[0])!
-      datasets.push({ id: `dm_${t.id}_${Date.now()}`, name: t.name, rows: t.rows, columnLabels })
+      const t = dmStore.getTable(comp[0]!)!
+      const preF = dmStore.getNodeFilters(t.id)
+      const baseRows = preF.length ? t.rows.filter(r => matchFilters(r, preF)) : t.rows
+      const isoCfg = dmStore.getTransform(t.id)
+      const isoRows = isoCfg && (isoCfg.filters.length || isoCfg.groupByField)
+        ? applyTransform(baseRows, isoCfg)
+        : baseRows
+      datasets.push({ id: `dm_${t.id}_${Date.now()}`, name: t.name, rows: isoRows, columnLabels })
       continue
     }
 
-    // Slice source table to MAX_SOURCE_ROWS before first join step
-    let rows: any[] = (dmStore.getTable(compRels[0].fromTable)?.rows ?? []).slice(0, MAX_SOURCE_ROWS)
-    const joined = new Set([compRels[0].fromTable])
+    const firstTableId = compRels[0]!.fromTable
+    const firstTable   = dmStore.getTable(firstTableId)
+    const name         = comp.map(id => dmStore.getTable(id)?.name ?? id).join(' + ')
+    const compKey      = [...comp].sort().join('+')
+    const txCfg        = dmStore.getTransform(compKey)
 
+    // Build columnSources map (mirrors joinStep key renaming)
+    const columnSources: Record<string, string> = {}
+    let   _srcKeys = Object.keys(firstTable?.rows[0] ?? {})
+    for (const col of _srcKeys) columnSources[col] = firstTable?.name ?? firstTableId
+    const _joined = new Set([firstTableId])
     for (const rel of compRels) {
-      if (joined.has(rel.toTable)) continue
-      joined.add(rel.toTable)
-
-      const toRows = (dmStore.getTable(rel.toTable)?.rows ?? []).slice(0, MAX_SOURCE_ROWS)
-      const { result, truncated } = joinStep(rows, rel, toRows, MAX_JOIN_ROWS)
-      if (truncated) anyTruncated = true
-      rows = result
+      if (_joined.has(rel.toTable)) continue
+      _joined.add(rel.toTable)
+      const toTable = dmStore.getTable(rel.toTable)
+      for (const k of Object.keys(toTable?.rows[0] ?? {})) {
+        const finalKey = _srcKeys.includes(k) ? `${rel.toTable}_${k}` : k
+        columnSources[finalKey] = toTable?.name ?? rel.toTable
+        _srcKeys = [..._srcKeys, finalKey]
+      }
     }
 
-    const name = comp.map(id => dmStore.getTable(id)?.name ?? id).join(' + ')
-    datasets.push({ id: `dm_joined_${Date.now()}_${Math.random().toString(36).slice(2)}`, name, rows, columnLabels })
+    // Ordered relation list (deduplicated, same order as join steps)
+    const orderedRels: typeof compRels = []
+    const ordJoined = new Set([firstTableId])
+    for (const rel of compRels) {
+      if (ordJoined.has(rel.toTable)) continue
+      ordJoined.add(rel.toTable)
+      orderedRels.push(rel)
+    }
+
+    let rows: any[]
+
+    if (txCfg?.groupByField) {
+      // ── Streaming join + GROUP BY ──────────────────────────────────────────
+      rows = joinStreamGroupBy(firstTableId, orderedRels, txCfg)
+    } else {
+      // ── Regular join with cap + optional filter-only transform ─────────────
+      const _preFrom = dmStore.getNodeFilters(firstTableId)
+      rows = (firstTable?.rows ?? [])
+        .filter(r => matchFilters(r, _preFrom))
+        .slice(0, MAX_SOURCE_ROWS)
+      for (const rel of orderedRels) {
+        const _preTo = dmStore.getNodeFilters(rel.toTable)
+        const toRows = (dmStore.getTable(rel.toTable)?.rows ?? [])
+          .filter(r => matchFilters(r, _preTo))
+          .slice(0, MAX_SOURCE_ROWS)
+        const { result, truncated } = joinStep(rows, rel, toRows, MAX_JOIN_ROWS)
+        if (truncated) anyTruncated = true
+        rows = result
+      }
+      if (txCfg && txCfg.filters.length) rows = applyTransform(rows, txCfg)
+    }
+
+    datasets.push({
+      id: `dm_joined_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      name, rows, columnLabels,
+      columnSources: Object.keys(columnSources).length > 0 ? columnSources : undefined,
+    })
   }
 
   exportWarning.value = anyTruncated
-    ? `ข้อมูลถูกตัดให้เหลือสูงสุด ${MAX_JOIN_ROWS.toLocaleString()} แถวต่อ dataset เพื่อป้องกัน memory เกิน`
+    ? t('bi_data_truncated', { max: MAX_JOIN_ROWS.toLocaleString() })
     : ''
 
   return datasets
@@ -489,7 +1100,7 @@ function buildIndex(rows: JoinRow[], col: string): Map<string, JoinRow[]> {
 function mergeRow(fromRow: JoinRow | null, toRow: JoinRow, fromCols: string[], toColsRaw: string[], toColNames: string[]): JoinRow {
   const r: JoinRow = {}
   for (const c of fromCols) r[c] = fromRow ? fromRow[c] : null
-  toColsRaw.forEach((c, i) => { r[toColNames[i]] = toRow[c] })
+  toColsRaw.forEach((c, i) => { r[toColNames[i]!] = toRow[c] })
   return r
 }
 
@@ -541,18 +1152,130 @@ const sampleJoin = computed(() => {
   const toRows   = (dmStore.getTable(rel.toTable)?.rows   ?? []).slice(0, 500)
   if (!fromRows.length || !toRows.length) return null
 
-  const fromCols  = Object.keys(fromRows[0])
-  const toColsRaw = Object.keys(toRows[0])
+  const fromCols  = Object.keys(fromRows[0]!)
+  const toColsRaw = Object.keys(toRows[0]!)
   const toColNames = toColsRaw.map(c => fromCols.includes(c) ? `${c}_2` : c)
   const headers    = [...fromCols, ...toColNames]
   const p: JoinParams = { fromCols, toColsRaw, toColNames }
 
+  // Preview always uses left join so we always see rows (nulls for unmatched right side)
   const rows = rel.joinType === 'right'
     ? rightJoin(fromRows, toRows, rel.fromColumn, rel.toColumn, p)
-    : innerLeftJoin(fromRows, toRows, rel.fromColumn, rel.toColumn, rel.joinType === 'left', p)
+    : innerLeftJoin(fromRows, toRows, rel.fromColumn, rel.toColumn, true, p)
 
   return { headers, rows }
 })
+
+// ─── Save / Load / Delete ─────────────────────────────────────────────────────
+const biApi = useMangoBIApi()
+
+const dmSavedId    = ref<string | null>(null)   // current saved record id
+const dmSaveName   = ref('')
+const dmSaving     = ref(false)
+const dmSaveMsg    = ref('')
+const showDmSave   = ref(false)
+
+const showDmLoad   = ref(false)
+const dmLoadList   = ref<import('~/composables/useMangoBIApi').BIListItem[]>([])
+const dmLoadBusy   = ref(false)
+const dmDeleting   = ref<string | null>(null)
+
+async function openDmSave() {
+  dmSaveName.value = ''
+  dmSaveMsg.value  = ''
+  showDmSave.value = true
+}
+
+async function doSaveDm() {
+  if (!dmSaveName.value.trim()) { dmSaveMsg.value = t('bi_please_enter_name'); return }
+  dmSaving.value = true
+  dmSaveMsg.value = ''
+  try {
+    const nodesPayload = nodes.value.map(n => ({ id: n.id, position: n.position }))
+    const edgesPayload = edges.value.map(e => ({
+      id: e.id, source: e.source, target: e.target,
+      type: e.type, animated: e.animated, label: e.label,
+      style: e.style, labelStyle: e.labelStyle, labelBgStyle: e.labelBgStyle,
+      labelBgPadding: e.labelBgPadding,
+    }))
+    const tablesPayload = dmStore.tables.map(t => ({
+      id: t.id, name: t.name, rows: t.rows, columnLabels: t.columnLabels,
+    }))
+    const nodesJson = JSON.stringify({
+      nodes:      nodesPayload,
+      edges:      edgesPayload,
+      tables:     tablesPayload,
+      transforms: dmStore.transforms,
+    })
+    const relationsJson = JSON.stringify({ relations: dmStore.relations })
+
+    const savedId = await biApi.saveDataModel({
+      id:           dmSavedId.value ?? undefined,
+      name:         dmSaveName.value.trim(),
+      nodesJson,
+      relationsJson,
+    })
+    if (savedId) {
+      dmSavedId.value = savedId
+      dmSaveMsg.value = t('bi_save_success')
+      setTimeout(() => { dmSaveMsg.value = ''; showDmSave.value = false }, 1200)
+    } else {
+      dmSaveMsg.value = t('bi_error')
+    }
+  } catch { dmSaveMsg.value = t('bi_error') }
+  finally { dmSaving.value = false }
+}
+
+async function openDmLoad() {
+  showDmLoad.value  = true
+  dmLoadBusy.value  = true
+  dmLoadList.value  = []
+  try { dmLoadList.value = await biApi.listDataModels() }
+  catch { dmLoadList.value = [] }
+  finally { dmLoadBusy.value = false }
+}
+
+async function doLoadDm(id: string) {
+  dmLoadBusy.value = true
+  try {
+    const row = await biApi.loadDataModel(id)
+    if (!row) return
+    const payload  = JSON.parse(row.nodesJson  ?? '{}')
+    const relPay   = JSON.parse(row.relationsJson ?? '{}')
+
+    // restore store
+    dmStore.tables.splice(0)
+    for (const k of Object.keys(dmStore.relations)) delete dmStore.relations[k]
+    for (const k of Object.keys(dmStore.transforms)) delete dmStore.transforms[k]
+
+    for (const t of (payload.tables ?? [])) dmStore.addTable(t)
+    for (const [k, v] of Object.entries(relPay.relations ?? {})) dmStore.setRelation(k, v as any)
+    for (const [k, v] of Object.entries(payload.transforms ?? {})) dmStore.setTransform(k, v as any)
+
+    nodes.value = (payload.nodes ?? []).map((n: any) => ({
+      id: n.id, type: 'modelTable', position: n.position, data: {},
+    }))
+    edges.value = (payload.edges ?? []).map((e: any) => ({ ...e }))
+
+    dmSavedId.value  = id
+    dmSaveName.value = row.name ?? ''
+    showDmLoad.value = false
+    selectedNodeId.value = null
+    selectedEdgeId.value = null
+  } catch (err) { console.error(err) }
+  finally { dmLoadBusy.value = false }
+}
+
+async function doDeleteDm(id: string) {
+  if (!confirm(t('bi_confirm_delete_dm'))) return
+  dmDeleting.value = id
+  try {
+    await biApi.deleteDataModel(id)
+    dmLoadList.value = dmLoadList.value.filter(r => r.id !== id)
+    if (dmSavedId.value === id) dmSavedId.value = null
+  } catch { }
+  finally { dmDeleting.value = null }
+}
 </script>
 
 <template>
@@ -573,16 +1296,52 @@ const sampleJoin = computed(() => {
 
       <div class="ml-auto flex items-center gap-3">
         <span class="text-xs text-muted-foreground">
-          {{ tableCount }} ตาราง · {{ relationCount }} ความสัมพันธ์
+          {{ t('bi_table_stat', { count: tableCount, rel: relationCount }) }}
         </span>
+        <button
+          @click="showLayersPanel = !showLayersPanel"
+          :class="[
+            'flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg font-medium transition-colors border',
+            showLayersPanel
+              ? 'bg-indigo-500 text-white border-indigo-500'
+              : 'bg-background hover:bg-accent text-muted-foreground border-border',
+          ]"
+          title="Layers"
+        >
+          <Layers class="size-3.5" />
+        </button>
         <button
           @click="showAddPanel = !showAddPanel"
           class="flex items-center gap-1.5 text-xs px-3 py-1.5 bg-indigo-500 hover:bg-indigo-600
                  text-white rounded-lg font-medium transition-colors"
         >
           <Database class="size-3.5" />
-          + เพิ่มตาราง
+          {{ t('bi_add_table') }}
         </button>
+
+        <!-- Save / Load buttons -->
+        <div class="flex items-center gap-1.5 border-l pl-3">
+          <button
+            @click="openDmSave"
+            :disabled="!dmStore.tables.length"
+            :title="t('bi_save_dm_title')"
+            class="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg font-medium transition-colors
+                   bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-600
+                   disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <Download class="size-3.5" />
+            {{ t('bi_save_dm_title') }}
+          </button>
+          <button
+            @click="openDmLoad"
+            :title="t('bi_load_dm_title')"
+            class="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg font-medium transition-colors
+                   bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-600"
+          >
+            <Loader2 class="size-3.5" />
+            {{ t('bi_load_dm_title') }}
+          </button>
+        </div>
 
         <!-- Export to Report -->
         <div class="flex items-center gap-2 border-l pl-3">
@@ -597,13 +1356,13 @@ const sampleJoin = computed(() => {
           <button
             @click="exportToReport"
             :disabled="!exportStatus.ready"
-            :title="exportStatus.ready ? 'ส่งข้อมูลไปใช้งานใน Report Builder' : exportStatus.reason"
+            :title="exportStatus.ready ? t('bi_export_to_report_tooltip') : exportStatus.reason"
             class="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg font-medium transition-colors
                    bg-emerald-500 hover:bg-emerald-600 text-white
                    disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <ArrowRight class="size-3.5" />
-            ใช้งานใน Report
+            {{ t('bi_use_in_report') }}
           </button>
         </div>
       </div>
@@ -631,11 +1390,11 @@ const sampleJoin = computed(() => {
       <Transition name="slide-left">
         <aside
           v-if="showAddPanel"
-          aria-label="เพิ่มตาราง"
+          :aria-label="t('bi_add_table')"
           class="w-64 border-r bg-background z-10 flex flex-col overflow-y-auto shrink-0 shadow-lg"
         >
           <div class="p-3 border-b flex items-center justify-between shrink-0">
-            <span class="text-xs font-semibold">เพิ่มตาราง</span>
+            <span class="text-xs font-semibold">{{ t('bi_add_table') }}</span>
             <button @click="showAddPanel = false" class="text-muted-foreground hover:text-foreground">
               <X class="size-4" />
             </button>
@@ -657,10 +1416,10 @@ const sampleJoin = computed(() => {
           <div class="p-3 flex flex-col gap-3">
             <!-- Custom name -->
             <div>
-              <p class="text-[10px] font-semibold text-muted-foreground mb-1">ชื่อตาราง (ไม่บังคับ)</p>
+              <p class="text-[10px] font-semibold text-muted-foreground mb-1">{{ t('bi_table_name_optional') }}</p>
               <input
                 v-model="customName"
-                placeholder="ชื่อที่แสดง..."
+                :placeholder="t('bi_display_name_placeholder')"
                 class="w-full text-xs border rounded-lg px-2 py-1.5 bg-background
                        focus:outline-none focus:ring-1 focus:ring-indigo-400"
               />
@@ -669,7 +1428,7 @@ const sampleJoin = computed(() => {
             <!-- Mock mode -->
             <template v-if="addMode === 'mock'">
               <div>
-                <p class="text-[10px] font-semibold text-muted-foreground mb-1">ชุดข้อมูล</p>
+                <p class="text-[10px] font-semibold text-muted-foreground mb-1">{{ t('bi_dataset') }}</p>
                 <select
                   v-model="selectedKey"
                   class="w-full text-xs border rounded-lg px-2 py-1.5 bg-background
@@ -684,7 +1443,7 @@ const sampleJoin = computed(() => {
                 @click="addMockTable"
                 class="w-full text-xs py-2 bg-indigo-500 hover:bg-indigo-600 text-white rounded-lg font-medium transition-colors"
               >
-                + เพิ่มตาราง
+                {{ t('bi_add_table') }}
               </button>
             </template>
 
@@ -697,7 +1456,7 @@ const sampleJoin = computed(() => {
                   <input
                     v-model="sqlPasscode"
                     type="text"
-                    placeholder="กรอก passcode..."
+                    :placeholder="t('bi_enter_passcode_placeholder')"
                     class="flex-1 text-xs border rounded-lg px-2 py-1.5 bg-background
                            focus:outline-none focus:ring-1 focus:ring-indigo-400 min-w-0
                            font-mono tracking-wider"
@@ -712,7 +1471,7 @@ const sampleJoin = computed(() => {
                            disabled:opacity-60 shrink-0"
                   >
                     <Loader2 v-if="sqlLoading" class="size-3 animate-spin" />
-                    <span v-else>ค้นหา</span>
+                    <span v-else>{{ t('bi_search') }}</span>
                   </button>
                 </div>
               </div>
@@ -722,7 +1481,7 @@ const sampleJoin = computed(() => {
                 <div v-if="sqlTemplates.length" class="space-y-1.5">
                   <div class="flex items-center justify-between">
                     <p class="text-[10px] font-semibold text-muted-foreground">Template</p>
-                    <span class="text-[10px] text-indigo-500">{{ sqlTemplates.length }} รายการ</span>
+                    <span class="text-[10px] text-indigo-500">{{ sqlTemplates.length }} {{ t('bi_items') }}</span>
                   </div>
                   <select
                     v-model="selectedTemplateId"
@@ -738,7 +1497,7 @@ const sampleJoin = computed(() => {
                   v-else
                   class="flex items-center justify-center gap-1.5 py-2 text-[10px] text-muted-foreground border border-dashed rounded-lg"
                 >
-                  ไม่พบ Template สำหรับ passcode นี้
+                  {{ t('bi_template_not_found_passcode') }}
                 </div>
               </template>
 
@@ -750,18 +1509,30 @@ const sampleJoin = computed(() => {
                 <span class="break-all">{{ errorMsg }}</span>
               </div>
 
-              <button
-                v-if="sqlTemplatesLoaded && sqlTemplates.length"
-                @click="addSQLTable"
-                :disabled="loading || !selectedTemplateId"
-                class="w-full flex items-center justify-center gap-1.5 text-xs py-2
-                       bg-indigo-500 hover:bg-indigo-600 text-white rounded-lg font-medium
-                       transition-colors disabled:opacity-60"
-              >
-                <Loader2 v-if="loading" class="size-3 animate-spin" />
-                <Download v-else class="size-3" />
-                {{ loading ? 'กำลังโหลด...' : '+ เพิ่มตาราง' }}
-              </button>
+              <div v-if="sqlTemplatesLoaded && sqlTemplates.length" class="flex gap-1.5">
+                <button
+                  @click="addSQLTable"
+                  :disabled="loading || !selectedTemplateId"
+                  class="flex-1 flex items-center justify-center gap-1.5 text-xs py-2
+                         bg-indigo-500 hover:bg-indigo-600 text-white rounded-lg font-medium
+                         transition-colors disabled:opacity-60"
+                >
+                  <Loader2 v-if="loading" class="size-3 animate-spin" />
+                  <Download v-else class="size-3" />
+                  {{ loading ? t('bi_loading') : t('bi_add_table') }}
+                </button>
+                <button
+                  @click="debugDownloadSQL"
+                  :disabled="loading || !selectedTemplateId"
+                  title="Debug: download raw API response as JSON"
+                  class="flex items-center justify-center gap-1 text-xs px-2 py-2
+                         bg-amber-500 hover:bg-amber-600 text-white rounded-lg font-medium
+                         transition-colors disabled:opacity-60"
+                >
+                  <Loader2 v-if="loading" class="size-3 animate-spin" />
+                  <Bug v-else class="size-3" />
+                </button>
+              </div>
             </template>
           </div>
         </aside>
@@ -786,19 +1557,107 @@ const sampleJoin = computed(() => {
           class="absolute inset-0 flex flex-col items-center justify-center gap-3 pointer-events-none"
         >
           <GitMerge class="size-14 text-muted-foreground/15" />
-          <p class="text-sm font-medium text-muted-foreground">คลิก "+ เพิ่มตาราง" เพื่อเริ่มสร้าง Data Model</p>
-          <p class="text-xs text-muted-foreground/60">ลาก Handle (จุดสีม่วง) ระหว่างตารางเพื่อสร้าง Relationship</p>
+          <p class="text-sm font-medium text-muted-foreground">{{ t('bi_hint_click_add_table') }}</p>
+          <p class="text-xs text-muted-foreground/60">{{ t('bi_hint_drag_handle') }}</p>
         </div>
+
+        <!-- ── Layers Panel ──────────────────────────────────────────────── -->
+        <Transition name="slide-left">
+          <div
+            v-if="showLayersPanel && nodes.length"
+            class="absolute top-3 left-3 z-10 w-52 rounded-xl border bg-background/95 backdrop-blur-sm shadow-lg flex flex-col overflow-hidden"
+          >
+            <div class="px-3 py-2 border-b flex items-center justify-between">
+              <div class="flex items-center gap-1.5">
+                <Layers class="size-3.5 text-indigo-500" />
+                <span class="text-xs font-semibold">Layers</span>
+              </div>
+              <span class="text-[10px] text-muted-foreground">{{ tableCount }} {{ t('bi_tables') }}</span>
+            </div>
+            <div class="overflow-y-auto max-h-[60vh]">
+              <!-- Tables list -->
+              <button
+                v-for="table in dmStore.tables"
+                :key="table.id"
+                @click="focusNode(table.id)"
+                class="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-accent transition-colors group"
+                :class="selectedNodeId === table.id && !selectedEdge ? 'bg-indigo-50 dark:bg-indigo-950/40' : ''"
+              >
+                <Table2 class="size-3.5 shrink-0"
+                  :class="selectedNodeId === table.id && !selectedEdge ? 'text-indigo-500' : 'text-muted-foreground'" />
+                <div class="flex-1 min-w-0">
+                  <p class="text-xs font-medium truncate"
+                    :class="selectedNodeId === table.id && !selectedEdge ? 'text-indigo-600 dark:text-indigo-400' : ''">
+                    {{ table.name }}
+                  </p>
+                  <p class="text-[10px] text-muted-foreground">
+                    {{ table.rows.length.toLocaleString() }} {{ t('bi_rows') }}
+                    <template v-if="nodeRelationCount[table.id]">
+                      · {{ nodeRelationCount[table.id] }} {{ t('bi_relations') }}
+                    </template>
+                  </p>
+                </div>
+                <span
+                  v-if="nodeRelationCount[table.id]"
+                  class="size-1.5 rounded-full bg-emerald-400 shrink-0"
+                  :title="`${nodeRelationCount[table.id]} relation(s)`"
+                />
+              </button>
+
+              <!-- Joined Components section -->
+              <template v-if="joinedComponents.length">
+                <div class="px-3 py-1.5 bg-muted/40 border-t flex items-center gap-1.5">
+                  <GitMerge class="size-3 text-violet-500" />
+                  <span class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+                    {{ t('bi_joined_components') }}
+                  </span>
+                </div>
+                <div
+                  v-for="comp in joinedComponents"
+                  :key="comp.key"
+                  class="px-3 py-2 border-t first:border-t-0 flex flex-col gap-1.5"
+                >
+                  <div class="flex items-start gap-1.5">
+                    <GitMerge class="size-3.5 shrink-0 text-violet-400 mt-0.5" />
+                    <div class="flex-1 min-w-0">
+                      <p class="text-[11px] font-medium text-violet-700 dark:text-violet-300 leading-tight">
+                        {{ comp.tableIds.map(id => dmStore.getTable(id)?.name ?? id).join(' + ') }}
+                      </p>
+                      <p class="text-[10px] text-muted-foreground">
+                        {{ comp.tableIds.length }} {{ t('bi_tables') }} · {{ comp.relCount }} {{ t('bi_relations') }}
+                        <span
+                          v-if="dmStore.getTransform(comp.key)"
+                          class="ml-1 text-violet-500 font-semibold"
+                        >· Transform ✓</span>
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    @click="openJoinTxModal(comp.key)"
+                    class="w-full flex items-center justify-center gap-1.5 py-1.5 text-[10px] font-semibold
+                           rounded-lg border border-violet-300 dark:border-violet-700
+                           text-violet-600 dark:text-violet-400
+                           hover:bg-violet-50 dark:hover:bg-violet-950/40 transition-colors"
+                  >
+                    <Shuffle class="size-3" />
+                    Transform & Export
+                  </button>
+                </div>
+              </template>
+            </div>
+          </div>
+        </Transition>
       </div>
 
       <!-- ── Node Data Preview (right panel) ───────────────────────────── -->
       <Transition name="slide-right">
         <aside
           v-if="selectedNodeData && !selectedEdge"
-          aria-label="ข้อมูลตาราง"
+          :aria-label="t('bi_table_data_aria')"
           class="w-72 border-l bg-background z-10 flex flex-col shrink-0 shadow-lg"
         >
-          <div class="p-3 border-b flex items-center justify-between shrink-0">
+          <!-- Header -->
+          <div class="px-3 py-2.5 border-b flex items-center justify-between shrink-0">
             <div class="flex items-center gap-1.5">
               <Table2 class="size-3.5 text-indigo-500" />
               <span class="text-xs font-semibold truncate max-w-[160px]" :title="selectedNodeData.name">
@@ -810,36 +1669,97 @@ const sampleJoin = computed(() => {
             </button>
           </div>
 
-          <!-- Stats row -->
-          <div class="px-3 py-2 border-b flex gap-3 text-[10px] text-muted-foreground shrink-0">
-            <span><span class="font-semibold text-foreground">{{ selectedNodeData.rows.length.toLocaleString() }}</span> แถว</span>
-            <span><span class="font-semibold text-foreground">{{ nodePreviewCols.length }}</span> คอลัมน์</span>
+          <!-- Stats row + Transform button -->
+          <div class="px-3 py-2 border-b flex items-center gap-3 text-[10px] text-muted-foreground shrink-0">
+            <span><span class="font-semibold text-foreground">{{ selectedNodeData.rows.length.toLocaleString() }}</span> {{ t('bi_rows') }}</span>
+            <span><span class="font-semibold text-foreground">{{ nodePreviewCols.length }}</span> {{ t('bi_columns_label') }}</span>
+            <button
+              @click="showTxModal = true; txModalTab = 'before'"
+              class="ml-auto flex items-center gap-1.5 px-2 py-1 rounded-md border text-[10px] font-semibold transition-colors"
+              :class="txHasConfig
+                ? 'border-violet-400 text-violet-600 bg-violet-50 dark:bg-violet-950/40'
+                : 'border-border text-muted-foreground hover:bg-accent'"
+            >
+              <Shuffle class="size-3" />
+              Transform
+              <span v-if="txHasConfig" class="size-1.5 rounded-full bg-violet-500" />
+            </button>
           </div>
 
-          <!-- Search -->
-          <div class="px-3 py-2 border-b shrink-0">
-            <div class="flex items-center gap-1.5 border rounded-lg px-2 py-1.5 bg-muted/20 focus-within:ring-1 focus-within:ring-indigo-400">
-              <Search class="size-3 text-muted-foreground shrink-0" />
-              <input
-                v-model="nodeSearchQuery"
-                placeholder="ค้นหาข้อมูล..."
-                class="flex-1 text-xs bg-transparent outline-none placeholder:text-muted-foreground/60"
-              />
+          <!-- Pre-filter section -->
+          <div class="px-3 py-2.5 flex flex-col gap-2 overflow-y-auto flex-1">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-1.5">
+                <p class="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Pre-filter</p>
+                <span v-if="nodeHasPreFilters"
+                  class="text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-orange-100 dark:bg-orange-950/40 text-orange-600 dark:text-orange-400">
+                  {{ nodePreFilters.length }}
+                </span>
+              </div>
+              <button
+                @click="nodeAddPreFilter"
+                class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded bg-orange-100 dark:bg-orange-950/40 text-orange-600 dark:text-orange-400 hover:bg-orange-200 transition-colors font-semibold"
+              >
+                <Plus class="size-3" /> {{ t('bi_add') }}
+              </button>
+            </div>
+
+            <div v-if="!nodeHasPreFilters" class="text-[10px] text-muted-foreground text-center py-3 border border-dashed rounded-lg">
+              {{ t('bi_no_filters') }}
+            </div>
+
+            <div v-for="(f, i) in nodePreFilters" :key="i" class="flex flex-col gap-1 p-2 rounded-lg bg-muted/30 border">
+              <!-- Column picker -->
+              <select
+                :value="f.field"
+                @change="nodeUpdatePreFilter(i, { field: ($event.target as HTMLSelectElement).value })"
+                class="w-full text-[10px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-orange-400"
+              >
+                <option v-for="c in nodePreviewCols" :key="c.name" :value="c.name">{{ c.label }}</option>
+              </select>
+              <div class="flex items-center gap-1">
+                <!-- Op -->
+                <select
+                  :value="f.op"
+                  @change="nodeUpdatePreFilter(i, { op: ($event.target as HTMLSelectElement).value as any })"
+                  class="w-16 shrink-0 text-[10px] border rounded px-1 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-orange-400"
+                >
+                  <option v-for="o in OP_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
+                </select>
+                <!-- Value: date field -->
+                <template v-if="isNodeDateField(f.field)">
+                  <span
+                    v-if="DATE_TOKEN_LABELS[f.value]"
+                    class="flex items-center gap-1 text-[10px] font-semibold text-blue-600 dark:text-blue-400
+                           bg-blue-50 dark:bg-blue-950/40 border border-blue-300 dark:border-blue-700
+                           rounded px-2 py-1 shrink-0 cursor-pointer"
+                    @click="nodeUpdatePreFilter(i, { value: '' })"
+                    title="Click to clear"
+                  >{{ DATE_TOKEN_LABELS[f.value] }} <X class="size-2.5" /></span>
+                  <input v-else type="date" :value="f.value"
+                    @change="nodeUpdatePreFilter(i, { value: ($event.target as HTMLInputElement).value })"
+                    class="flex-1 min-w-0 text-[10px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-orange-400" />
+                  <button @click="nodeUpdatePreFilter(i, { value: DATE_TOKEN_TODAY })"
+                    :class="['shrink-0 text-[9px] font-semibold px-1.5 py-1 rounded transition-colors border',
+                      f.value === DATE_TOKEN_TODAY
+                        ? 'bg-blue-500 text-white border-blue-500'
+                        : 'text-blue-600 dark:text-blue-400 border-blue-300 dark:border-blue-700 hover:bg-blue-50 dark:hover:bg-blue-950/40']"
+                    :title="t('bi_today')">T</button>
+                </template>
+                <!-- Value: regular -->
+                <input v-else
+                  :value="f.value"
+                  @input="nodeUpdatePreFilter(i, { value: ($event.target as HTMLInputElement).value })"
+                  :placeholder="t('bi_value')"
+                  class="flex-1 min-w-0 text-[10px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-orange-400"
+                />
+                <button @click="nodeRemovePreFilter(i)" class="shrink-0 text-muted-foreground hover:text-destructive transition-colors">
+                  <X class="size-3.5" />
+                </button>
+              </div>
             </div>
           </div>
 
-          <!-- AG Grid -->
-          <AgGridVue
-            :class="[themeClass, 'ag-dm-preview flex-1 min-h-0 w-full']"
-            :rowData="nodePreviewRowData"
-            :columnDefs="nodePreviewColDefs"
-            :quickFilterText="nodeSearchQuery"
-            :rowHeight="26"
-            :headerHeight="30"
-            :suppressMovableColumns="true"
-            :suppressCellFocus="true"
-            :enableCellTextSelection="true"
-          />
         </aside>
       </Transition>
 
@@ -847,7 +1767,7 @@ const sampleJoin = computed(() => {
       <Transition name="slide-right">
         <aside
           v-if="selectedEdge"
-          aria-label="แก้ไข Relationship"
+          :aria-label="t('bi_edit_relationship')"
           class="w-60 border-l bg-background z-10 flex flex-col shrink-0 shadow-lg"
         >
           <div class="p-3 border-b flex items-center justify-between shrink-0">
@@ -858,7 +1778,7 @@ const sampleJoin = computed(() => {
             <button
               @click="deleteSelectedRelation"
               class="text-muted-foreground hover:text-destructive transition-colors"
-              title="ลบความสัมพันธ์นี้"
+              :title="t('bi_delete_relation_title')"
             >
               <Trash2 class="size-3.5" />
             </button>
@@ -868,7 +1788,7 @@ const sampleJoin = computed(() => {
 
             <!-- From table + column -->
             <div class="space-y-1.5">
-              <p class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">จากตาราง</p>
+              <p class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">{{ t('bi_from_table') }}</p>
               <div class="rounded-lg border bg-muted/20 px-2.5 py-2 space-y-1.5">
                 <p class="text-xs font-semibold text-indigo-600 dark:text-indigo-400 truncate">
                   {{ dmStore.getTable(selectedEdge.fromTable)?.name ?? selectedEdge.fromTable }}
@@ -889,7 +1809,7 @@ const sampleJoin = computed(() => {
                     <div class="p-1.5 border-b">
                       <input
                         v-model="fromColSearch"
-                        placeholder="ค้นหาคอลัมน์..."
+                        :placeholder="t('bi_search_column_placeholder')"
                         autofocus
                         class="w-full text-xs px-2 py-1 bg-muted/30 rounded focus:outline-none"
                         @click.stop
@@ -906,7 +1826,7 @@ const sampleJoin = computed(() => {
                         <span class="block truncate">{{ col.label }}</span>
                         <span v-if="col.label !== col.name" class="block text-[10px] text-muted-foreground/60 font-mono truncate">{{ col.name }}</span>
                       </button>
-                      <div v-if="!filteredFromCols.length" class="px-2 py-2 text-[10px] text-muted-foreground text-center">ไม่พบ</div>
+                      <div v-if="!filteredFromCols.length" class="px-2 py-2 text-[10px] text-muted-foreground text-center">{{ t('bi_not_found') }}</div>
                     </div>
                   </div>
                 </div>
@@ -915,7 +1835,7 @@ const sampleJoin = computed(() => {
 
             <!-- To table + column -->
             <div class="space-y-1.5">
-              <p class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">ถึงตาราง</p>
+              <p class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">{{ t('bi_to_table') }}</p>
               <div class="rounded-lg border bg-muted/20 px-2.5 py-2 space-y-1.5">
                 <p class="text-xs font-semibold text-indigo-600 dark:text-indigo-400 truncate">
                   {{ dmStore.getTable(selectedEdge.toTable)?.name ?? selectedEdge.toTable }}
@@ -936,7 +1856,7 @@ const sampleJoin = computed(() => {
                     <div class="p-1.5 border-b">
                       <input
                         v-model="toColSearch"
-                        placeholder="ค้นหาคอลัมน์..."
+                        :placeholder="t('bi_search_column_placeholder')"
                         autofocus
                         class="w-full text-xs px-2 py-1 bg-muted/30 rounded focus:outline-none"
                         @click.stop
@@ -953,7 +1873,7 @@ const sampleJoin = computed(() => {
                         <span class="block truncate">{{ col.label }}</span>
                         <span v-if="col.label !== col.name" class="block text-[10px] text-muted-foreground/60 font-mono truncate">{{ col.name }}</span>
                       </button>
-                      <div v-if="!filteredToCols.length" class="px-2 py-2 text-[10px] text-muted-foreground text-center">ไม่พบ</div>
+                      <div v-if="!filteredToCols.length" class="px-2 py-2 text-[10px] text-muted-foreground text-center">{{ t('bi_not_found') }}</div>
                     </div>
                   </div>
                 </div>
@@ -1005,9 +1925,9 @@ const sampleJoin = computed(() => {
             <!-- Data Preview -->
             <div class="space-y-1.5">
               <div class="flex items-center justify-between">
-                <p class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">ตัวอย่างข้อมูล</p>
+                <p class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">{{ t('bi_sample_data') }}</p>
                 <span class="text-[10px] text-indigo-500">
-                  {{ sampleJoin ? `${sampleJoin.rows.length} แถว` : '—' }}
+                  {{ sampleJoin ? `${sampleJoin.rows.length} ${t('bi_rows')}` : '—' }}
                 </span>
               </div>
 
@@ -1028,7 +1948,7 @@ const sampleJoin = computed(() => {
                 v-else
                 class="text-[10px] text-muted-foreground text-center py-3 border border-dashed rounded-lg"
               >
-                {{ sampleJoin ? 'ไม่พบแถวที่ match กัน' : 'เพิ่มข้อมูลในตารางก่อน' }}
+                {{ sampleJoin ? t('bi_no_matching_rows') : t('bi_add_data_to_tables_first') }}
               </div>
             </div>
 
@@ -1037,6 +1957,560 @@ const sampleJoin = computed(() => {
       </Transition>
 
     </div>
+
+    <!-- ── Save DataModel Dialog ─────────────────────────────────────────── -->
+    <Teleport to="body">
+      <Transition name="fade">
+        <div v-if="showDmSave" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+          @click.self="showDmSave = false">
+          <div class="bg-background rounded-xl shadow-2xl w-80 p-5 flex flex-col gap-4">
+            <div class="flex items-center justify-between">
+              <span class="font-semibold text-sm">{{ t('bi_save_dm_title') }}</span>
+              <button @click="showDmSave = false" class="text-muted-foreground hover:text-foreground">
+                <X class="size-4" />
+              </button>
+            </div>
+            <div>
+              <label class="text-[10px] font-semibold text-muted-foreground mb-1 block">{{ t('bi_name') }}</label>
+              <input
+                v-model="dmSaveName"
+                :placeholder="t('bi_dm_name_placeholder')"
+                class="w-full text-xs border rounded-lg px-3 py-2 bg-background
+                       focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                @keydown.enter="doSaveDm"
+              />
+            </div>
+            <p v-if="dmSaveMsg" class="text-xs text-center"
+               :class="dmSaveMsg.startsWith('✓') ? 'text-emerald-600' : 'text-red-500'">
+              {{ dmSaveMsg }}
+            </p>
+            <div class="flex gap-2">
+              <button @click="showDmSave = false"
+                class="flex-1 text-xs py-1.5 rounded-lg border hover:bg-accent transition-colors">
+                {{ t('cancel') }}
+              </button>
+              <button @click="doSaveDm" :disabled="dmSaving"
+                class="flex-1 text-xs py-1.5 rounded-lg bg-indigo-500 hover:bg-indigo-600
+                       text-white font-medium transition-colors disabled:opacity-50">
+                {{ dmSaving ? t('bi_saving') : t('save') }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
+    <!-- ── Load DataModel Dialog ──────────────────────────────────────────── -->
+    <Teleport to="body">
+      <Transition name="fade">
+        <div v-if="showDmLoad" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+          @click.self="showDmLoad = false">
+          <div class="bg-background rounded-xl shadow-2xl w-[420px] flex flex-col max-h-[80vh]">
+            <div class="flex items-center justify-between px-5 py-4 border-b">
+              <span class="font-semibold text-sm">{{ t('bi_load_dm_title') }}</span>
+              <button @click="showDmLoad = false" class="text-muted-foreground hover:text-foreground">
+                <X class="size-4" />
+              </button>
+            </div>
+            <div class="flex-1 overflow-y-auto p-3">
+              <div v-if="dmLoadBusy" class="flex items-center justify-center py-10 gap-2 text-muted-foreground">
+                <Loader2 class="size-4 animate-spin" />
+                <span class="text-xs">{{ t('bi_loading') }}</span>
+              </div>
+              <div v-else-if="!dmLoadList.length"
+                class="text-center py-10 text-xs text-muted-foreground">{{ t('bi_no_saved_dm') }}</div>
+              <div v-else class="flex flex-col gap-1.5">
+                <div
+                  v-for="item in dmLoadList" :key="item.id"
+                  class="flex items-center gap-2 px-3 py-2.5 rounded-lg border hover:bg-accent cursor-pointer transition-colors"
+                  @click="doLoadDm(item.id)"
+                >
+                  <div class="flex-1 min-w-0">
+                    <p class="text-xs font-semibold truncate">{{ item.name }}</p>
+                    <p class="text-[10px] text-muted-foreground">
+                      {{ item.createdBy }} ·
+                      {{ new Date(item.updatedAt ?? item.createdAt).toLocaleDateString('th-TH') }}
+                    </p>
+                  </div>
+                  <button
+                    @click.stop="doDeleteDm(item.id)"
+                    :disabled="dmDeleting === item.id"
+                    class="shrink-0 p-1 rounded hover:bg-red-100 dark:hover:bg-red-900/30
+                           text-red-500 transition-colors disabled:opacity-50"
+                    :title="t('delete')"
+                  >
+                    <Trash2 class="size-3.5" />
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div class="px-5 py-3 border-t flex justify-end">
+              <button @click="showDmLoad = false"
+                class="text-xs px-4 py-1.5 rounded-lg border hover:bg-accent transition-colors">
+                {{ t('close') }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
+    <!-- ── Transform Modal ────────────────────────────────────────────────── -->
+    <Teleport to="body">
+      <Transition name="fade">
+        <div
+          v-if="showTxModal"
+          class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+          @click.self="showTxModal = false"
+        >
+          <div class="bg-background rounded-2xl shadow-2xl flex flex-col overflow-hidden"
+               style="width: min(88vw, 1100px); height: min(88vh, 720px);">
+
+            <!-- Modal header -->
+            <div class="flex items-center gap-2.5 px-5 py-3 border-b shrink-0">
+              <Shuffle class="size-4 text-violet-500" />
+              <span class="text-sm font-semibold">Transform</span>
+              <span class="text-xs text-muted-foreground truncate max-w-[220px]">
+                — {{ txJoinedRows.length > (selectedNodeData?.rows.length ?? 0)
+                    ? `${selectedNodeData?.name ?? ''} (joined: ${txJoinedRows.length.toLocaleString()} rows)`
+                    : (selectedNodeData?.name ?? '') }}
+              </span>
+              <div class="ml-auto flex items-center gap-2">
+                <button
+                  @click="txFilters = []; txGroupBy = ''; txAggregations = {}"
+                  class="text-xs px-2.5 py-1 rounded-lg border text-muted-foreground hover:text-destructive hover:border-destructive transition-colors"
+                >
+                  {{ t('bi_clear') }}
+                </button>
+                <button @click="showTxModal = false" class="text-muted-foreground hover:text-foreground transition-colors">
+                  <X class="size-4" />
+                </button>
+              </div>
+            </div>
+
+            <!-- Modal body -->
+            <div class="flex flex-1 min-h-0">
+
+              <!-- Left: config panel -->
+              <div class="w-80 shrink-0 border-r flex flex-col overflow-y-auto p-4 gap-5">
+
+                <!-- Filter -->
+                <div class="space-y-2">
+                  <div class="flex items-center justify-between">
+                    <p class="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Filter</p>
+                    <button
+                      @click="txAddFilter"
+                      class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded bg-violet-100 dark:bg-violet-950/40 text-violet-600 dark:text-violet-400 hover:bg-violet-200 transition-colors font-semibold"
+                    >
+                      <Plus class="size-3" /> {{ t('bi_add') }}
+                    </button>
+                  </div>
+
+                  <div v-if="!txFilters.length" class="text-[10px] text-muted-foreground text-center py-2 border border-dashed rounded-lg">
+                    {{ t('bi_no_filters') }}
+                  </div>
+
+                  <div v-for="(f, i) in txFilters" :key="i" class="flex items-center gap-1.5">
+                    <select
+                      v-model="f.field"
+                      class="flex-1 min-w-0 text-[10px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400"
+                    >
+                      <template v-if="txColGroups.length > 1">
+                        <optgroup v-for="g in txColGroups" :key="g.sourceName" :label="g.sourceName">
+                          <option v-for="c in g.cols" :key="c" :value="c">{{ txColLabel(c) }}</option>
+                        </optgroup>
+                      </template>
+                      <option v-else v-for="c in txColumns" :key="c" :value="c">{{ txColLabel(c) }}</option>
+                    </select>
+                    <select
+                      v-model="f.op"
+                      class="w-16 shrink-0 text-[10px] border rounded px-1 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400"
+                    >
+                      <option v-for="o in OP_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
+                    </select>
+                    <!-- Date field: datepicker + dynamic tokens -->
+                    <template v-if="isDateField(f.field)">
+                      <span
+                        v-if="DATE_TOKEN_LABELS[f.value]"
+                        class="flex items-center gap-1 text-[10px] font-semibold text-blue-600 dark:text-blue-400
+                               bg-blue-50 dark:bg-blue-950/40 border border-blue-300 dark:border-blue-700
+                               rounded px-2 py-1 shrink-0 cursor-pointer"
+                        @click="f.value = ''"
+                        title="Click to clear"
+                      >{{ DATE_TOKEN_LABELS[f.value] }} <X class="size-2.5" /></span>
+                      <input v-else type="date" v-model="f.value"
+                        class="w-28 shrink-0 text-[10px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400" />
+                      <button @click="f.value = DATE_TOKEN_TODAY"
+                        :class="['shrink-0 text-[9px] font-semibold px-1.5 py-1 rounded transition-colors border',
+                          f.value === DATE_TOKEN_TODAY
+                            ? 'bg-blue-500 text-white border-blue-500'
+                            : 'text-blue-600 dark:text-blue-400 border-blue-300 dark:border-blue-700 hover:bg-blue-50 dark:hover:bg-blue-950/40']"
+                        :title="t('bi_today')">T</button>
+                    </template>
+                    <!-- Regular text field -->
+                    <input v-else
+                      v-model="f.value"
+                      :placeholder="t('bi_value')"
+                      class="w-20 shrink-0 text-[10px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400"
+                    />
+                    <button @click="txRemoveFilter(i)" class="shrink-0 text-muted-foreground hover:text-destructive transition-colors">
+                      <X class="size-3.5" />
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Group By -->
+                <div class="space-y-1.5">
+                  <p class="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Group By</p>
+                  <select
+                    v-model="txGroupBy"
+                    class="w-full text-xs border rounded-lg px-2 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400"
+                  >
+                    <option value="">{{ t('bi_no_group') }}</option>
+                    <template v-if="txColGroups.length > 1">
+                      <optgroup v-for="g in txColGroups" :key="g.sourceName" :label="g.sourceName">
+                        <option v-for="c in g.cols" :key="c" :value="c">{{ txColLabel(c) }}</option>
+                      </optgroup>
+                    </template>
+                    <option v-else v-for="c in txColumns" :key="c" :value="c">{{ txColLabel(c) }}</option>
+                  </select>
+                </div>
+
+                <!-- Aggregations (shown only when group by is set) -->
+                <div v-if="txGroupBy" class="space-y-1.5">
+                  <p class="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Aggregation</p>
+                  <div class="space-y-1 max-h-64 overflow-y-auto pr-1">
+                    <template v-for="g in txColGroups" :key="g.sourceName">
+                      <p v-if="txColGroups.length > 1 && g.cols.some(c => c !== txGroupBy)"
+                         class="text-[9px] font-semibold text-muted-foreground/50 uppercase tracking-wide pt-1 pb-0.5 pl-0.5">
+                        {{ g.sourceName }}
+                      </p>
+                      <div
+                        v-for="col in g.cols.filter(c => c !== txGroupBy)"
+                        :key="col"
+                        class="flex items-center gap-2"
+                      >
+                        <span class="flex-1 min-w-0 text-[10px] text-muted-foreground truncate" :title="col">{{ txColLabel(col) }}</span>
+                        <select
+                          :value="txAggregations[col] ?? 'first'"
+                          @change="txAggregations[col] = ($event.target as HTMLSelectElement).value as AggFn"
+                          class="w-20 shrink-0 text-[10px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400"
+                        >
+                          <option v-for="a in AGG_OPTIONS" :key="a.value" :value="a.value">{{ a.label }}</option>
+                        </select>
+                      </div>
+                    </template>
+                  </div>
+                </div>
+
+                <!-- Row count summary -->
+                <div class="mt-auto pt-3 border-t">
+                  <div class="flex items-center justify-between text-[10px]">
+                    <span class="text-muted-foreground">{{ t('bi_original_data') }}</span>
+                    <span class="font-semibold">{{ txJoinedRows.length.toLocaleString() }} {{ t('bi_rows') }}</span>
+                  </div>
+                  <div v-if="txHasConfig" class="flex items-center justify-between text-[10px] mt-1">
+                    <span class="text-muted-foreground">{{ t('bi_after_transform') }}</span>
+                    <span class="font-semibold text-violet-600 dark:text-violet-400">{{ txOutputSample.length.toLocaleString() }} {{ t('bi_rows') }}</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Right: data sample -->
+              <div class="flex-1 min-w-0 flex flex-col">
+
+                <!-- Tabs -->
+                <div class="flex border-b shrink-0 text-xs">
+                  <button
+                    @click="txModalTab = 'before'"
+                    :class="[
+                      'px-4 py-2.5 font-semibold transition-colors border-b-2 -mb-px',
+                      txModalTab === 'before'
+                        ? 'border-violet-500 text-violet-600 dark:text-violet-400'
+                        : 'border-transparent text-muted-foreground hover:text-foreground',
+                    ]"
+                  >
+                    {{ t('bi_original_data') }}
+                    <span class="ml-1.5 text-[10px] bg-muted text-muted-foreground rounded px-1.5 py-0.5">
+                      {{ txInputSample.length.toLocaleString() }}
+                    </span>
+                  </button>
+                  <button
+                    @click="txModalTab = 'after'"
+                    :class="[
+                      'px-4 py-2.5 font-semibold transition-colors border-b-2 -mb-px',
+                      txModalTab === 'after'
+                        ? 'border-violet-500 text-violet-600 dark:text-violet-400'
+                        : 'border-transparent text-muted-foreground hover:text-foreground',
+                    ]"
+                  >
+                    {{ t('bi_results') }}
+                    <span
+                      class="ml-1.5 text-[10px] rounded px-1.5 py-0.5"
+                      :class="txHasConfig
+                        ? 'bg-violet-100 dark:bg-violet-950/40 text-violet-600 dark:text-violet-400'
+                        : 'bg-muted text-muted-foreground'"
+                    >
+                      {{ txOutputSample.length.toLocaleString() }}
+                    </span>
+                  </button>
+                </div>
+
+                <!-- Grid -->
+                <div class="flex-1 min-h-0 relative">
+                  <!-- original data tab grid -->
+                  <AgGridVue
+                    v-if="txModalTab === 'before'"
+                    :class="[themeClass, 'ag-tx-grid w-full h-full']"
+                    :rowData="txInputSample"
+                    :columnDefs="txInputColDefs"
+                    :rowHeight="26"
+                    :headerHeight="30"
+                    :suppressMovableColumns="true"
+                    :suppressCellFocus="true"
+                    :enableCellTextSelection="true"
+                    @first-data-rendered="(p) => p.api.autoSizeAllColumns()"
+                  />
+                  <!-- results tab — placeholder when no config -->
+                  <div
+                    v-else-if="!txHasConfig"
+                    class="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground"
+                  >
+                    {{ t('bi_configure_filter_hint') }}
+                  </div>
+                  <!-- results grid — lazy-mount (mounts only when user first visits this tab,
+                       so AG Grid always initialises with a visible container) -->
+                  <AgGridVue
+                    v-else-if="txAfterMounted"
+                    :class="[themeClass, 'ag-tx-grid w-full h-full']"
+                    :rowData="txOutputSample"
+                    :columnDefs="txOutputColDefs"
+                    :rowHeight="26"
+                    :headerHeight="30"
+                    :suppressMovableColumns="true"
+                    :suppressCellFocus="true"
+                    :enableCellTextSelection="true"
+                    @first-data-rendered="(p) => p.api.autoSizeAllColumns()"
+                  />
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
+    <!-- ── Join Component Transform Modal ────────────────────────────────── -->
+    <Teleport to="body">
+      <Transition name="fade">
+        <div
+          v-if="showJoinTxModal"
+          class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+          @click.self="showJoinTxModal = false"
+        >
+          <div class="bg-background rounded-2xl shadow-2xl flex flex-col overflow-hidden"
+               style="width: min(92vw, 1200px); height: min(90vh, 760px);">
+
+            <!-- Header -->
+            <div class="flex items-center gap-2.5 px-5 py-3 border-b shrink-0 bg-violet-50 dark:bg-violet-950/20">
+              <GitMerge class="size-4 text-violet-500" />
+              <span class="text-sm font-semibold">{{ t('bi_join_transform_title') }}</span>
+              <span class="text-xs text-muted-foreground truncate max-w-[300px]">— {{ joinTxCompName }}</span>
+              <div class="ml-auto flex items-center gap-2">
+                <button
+                  @click="joinTxFilters = []; joinTxGroupBy = ''; joinTxAggregations = {}"
+                  class="text-xs px-2.5 py-1 rounded-lg border text-muted-foreground hover:text-destructive hover:border-destructive transition-colors"
+                >
+                  {{ t('bi_clear') }}
+                </button>
+                <button
+                  @click="exportToReport(); showJoinTxModal = false"
+                  :disabled="!exportStatus.ready"
+                  class="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg font-medium transition-colors
+                         bg-emerald-500 hover:bg-emerald-600 text-white disabled:opacity-40"
+                >
+                  <ArrowRight class="size-3.5" />
+                  {{ t('bi_use_in_report') }}
+                </button>
+                <button @click="showJoinTxModal = false" class="text-muted-foreground hover:text-foreground transition-colors">
+                  <X class="size-4" />
+                </button>
+              </div>
+            </div>
+
+            <!-- Body -->
+            <div class="flex flex-1 min-h-0">
+
+              <!-- Left: config -->
+              <div class="w-80 shrink-0 border-r flex flex-col overflow-y-auto p-4 gap-5">
+
+                <!-- Filter -->
+                <div class="space-y-2">
+                  <div class="flex items-center justify-between">
+                    <p class="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Filter</p>
+                    <button
+                      @click="joinTxFilters.push({ field: joinTxColumns[0] ?? '', op: '=', value: '' })"
+                      class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded bg-violet-100 dark:bg-violet-950/40 text-violet-600 dark:text-violet-400 hover:bg-violet-200 transition-colors font-semibold"
+                    >
+                      <Plus class="size-3" /> {{ t('bi_add') }}
+                    </button>
+                  </div>
+                  <div v-if="!joinTxFilters.length" class="text-[10px] text-muted-foreground text-center py-2 border border-dashed rounded-lg">
+                    {{ t('bi_no_filters') }}
+                  </div>
+                  <div v-for="(f, i) in joinTxFilters" :key="i" class="flex items-center gap-1.5">
+                    <select v-model="f.field"
+                      class="flex-1 min-w-0 text-[10px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400">
+                      <optgroup v-for="g in joinTxColGroups" :key="g.sourceName" :label="g.sourceName">
+                        <option v-for="c in g.cols" :key="c" :value="c">{{ joinTxColLabel(c) }}</option>
+                      </optgroup>
+                    </select>
+                    <select v-model="f.op"
+                      class="w-16 shrink-0 text-[10px] border rounded px-1 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400">
+                      <option v-for="o in OP_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
+                    </select>
+                    <!-- Date field: datepicker + dynamic tokens -->
+                    <template v-if="isJoinDateField(f.field)">
+                      <span
+                        v-if="DATE_TOKEN_LABELS[f.value]"
+                        class="flex items-center gap-1 text-[10px] font-semibold text-blue-600 dark:text-blue-400
+                               bg-blue-50 dark:bg-blue-950/40 border border-blue-300 dark:border-blue-700
+                               rounded px-2 py-1 shrink-0 cursor-pointer"
+                        @click="f.value = ''"
+                        title="Click to clear"
+                      >{{ DATE_TOKEN_LABELS[f.value] }} <X class="size-2.5" /></span>
+                      <input v-else type="date" v-model="f.value"
+                        class="w-28 shrink-0 text-[10px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400" />
+                      <button @click="f.value = DATE_TOKEN_TODAY"
+                        :class="['shrink-0 text-[9px] font-semibold px-1.5 py-1 rounded transition-colors border',
+                          f.value === DATE_TOKEN_TODAY
+                            ? 'bg-blue-500 text-white border-blue-500'
+                            : 'text-blue-600 dark:text-blue-400 border-blue-300 dark:border-blue-700 hover:bg-blue-50 dark:hover:bg-blue-950/40']"
+                        :title="t('bi_today')">T</button>
+                    </template>
+                    <input v-else v-model="f.value" :placeholder="t('bi_value')"
+                      class="w-20 shrink-0 text-[10px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400" />
+                    <button @click="joinTxFilters.splice(i, 1)" class="shrink-0 text-muted-foreground hover:text-destructive transition-colors">
+                      <X class="size-3.5" />
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Group By -->
+                <div class="space-y-1.5">
+                  <p class="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Group By</p>
+                  <select v-model="joinTxGroupBy"
+                    class="w-full text-xs border rounded-lg px-2 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400">
+                    <option value="">{{ t('bi_no_group') }}</option>
+                    <optgroup v-for="g in joinTxColGroups" :key="g.sourceName" :label="g.sourceName">
+                      <option v-for="c in g.cols" :key="c" :value="c">{{ joinTxColLabel(c) }}</option>
+                    </optgroup>
+                  </select>
+                </div>
+
+                <!-- Aggregations -->
+                <div v-if="joinTxGroupBy" class="space-y-1.5">
+                  <p class="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Aggregation</p>
+                  <div class="space-y-1 max-h-64 overflow-y-auto pr-1">
+                    <template v-for="g in joinTxColGroups" :key="g.sourceName">
+                      <p v-if="g.cols.some(c => c !== joinTxGroupBy)"
+                         class="text-[9px] font-semibold text-muted-foreground/50 uppercase tracking-wide pt-1 pb-0.5 pl-0.5">
+                        {{ g.sourceName }}
+                      </p>
+                      <div v-for="col in g.cols.filter(c => c !== joinTxGroupBy)" :key="col" class="flex items-center gap-2">
+                        <span class="flex-1 min-w-0 text-[10px] text-muted-foreground truncate" :title="col">{{ joinTxColLabel(col) }}</span>
+                        <select
+                          :value="joinTxAggregations[col] ?? 'first'"
+                          @change="joinTxAggregations[col] = ($event.target as HTMLSelectElement).value as AggFn"
+                          class="w-20 shrink-0 text-[10px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400"
+                        >
+                          <option v-for="a in AGG_OPTIONS" :key="a.value" :value="a.value">{{ a.label }}</option>
+                        </select>
+                      </div>
+                    </template>
+                  </div>
+                </div>
+
+                <!-- Row count summary -->
+                <div class="mt-auto pt-3 border-t space-y-1">
+                  <div class="flex items-center justify-between text-[10px]">
+                    <span class="text-muted-foreground">{{ t('bi_original_data') }}</span>
+                    <span class="font-semibold">{{ joinTxRows.length.toLocaleString() }} {{ t('bi_rows') }}</span>
+                  </div>
+                  <div v-if="joinTxHasConfig" class="flex items-center justify-between text-[10px]">
+                    <span class="text-muted-foreground">{{ t('bi_after_transform') }}</span>
+                    <span class="font-semibold text-violet-600 dark:text-violet-400">
+                      {{ joinTxOutputSample.length.toLocaleString() }} {{ t('bi_rows') }}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Right: data grid -->
+              <div class="flex-1 min-w-0 flex flex-col">
+                <!-- Tabs -->
+                <div class="flex border-b shrink-0 text-xs">
+                  <button
+                    @click="joinTxTab = 'before'"
+                    :class="['px-4 py-2.5 font-semibold transition-colors border-b-2 -mb-px',
+                      joinTxTab === 'before'
+                        ? 'border-violet-500 text-violet-600 dark:text-violet-400'
+                        : 'border-transparent text-muted-foreground hover:text-foreground']"
+                  >
+                    {{ t('bi_original_data') }}
+                    <span class="ml-1.5 text-[10px] bg-muted text-muted-foreground rounded px-1.5 py-0.5">
+                      {{ joinTxRows.length.toLocaleString() }}
+                    </span>
+                  </button>
+                  <button
+                    @click="joinTxTab = 'after'"
+                    :class="['px-4 py-2.5 font-semibold transition-colors border-b-2 -mb-px',
+                      joinTxTab === 'after'
+                        ? 'border-violet-500 text-violet-600 dark:text-violet-400'
+                        : 'border-transparent text-muted-foreground hover:text-foreground']"
+                  >
+                    {{ t('bi_results') }}
+                    <span class="ml-1.5 text-[10px] rounded px-1.5 py-0.5"
+                      :class="joinTxHasConfig ? 'bg-violet-100 dark:bg-violet-950/40 text-violet-600 dark:text-violet-400' : 'bg-muted text-muted-foreground'">
+                      {{ joinTxOutputSample.length.toLocaleString() }}
+                    </span>
+                  </button>
+                </div>
+
+                <!-- Grid -->
+                <div class="flex-1 min-h-0 relative">
+                  <AgGridVue
+                    v-if="joinTxTab === 'before'"
+                    :class="[themeClass, 'ag-tx-grid w-full h-full']"
+                    :rowData="joinTxRows.slice(0, 500)"
+                    :columnDefs="joinTxColDefs"
+                    :rowHeight="26" :headerHeight="30"
+                    :suppressMovableColumns="true" :suppressCellFocus="true" :enableCellTextSelection="true"
+                    @first-data-rendered="(p) => p.api.autoSizeAllColumns()"
+                  />
+                  <div v-else-if="!joinTxHasConfig"
+                    class="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
+                    {{ t('bi_configure_filter_hint') }}
+                  </div>
+                  <AgGridVue
+                    v-else-if="joinTxAfterMounted"
+                    :class="[themeClass, 'ag-tx-grid w-full h-full']"
+                    :rowData="joinTxOutputSample"
+                    :columnDefs="joinTxOutputColDefs"
+                    :rowHeight="26" :headerHeight="30"
+                    :suppressMovableColumns="true" :suppressCellFocus="true" :enableCellTextSelection="true"
+                    @first-data-rendered="(p) => p.api.autoSizeAllColumns()"
+                  />
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
   </div>
 </template>
 
@@ -1092,23 +2566,18 @@ const sampleJoin = computed(() => {
 .fade-enter-from, .fade-leave-to       { opacity: 0; }
 
 /* AG Grid overrides */
-.ag-dm-preview .ag-root-wrapper,
-.ag-dm-preview .ag-root,
-.ag-dm-preview .ag-body-viewport,
 .ag-dm-join .ag-root-wrapper,
 .ag-dm-join .ag-root,
-.ag-dm-join .ag-body-viewport {
-  background: transparent !important;
-}
-.ag-dm-preview .ag-root-wrapper,
-.ag-dm-join .ag-root-wrapper {
-  border: none !important;
-}
-.ag-dm-preview .ag-header-cell-text,
-.ag-dm-join .ag-header-cell-text {
-  font-size: 10px;
-  font-weight: 600;
-}
-.ag-dm-preview .ag-cell { font-size: 10px; }
-.ag-dm-join .ag-cell    { font-size: 9px; }
+.ag-dm-join .ag-body-viewport { background: transparent !important; }
+.ag-dm-join .ag-root-wrapper  { border: none !important; }
+.ag-dm-join .ag-header-cell-text { font-size: 10px; font-weight: 600; }
+.ag-dm-join .ag-cell { font-size: 9px; }
+
+/* Transform modal grid */
+.ag-tx-grid .ag-root-wrapper,
+.ag-tx-grid .ag-root,
+.ag-tx-grid .ag-body-viewport { background: transparent !important; }
+.ag-tx-grid .ag-root-wrapper  { border: none !important; }
+.ag-tx-grid .ag-header-cell-text { font-size: 11px; font-weight: 600; }
+.ag-tx-grid .ag-cell { font-size: 11px; }
 </style>

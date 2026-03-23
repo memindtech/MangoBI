@@ -18,6 +18,9 @@ definePageMeta({
   layout: false
 })
 
+const { t } = useI18n()
+useHead({ title: computed(() => `${t('page_title_login')} | MangoBI`) })
+
 const { $xt } = useNuxtApp()
 const router = useRouter()
 const route = useRoute()
@@ -179,7 +182,6 @@ const fetchCompanies = async () => {
 }
 
 onMounted(() => {
-  document.title = "Log in | Mango Planning System"
   fetchCompanies()
 })
 </script>

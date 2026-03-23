@@ -7,6 +7,9 @@ definePageMeta({
     menu_id: ''
   }
 })
+
+const { t } = useI18n()
+useHead({ title: computed(() => `${t('page_title_dashboard')} | MangoBI`) })
 </script>
 
 <template>

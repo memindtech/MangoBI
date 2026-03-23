@@ -11,9 +11,14 @@ import { MOCK_DATA, DATASET_META, type DatasetKey } from '~/stores/canvas'
 import type { WidgetType, WidgetFields, FilterCondition, FilterOperator, ReportWidget as RWidget } from '~/stores/report'
 import type { DataRow } from '~/stores/canvas'
 import { parseColumnMapping } from '~/utils/columnMapping'
+import { resolveDynamicValue, DATE_TOKEN_TODAY, DATE_TOKEN_YESTERDAY, DATE_TOKEN_LABELS } from '~/utils/transformData'
 
 // ─── Page meta ────────────────────────────────────────────────────────────────
 definePageMeta({ layout: false, auth: true })
+
+// ─── i18n ─────────────────────────────────────────────────────────────────────
+const { t } = useI18n()
+useHead({ title: computed(() => `${t('page_title_report')} | MangoBI`) })
 
 // ─── Store / Router ───────────────────────────────────────────────────────────
 const store  = useReportStore()
@@ -36,7 +41,7 @@ function setActiveField(f: keyof WidgetFields) {
 }
 
 // ─── Resolve which field to assign when no field well is active ───────────────
-function resolveField(type: WidgetType, colType: 'number' | 'string'): keyof WidgetFields {
+function resolveField(type: WidgetType, colType: 'number' | 'string' | 'date'): keyof WidgetFields {
   if (type === 'table') return 'columns'
   if (type === 'kpi')   return 'yField'
   if (stackedWidgetTypes.includes(type)) return colType === 'number' ? 'yFields' : 'xField'
@@ -150,7 +155,7 @@ async function fetchSqlTemplates() {
 
 watch(addMode, (m) => { if (m === 'sql') { sqlTemplatesLoaded.value = false; sqlTemplates.value = [] } })
 
-// แกะ response จาก JsonContentResult({ data, column_mapping_json })
+// unwrap response from JsonContentResult({ data, column_mapping_json })
 // Structure: { success, error, data: { data: [...rows], column_mapping_json: "..." } }
 function extractSqlPayload(res: any): { rows: any[]; column_mapping_json?: any } | null {
   if (!res) return null
@@ -179,7 +184,7 @@ function addMockDataset() {
 }
 
 async function addSQLDataset() {
-  if (!selectedTemplateId.value) { errorMsg.value = 'กรุณาเลือก Template'; return }
+  if (!selectedTemplateId.value) { errorMsg.value = t('bi_please_select_template'); return }
   loading.value = true; errorMsg.value = ''
   try {
     const res: any = await $xt.getServer(
@@ -187,7 +192,7 @@ async function addSQLDataset() {
     )
     if (res?.error) throw new Error(res.error)
     const payload = extractSqlPayload(res)
-    if (!payload?.rows) throw new Error('ไม่พบข้อมูล')
+    if (!payload?.rows) throw new Error(t('bi_no_data_found'))
     const tmpl    = sqlTemplates.value.find(t => t.template_id === selectedTemplateId.value)
     const name    = customName.value.trim() || tmpl?.template_name || `Template ${selectedTemplateId.value}`
     store.addDataset({
@@ -197,26 +202,26 @@ async function addSQLDataset() {
       columnLabels: parseColumnMapping(payload.column_mapping_json),
     })
     showAddPanel.value = false; customName.value = ''
-  } catch (e: any) { errorMsg.value = e?.message ?? 'เกิดข้อผิดพลาด' }
+  } catch (e: any) { errorMsg.value = e?.message ?? t('bi_error') }
   finally { loading.value = false }
 }
 
 // ─── Field wells config per type ─────────────────────────────────────────────
 interface FieldWell { key: keyof WidgetFields; label: string; multi?: boolean }
-const fieldWells: Record<WidgetType, FieldWell[]> = {
+const fieldWells = computed<Record<WidgetType, FieldWell[]>>(() => ({
   bar:          [{ key: 'xField', label: 'X-Axis (Category)' }, { key: 'yField',  label: 'Y-Axis (Value)'   }],
   line:         [{ key: 'xField', label: 'X-Axis (Category)' }, { key: 'yField',  label: 'Y-Axis (Value)'   }],
   pie:          [{ key: 'xField', label: 'Label'             }, { key: 'yField',  label: 'Value'            }],
   halfDoughnut: [{ key: 'xField', label: 'Label'             }, { key: 'yField',  label: 'Value'            }],
   scatter:      [{ key: 'xField', label: 'X (Numeric)'       }, { key: 'yField',  label: 'Y (Numeric)'      }],
   tree:         [{ key: 'xField', label: 'Parent Group'      }, { key: 'yField',  label: 'Child Node'       }],
-  stackedBar:   [{ key: 'xField', label: 'X-Axis (Category)' }, { key: 'yFields', label: 'Y Series (หลาย field)', multi: true }],
-  stackedHBar:  [{ key: 'xField', label: 'Y-Axis (Category)' }, { key: 'yFields', label: 'X Series (หลาย field)', multi: true }],
-  stackedLine:  [{ key: 'xField', label: 'X-Axis (Category)' }, { key: 'yFields', label: 'Y Series (หลาย field)', multi: true }],
+  stackedBar:   [{ key: 'xField', label: 'X-Axis (Category)' }, { key: 'yFields', label: t('bi_y_series_multi'), multi: true }],
+  stackedHBar:  [{ key: 'xField', label: 'Y-Axis (Category)' }, { key: 'yFields', label: t('bi_x_series_multi'), multi: true }],
+  stackedLine:  [{ key: 'xField', label: 'X-Axis (Category)' }, { key: 'yFields', label: t('bi_y_series_multi'), multi: true }],
   ecOption:     [],
   table:        [{ key: 'columns',  label: 'Columns', multi: true }],
   kpi:          [{ key: 'yField',   label: 'Value (Sum)'     }],
-}
+}))
 
 function getFieldValue(well: FieldWell): string {
   if (!selectedWidget.value) return ''
@@ -244,19 +249,33 @@ function isColumnActive(datasetId: string, colName: string): boolean {
 }
 
 // ─── Filter logic ─────────────────────────────────────────────────────────────
+function normDate(val: unknown): string | null {
+  const m = String(val ?? '').match(/^(\d{4}-\d{2}-\d{2})/)
+  return m ? m[1]! : null
+}
+
 function matchCondition(row: DataRow, c: FilterCondition): boolean {
-  const v = row[c.column]
+  const v        = row[c.column]
+  const resolved = resolveDynamicValue(c.value)
+
+  // Date-aware: if both sides look like dates, compare as YYYY-MM-DD strings
+  const cellDate   = normDate(v)
+  const filterDate = normDate(resolved)
+  const isDateCmp  = cellDate !== null && filterDate !== null
+
   switch (c.operator) {
-    case 'eq':         return String(v ?? '') === c.value
-    case 'neq':        return String(v ?? '') !== c.value
-    case 'gt':         return Number(v) >  Number(c.value)
-    case 'gte':        return Number(v) >= Number(c.value)
-    case 'lt':         return Number(v) <  Number(c.value)
-    case 'lte':        return Number(v) <= Number(c.value)
-    case 'contains':   return String(v ?? '').toLowerCase().includes(c.value.toLowerCase())
-    case 'notContains':return !String(v ?? '').toLowerCase().includes(c.value.toLowerCase())
+    case 'eq':         return isDateCmp ? cellDate === filterDate : String(v ?? '') === resolved
+    case 'neq':        return isDateCmp ? cellDate !== filterDate : String(v ?? '') !== resolved
+    case 'gt':         return isDateCmp ? cellDate > filterDate   : Number(v) >  Number(resolved)
+    case 'gte':        return isDateCmp ? cellDate >= filterDate  : Number(v) >= Number(resolved)
+    case 'lt':         return isDateCmp ? cellDate < filterDate   : Number(v) <  Number(resolved)
+    case 'lte':        return isDateCmp ? cellDate <= filterDate  : Number(v) <= Number(resolved)
+    case 'contains':   return String(v ?? '').toLowerCase().includes(resolved.toLowerCase())
+    case 'notContains':return !String(v ?? '').toLowerCase().includes(resolved.toLowerCase())
     case 'blank':      return v === null || v === undefined || v === ''
     case 'notBlank':   return v !== null && v !== undefined && v !== ''
+    case 'in':         return (c.values ?? []).includes(String(v ?? ''))
+    case 'notIn':      return !(c.values ?? []).includes(String(v ?? ''))
   }
 }
 
@@ -264,9 +283,12 @@ function filteredRowsOf(widget: RWidget): DataRow[] {
   const rows = store.rowsOf(widget.datasetId)
   const filters = widget.filters
   if (!filters?.conditions.length) return rows
-  const valid = filters.conditions.filter(c =>
-    c.column && (c.operator === 'blank' || c.operator === 'notBlank' || c.value !== ''),
-  )
+  const valid = filters.conditions.filter(c => {
+    if (!c.column) return false
+    if (c.operator === 'blank' || c.operator === 'notBlank') return true
+    if (c.operator === 'in' || c.operator === 'notIn') return (c.values?.length ?? 0) > 0
+    return c.value !== ''
+  })
   if (!valid.length) return rows
   return rows.filter(row =>
     filters.logic === 'and'
@@ -276,20 +298,74 @@ function filteredRowsOf(widget: RWidget): DataRow[] {
 }
 
 // ─── Filter panel helpers ─────────────────────────────────────────────────────
-const NUMBER_OPS: { value: FilterOperator; label: string }[] = [
-  { value: 'eq',  label: '=' }, { value: 'neq', label: '≠' },
-  { value: 'gt',  label: '>' }, { value: 'gte', label: '≥' },
-  { value: 'lt',  label: '<' }, { value: 'lte', label: '≤' },
-  { value: 'blank', label: 'ว่าง' }, { value: 'notBlank', label: 'ไม่ว่าง' },
-]
-const STRING_OPS: { value: FilterOperator; label: string }[] = [
-  { value: 'eq',         label: '= เท่ากับ' },
-  { value: 'neq',        label: '≠ ไม่เท่ากับ' },
-  { value: 'contains',   label: '⊃ มี' },
-  { value: 'notContains',label: '⊅ ไม่มี' },
-  { value: 'blank',      label: 'ว่างเปล่า' },
-  { value: 'notBlank',   label: 'ไม่ว่างเปล่า' },
-]
+const NUMBER_OPS = computed<{ value: FilterOperator; label: string }[]>(() => [
+  { value: 'eq',      label: '=' },      { value: 'neq',    label: '≠' },
+  { value: 'gt',      label: '>' },      { value: 'gte',    label: '≥' },
+  { value: 'lt',      label: '<' },      { value: 'lte',    label: '≤' },
+  { value: 'in',      label: t('bi_filter_in_list') },
+  { value: 'notIn',   label: t('bi_filter_not_in_list') },
+  { value: 'blank',   label: t('bi_filter_blank') },   { value: 'notBlank', label: t('bi_filter_not_blank') },
+])
+const STRING_OPS = computed<{ value: FilterOperator; label: string }[]>(() => [
+  { value: 'eq',         label: t('bi_filter_equals') },
+  { value: 'neq',        label: t('bi_filter_not_equals') },
+  { value: 'contains',   label: t('bi_filter_contains') },
+  { value: 'notContains',label: t('bi_filter_not_contains') },
+  { value: 'in',         label: t('bi_filter_in_list') },
+  { value: 'notIn',      label: t('bi_filter_not_in_list') },
+  { value: 'blank',      label: t('bi_filter_blank_full') },
+  { value: 'notBlank',   label: t('bi_filter_not_blank_full') },
+])
+
+// ─── Left sidebar search ───────────────────────────────────────────────────────
+const sidebarSearch = ref('')
+
+function filteredColumnsOf(dsId: string) {
+  const q = sidebarSearch.value.trim().toLowerCase()
+  const cols = store.columnsOf(dsId)
+  if (!q) return cols
+  return cols.filter(c => c.label.toLowerCase().includes(q) || c.name.toLowerCase().includes(q))
+}
+
+// Group columns by source table (used when dataset has columnSources)
+function columnGroups(dsId: string): { sourceName: string; columns: ReturnType<typeof store.columnsOf> }[] {
+  const ds = store.datasets.find(d => d.id === dsId)
+  if (!ds?.columnSources) return []
+  const cols = filteredColumnsOf(dsId)
+  const groups = new Map<string, typeof cols>()
+  for (const col of cols) {
+    const source = ds.columnSources[col.name] ?? '—'
+    if (!groups.has(source)) groups.set(source, [])
+    groups.get(source)!.push(col)
+  }
+  return [...groups.entries()].map(([sourceName, columns]) => ({ sourceName, columns }))
+}
+
+// ─── in/notIn value picker ─────────────────────────────────────────────────────
+const valuePickerSearch = reactive<Record<string, string>>({})
+
+function uniqueValuesFor(colName: string): string[] {
+  if (!selectedWidget.value) return []
+  const rows = store.rowsOf(selectedWidget.value.datasetId)
+  const seen = new Set<string>()
+  for (const row of rows) {
+    const v = String(row[colName] ?? '')
+    if (v !== '') seen.add(v)
+  }
+  return [...seen].sort((a, b) => a.localeCompare(b, 'th'))
+}
+
+function filteredPickerValues(condId: string, colName: string): string[] {
+  const q = (valuePickerSearch[condId] ?? '').trim().toLowerCase()
+  const vals = uniqueValuesFor(colName)
+  return q ? vals.filter(v => v.toLowerCase().includes(q)) : vals
+}
+
+function togglePickerValue(condId: string, val: string, current: string[]) {
+  updateFilterCondition(condId, {
+    values: current.includes(val) ? current.filter(v => v !== val) : [...current, val],
+  })
+}
 
 const filterCols = computed(() =>
   selectedWidget.value ? store.columnsOf(selectedWidget.value.datasetId) : [],
@@ -310,12 +386,22 @@ const activeFilterCount = computed(() => {
   ).length
 })
 
-function getColType(colName: string): 'number' | 'string' {
+const DATE_OPS = computed<{ value: FilterOperator; label: string }[]>(() => [
+  { value: 'eq',      label: '=' },      { value: 'neq',    label: '≠' },
+  { value: 'gt',      label: '>' },      { value: 'gte',    label: '≥' },
+  { value: 'lt',      label: '<' },      { value: 'lte',    label: '≤' },
+  { value: 'blank',   label: t('bi_filter_blank') },   { value: 'notBlank', label: t('bi_filter_not_blank') },
+])
+
+function getColType(colName: string): 'number' | 'string' | 'date' {
   return filterCols.value.find(c => c.name === colName)?.type ?? 'string'
 }
 
 function opsForCol(colName: string) {
-  return getColType(colName) === 'number' ? NUMBER_OPS : STRING_OPS
+  const t2 = getColType(colName)
+  if (t2 === 'number') return NUMBER_OPS.value
+  if (t2 === 'date')   return DATE_OPS.value
+  return STRING_OPS.value
 }
 
 function setFilterLogic(logic: 'and' | 'or') {
@@ -390,6 +476,88 @@ function changeWidgetType(type: WidgetType) {
   if (!selectedWidgetId.value) return
   store.updateWidget(selectedWidgetId.value, { type })
 }
+
+// ─── Save / Load / Delete ─────────────────────────────────────────────────────
+const biApi = useMangoBIApi()
+
+const rpSavedId   = ref<string | null>(null)
+const rpSaveName  = ref('')
+const rpSaving    = ref(false)
+const rpSaveMsg   = ref('')
+const showRpSave  = ref(false)
+
+const showRpLoad  = ref(false)
+const rpLoadList  = ref<import('~/composables/useMangoBIApi').BIListItem[]>([])
+const rpLoadBusy  = ref(false)
+const rpDeleting  = ref<string | null>(null)
+
+async function openRpSave() {
+  rpSaveName.value = ''
+  rpSaveMsg.value  = ''
+  showRpSave.value = true
+}
+
+async function doSaveRp() {
+  if (!rpSaveName.value.trim()) { rpSaveMsg.value = t('bi_please_enter_name'); return }
+  rpSaving.value  = true
+  rpSaveMsg.value = ''
+  try {
+    const datasetsPayload = store.datasets.map(d => ({
+      id: d.id, name: d.name, rows: d.rows, columnLabels: d.columnLabels,
+    }))
+    const widgetsJson = JSON.stringify({ widgets: store.widgets, datasets: datasetsPayload })
+    const savedId = await biApi.saveReport({
+      id:   rpSavedId.value ?? undefined,
+      name: rpSaveName.value.trim(),
+      widgetsJson,
+    })
+    if (savedId) {
+      rpSavedId.value = savedId
+      rpSaveMsg.value = t('bi_save_success')
+      setTimeout(() => { rpSaveMsg.value = ''; showRpSave.value = false }, 1200)
+    } else {
+      rpSaveMsg.value = t('bi_error')
+    }
+  } catch { rpSaveMsg.value = t('bi_error') }
+  finally  { rpSaving.value = false }
+}
+
+async function openRpLoad() {
+  showRpLoad.value = true
+  rpLoadBusy.value = true
+  rpLoadList.value = []
+  try { rpLoadList.value = await biApi.listReports() }
+  catch { rpLoadList.value = [] }
+  finally { rpLoadBusy.value = false }
+}
+
+async function doLoadRp(id: string) {
+  rpLoadBusy.value = true
+  try {
+    const row = await biApi.loadReport(id)
+    if (!row) return
+    const payload = JSON.parse(row.widgetsJson ?? '{}')
+    store.resetAll()
+    for (const ds of (payload.datasets ?? [])) store.addDataset(ds)
+    for (const w  of (payload.widgets  ?? [])) store.addWidget(w)
+    rpSavedId.value  = id
+    rpSaveName.value = row.name ?? ''
+    selectedWidgetId.value = null
+    showRpLoad.value = false
+  } catch (err) { console.error(err) }
+  finally { rpLoadBusy.value = false }
+}
+
+async function doDeleteRp(id: string) {
+  if (!confirm(t('bi_confirm_delete_report'))) return
+  rpDeleting.value = id
+  try {
+    await biApi.deleteReport(id)
+    rpLoadList.value = rpLoadList.value.filter(r => r.id !== id)
+    if (rpSavedId.value === id) rpSavedId.value = null
+  } catch { }
+  finally { rpDeleting.value = null }
+}
 </script>
 
 <template>
@@ -415,6 +583,28 @@ function changeWidgetType(type: WidgetType) {
         <span class="text-xs text-muted-foreground">
           {{ store.datasets.length }} dataset · {{ store.widgets.length }} visual
         </span>
+
+        <!-- Save / Load -->
+        <button
+          @click.stop="openRpSave"
+          :disabled="!store.widgets.length"
+          :title="t('bi_save_report_title')"
+          class="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg font-medium transition-colors
+                 bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-600
+                 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          <Download class="size-3.5" />
+          {{ t('bi_save_report_title') }}
+        </button>
+        <button
+          @click.stop="openRpLoad"
+          :title="t('bi_load_report_title')"
+          class="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg font-medium transition-colors
+                 bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-600"
+        >
+          <Loader2 class="size-3.5" />
+          {{ t('bi_load_report_title') }}
+        </button>
 
         <!-- Add Data -->
         <button
@@ -464,6 +654,25 @@ function changeWidgetType(type: WidgetType) {
           <p class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Fields</p>
         </div>
 
+        <!-- Column search -->
+        <div class="px-2 py-1.5 border-b shrink-0">
+          <div class="relative flex items-center">
+            <input
+              v-model="sidebarSearch"
+              :placeholder="t('bi_search_column_report')"
+              class="w-full text-[11px] border rounded-md px-2 py-1 pr-6 bg-background
+                     focus:outline-none focus:ring-1 focus:ring-orange-400 placeholder:text-muted-foreground/40"
+            />
+            <button
+              v-if="sidebarSearch"
+              @click.stop="sidebarSearch = ''"
+              class="absolute right-1.5 text-muted-foreground hover:text-foreground"
+            >
+              <X class="size-3" />
+            </button>
+          </div>
+        </div>
+
         <div class="flex-1 overflow-y-auto">
           <!-- No dataset -->
           <div
@@ -471,7 +680,7 @@ function changeWidgetType(type: WidgetType) {
             class="flex flex-col items-center justify-center gap-2 h-32 text-center px-4"
           >
             <Database class="size-6 text-muted-foreground/30" />
-            <p class="text-[11px] text-muted-foreground">กด "+ Data" เพื่อโหลดข้อมูล</p>
+            <p class="text-[11px] text-muted-foreground">{{ t('bi_hint_add_data') }}</p>
           </div>
 
           <!-- Dataset sections -->
@@ -489,10 +698,45 @@ function changeWidgetType(type: WidgetType) {
               </button>
             </div>
 
-            <!-- Columns -->
-            <div>
+            <!-- Columns — grouped by source table if columnSources is available -->
+            <div v-if="ds.columnSources">
+              <template v-for="group in columnGroups(ds.id)" :key="group.sourceName">
+                <!-- Source table sub-header -->
+                <div class="flex items-center gap-1.5 px-3 py-1 bg-muted/20 sticky top-[32px] z-[5]">
+                  <Table2 class="size-2.5 text-indigo-400 shrink-0" />
+                  <span class="text-[9px] font-semibold text-indigo-500 dark:text-indigo-400 truncate uppercase tracking-wide">
+                    {{ group.sourceName }}
+                  </span>
+                  <span class="ml-auto text-[9px] text-muted-foreground/60">{{ group.columns.length }}</span>
+                </div>
+                <button
+                  v-for="col in group.columns"
+                  :key="col.name"
+                  class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-muted/40 transition-colors"
+                  :class="[
+                    isColumnActive(ds.id, col.name)
+                      ? 'bg-orange-50 dark:bg-orange-950/30'
+                      : '',
+                    selectedWidget && selectedWidget.datasetId !== ds.id
+                      ? 'opacity-40 cursor-not-allowed'
+                      : 'cursor-pointer',
+                  ]"
+                  @click.stop="onColumnClick(ds.id, col.name)"
+                >
+                  <HashIcon v-if="col.type === 'number'" class="size-3 shrink-0 text-blue-400" />
+                  <TypeIcon v-else class="size-3 shrink-0 text-emerald-400" />
+                  <div class="min-w-0 flex-1">
+                    <span class="text-[11px] block truncate" :title="col.name">{{ col.label }}</span>
+                    <span v-if="col.label !== col.name" class="text-[9px] block truncate text-muted-foreground/50 font-mono leading-tight">{{ col.name }}</span>
+                  </div>
+                </button>
+              </template>
+            </div>
+
+            <!-- Flat list (no source info — single-table datasets) -->
+            <div v-else>
               <button
-                v-for="col in store.columnsOf(ds.id)"
+                v-for="col in filteredColumnsOf(ds.id)"
                 :key="col.name"
                 class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-muted/40 transition-colors"
                 :class="[
@@ -535,7 +779,7 @@ function changeWidgetType(type: WidgetType) {
             <button
               @click="showAddPanel = false"
               class="px-3 flex items-center justify-center border-l text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-              title="ปิด"
+              :title="t('close')"
             >
               <X class="size-3.5" />
             </button>
@@ -544,8 +788,8 @@ function changeWidgetType(type: WidgetType) {
           <!-- Scrollable content -->
           <div class="flex-1 overflow-y-auto p-3 flex flex-col gap-3">
             <div>
-              <p class="text-[10px] font-semibold text-muted-foreground mb-1">ชื่อ Dataset (ไม่บังคับ)</p>
-              <input v-model="customName" placeholder="ชื่อที่แสดง..."
+              <p class="text-[10px] font-semibold text-muted-foreground mb-1">{{ t('bi_dataset_name_optional') }}</p>
+              <input v-model="customName" :placeholder="t('bi_display_name_placeholder')"
                 class="w-full text-xs border rounded-lg px-2 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-orange-400" />
             </div>
 
@@ -557,7 +801,7 @@ function changeWidgetType(type: WidgetType) {
               </select>
               <button @click="addMockDataset"
                 class="w-full text-xs py-2 bg-orange-500 hover:bg-orange-600 text-white rounded-lg font-medium transition-colors">
-                + เพิ่ม Dataset
+                {{ t('bi_add_dataset') }}
               </button>
             </template>
 
@@ -566,14 +810,14 @@ function changeWidgetType(type: WidgetType) {
               <div>
                 <p class="text-[10px] font-semibold text-muted-foreground mb-1">Passcode</p>
                 <div class="flex gap-1.5">
-                  <input v-model="sqlPasscode" type="text" placeholder="กรอก passcode..."
+                  <input v-model="sqlPasscode" type="text" :placeholder="t('bi_enter_passcode_placeholder')"
                     class="flex-1 text-xs border rounded-lg px-2 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-orange-400 font-mono min-w-0"
                     @keydown.enter.stop="fetchSqlTemplates" />
                   <button @click="fetchSqlTemplates" :disabled="sqlLoading"
                     class="px-2.5 text-[10px] font-semibold bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-300
                            border border-orange-200 rounded-lg hover:bg-orange-200 transition-colors disabled:opacity-60 shrink-0">
                     <Loader2 v-if="sqlLoading" class="size-3 animate-spin" />
-                    <span v-else>ค้นหา</span>
+                    <span v-else>{{ t('bi_search') }}</span>
                   </button>
                 </div>
               </div>
@@ -582,7 +826,7 @@ function changeWidgetType(type: WidgetType) {
                 <div v-if="sqlTemplates.length" class="space-y-1.5">
                   <div class="flex items-center justify-between">
                     <p class="text-[10px] font-semibold text-muted-foreground">Template</p>
-                    <span class="text-[10px] text-orange-500">{{ sqlTemplates.length }} รายการ</span>
+                    <span class="text-[10px] text-orange-500">{{ sqlTemplates.length }} {{ t('bi_items') }}</span>
                   </div>
                   <select v-model="selectedTemplateId"
                     class="w-full text-xs border rounded-lg px-2 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-orange-400">
@@ -592,7 +836,7 @@ function changeWidgetType(type: WidgetType) {
                   </select>
                 </div>
                 <div v-else class="text-[10px] text-center text-muted-foreground py-2 border border-dashed rounded-lg">
-                  ไม่พบ Template
+                  {{ t('bi_template_not_found') }}
                 </div>
               </template>
 
@@ -607,7 +851,7 @@ function changeWidgetType(type: WidgetType) {
                        text-white rounded-lg font-medium transition-colors disabled:opacity-60">
                 <Loader2 v-if="loading" class="size-3 animate-spin" />
                 <Download v-else class="size-3" />
-                {{ loading ? 'กำลังโหลด...' : '+ เพิ่ม Dataset' }}
+                {{ loading ? t('bi_loading') : t('bi_add_dataset') }}
               </button>
             </template>
           </div>
@@ -626,10 +870,10 @@ function changeWidgetType(type: WidgetType) {
         >
           <LayoutDashboard class="size-14 text-muted-foreground/15" />
           <p class="text-sm font-medium text-muted-foreground">
-            {{ store.datasets.length ? 'คลิก "+ Visual" เพื่อเพิ่ม visualization' : 'เริ่มจากกด "+ Data" เพื่อโหลดข้อมูล' }}
+            {{ store.datasets.length ? t('bi_hint_add_visual') : t('bi_hint_start_data') }}
           </p>
           <p v-if="store.datasets.length" class="text-xs text-muted-foreground/60">
-            จากนั้น click column ที่ panel ซ้ายเพื่อ assign field
+            {{ t('bi_hint_assign_field') }}
           </p>
         </div>
 
@@ -660,7 +904,7 @@ function changeWidgetType(type: WidgetType) {
           <div class="px-3 py-2 border-b shrink-0 flex items-center justify-between">
             <p class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Visualizations</p>
             <button @click="store.removeWidget(selectedWidget.id); selectedWidgetId = null"
-              class="text-muted-foreground hover:text-destructive transition-colors" title="ลบ Visual">
+              class="text-muted-foreground hover:text-destructive transition-colors" :title="t('bi_delete_visual')">
               <Trash2 class="size-3.5" />
             </button>
           </div>
@@ -669,7 +913,7 @@ function changeWidgetType(type: WidgetType) {
 
             <!-- Visual type picker -->
             <div>
-              <p class="text-[10px] font-semibold text-muted-foreground mb-2">ประเภท Visual</p>
+              <p class="text-[10px] font-semibold text-muted-foreground mb-2">{{ t('bi_visual_type') }}</p>
               <div class="grid grid-cols-2 gap-1">
                 <button
                   v-for="vt in WIDGET_TYPES" :key="vt.type"
@@ -690,13 +934,13 @@ function changeWidgetType(type: WidgetType) {
 
             <!-- Title -->
             <div>
-              <p class="text-[10px] font-semibold text-muted-foreground mb-1">ชื่อ</p>
+              <p class="text-[10px] font-semibold text-muted-foreground mb-1">{{ t('bi_name') }}</p>
               <input
                 :value="selectedWidget.title"
                 @input="onTitleInput"
                 class="w-full text-xs border rounded-lg px-2 py-1.5 bg-background
                        focus:outline-none focus:ring-1 focus:ring-primary"
-                placeholder="ชื่อ visual..."
+                :placeholder="t('bi_visual_name_placeholder')"
               />
             </div>
 
@@ -719,7 +963,7 @@ function changeWidgetType(type: WidgetType) {
 
               <!-- ecOption: raw JSON textarea -->
               <template v-if="selectedWidget.type === 'ecOption'">
-                <p class="text-[10px] text-muted-foreground/70 mb-2">วาง ECharts option JSON</p>
+                <p class="text-[10px] text-muted-foreground/70 mb-2">{{ t('bi_paste_echart_json') }}</p>
                 <textarea
                   rows="10"
                   placeholder="{&#10;  &quot;series&quot;: [...]&#10;}"
@@ -733,7 +977,7 @@ function changeWidgetType(type: WidgetType) {
               <!-- Normal field wells -->
               <template v-else>
                 <p class="text-[10px] text-muted-foreground/70 mb-3 leading-relaxed">
-                  คลิก field well → แล้วคลิก column ซ้ายเพื่อ assign
+                  {{ t('bi_hint_click_field_well') }}
                 </p>
                 <div class="space-y-2">
                   <div
@@ -751,7 +995,7 @@ function changeWidgetType(type: WidgetType) {
                       ]"
                     >
                       <span class="text-[11px] flex-1 truncate font-mono" :class="getFieldValue(well) ? 'text-foreground' : 'text-muted-foreground/50'">
-                        {{ getFieldValue(well) || (well.multi ? 'คลิกเพื่อเลือก fields...' : 'คลิกเพื่อเลือก column...') }}
+                        {{ getFieldValue(well) || (well.multi ? t('bi_click_to_select_fields') : t('bi_click_to_select_column')) }}
                       </span>
                       <button
                         v-if="getFieldValue(well)"
@@ -768,7 +1012,7 @@ function changeWidgetType(type: WidgetType) {
 
             <!-- Selected yFields detail (stacked types) -->
             <div v-if="isStackedWidget && selectedWidget.fields.yFields?.length">
-              <p class="text-[10px] font-semibold text-muted-foreground mb-1.5">Y Series ที่เลือก</p>
+              <p class="text-[10px] font-semibold text-muted-foreground mb-1.5">{{ t('bi_selected_y_series') }}</p>
               <div class="space-y-1">
                 <div
                   v-for="col in selectedWidget.fields.yFields"
@@ -788,7 +1032,7 @@ function changeWidgetType(type: WidgetType) {
 
             <!-- Selected columns detail (table type) -->
             <div v-if="selectedWidget.type === 'table' && selectedWidget.fields.columns?.length">
-              <p class="text-[10px] font-semibold text-muted-foreground mb-1.5">Columns ที่เลือก</p>
+              <p class="text-[10px] font-semibold text-muted-foreground mb-1.5">{{ t('bi_selected_columns') }}</p>
               <div class="space-y-1">
                 <div
                   v-for="col in selectedWidget.fields.columns"
@@ -848,6 +1092,7 @@ function changeWidgetType(type: WidgetType) {
                         column: ($event.target as HTMLSelectElement).value,
                         operator: 'eq',
                         value: '',
+                        values: [],
                       })"
                       class="flex-1 text-[10px] border rounded-md px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-orange-400 min-w-0 truncate"
                     >
@@ -867,6 +1112,7 @@ function changeWidgetType(type: WidgetType) {
                     @change="updateFilterCondition(cond.id, {
                       operator: ($event.target as HTMLSelectElement).value as FilterOperator,
                       value: '',
+                      values: [],
                     })"
                     class="w-full text-[10px] border rounded-md px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-orange-400"
                   >
@@ -875,15 +1121,102 @@ function changeWidgetType(type: WidgetType) {
                     </option>
                   </select>
 
-                  <!-- Row 3: value (hidden for blank/notBlank) -->
+                  <!-- Row 3: value input / picker -->
+                  <!-- Date column: datepicker + Today/Yesterday tokens -->
+                  <template v-if="cond.operator !== 'blank' && cond.operator !== 'notBlank'
+                                  && cond.operator !== 'in' && cond.operator !== 'notIn'
+                                  && getColType(cond.column) === 'date'">
+                    <!-- token badge when a dynamic token is selected -->
+                    <div v-if="cond.value === DATE_TOKEN_TODAY || cond.value === DATE_TOKEN_YESTERDAY"
+                         class="flex items-center gap-1">
+                      <span class="inline-flex items-center gap-1 bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300
+                                   text-[10px] font-semibold px-2 py-0.5 rounded-full border border-orange-300">
+                        {{ DATE_TOKEN_LABELS[cond.value] }}
+                        <button @click.stop="updateFilterCondition(cond.id, { value: '' })"
+                                class="hover:text-destructive transition-colors"><X class="size-2.5" /></button>
+                      </span>
+                    </div>
+                    <!-- date input -->
+                    <input
+                      v-else
+                      type="date"
+                      :value="cond.value"
+                      @input="updateFilterCondition(cond.id, { value: ($event.target as HTMLInputElement).value })"
+                      class="w-full text-[10px] border rounded-md px-1.5 py-1 bg-background
+                             focus:outline-none focus:ring-1 focus:ring-orange-400 font-mono"
+                    />
+                    <!-- quick token buttons -->
+                    <div class="flex gap-1 mt-0.5">
+                      <button
+                        @click.stop="updateFilterCondition(cond.id, { value: DATE_TOKEN_TODAY })"
+                        :class="['text-[9px] px-1.5 py-0.5 rounded border font-semibold transition-colors',
+                          cond.value === DATE_TOKEN_TODAY
+                            ? 'bg-orange-500 text-white border-orange-500'
+                            : 'bg-background text-muted-foreground border-border hover:border-orange-400 hover:text-orange-500']"
+                      >{{ t('bi_today') }}</button>
+                      <button
+                        @click.stop="updateFilterCondition(cond.id, { value: DATE_TOKEN_YESTERDAY })"
+                        :class="['text-[9px] px-1.5 py-0.5 rounded border font-semibold transition-colors',
+                          cond.value === DATE_TOKEN_YESTERDAY
+                            ? 'bg-orange-500 text-white border-orange-500'
+                            : 'bg-background text-muted-foreground border-border hover:border-orange-400 hover:text-orange-500']"
+                      >{{ t('bi_yesterday') }}</button>
+                    </div>
+                  </template>
+                  <!-- Text / number input (non-date operators) -->
                   <input
-                    v-if="cond.operator !== 'blank' && cond.operator !== 'notBlank'"
+                    v-else-if="cond.operator !== 'blank' && cond.operator !== 'notBlank'
+                          && cond.operator !== 'in' && cond.operator !== 'notIn'"
                     :value="cond.value"
                     @input="updateFilterCondition(cond.id, { value: ($event.target as HTMLInputElement).value })"
-                    placeholder="ค่า..."
+                    :placeholder="t('bi_value_placeholder')"
                     :type="getColType(cond.column) === 'number' ? 'number' : 'text'"
-                    class="w-full text-[10px] border rounded-md px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-orange-400 placeholder:text-muted-foreground/40 font-mono"
+                    class="w-full text-[10px] border rounded-md px-1.5 py-1 bg-background
+                           focus:outline-none focus:ring-1 focus:ring-orange-400
+                           placeholder:text-muted-foreground/40 font-mono"
                   />
+                  <!-- in / notIn: checkbox value picker -->
+                  <template v-else-if="cond.operator === 'in' || cond.operator === 'notIn'">
+                    <!-- summary + clear -->
+                    <div class="flex items-center justify-between text-[10px] mb-1">
+                      <span :class="(cond.values ?? []).length ? 'text-orange-500 font-semibold' : 'text-muted-foreground'">
+                        {{ (cond.values ?? []).length ? t('bi_selected_count', { count: cond.values!.length }) : t('bi_not_selected') }}
+                      </span>
+                      <button
+                        v-if="(cond.values ?? []).length"
+                        @click.stop="updateFilterCondition(cond.id, { values: [] })"
+                        class="text-muted-foreground hover:text-destructive transition-colors"
+                      >{{ t('bi_clear') }}</button>
+                    </div>
+                    <!-- search within values -->
+                    <input
+                      v-model="valuePickerSearch[cond.id]"
+                      :placeholder="t('bi_search_value_placeholder')"
+                      class="w-full text-[10px] border rounded-md px-1.5 py-1 bg-background mb-1
+                             focus:outline-none focus:ring-1 focus:ring-orange-400
+                             placeholder:text-muted-foreground/40"
+                    />
+                    <!-- scrollable checkbox list -->
+                    <div class="max-h-28 overflow-y-auto border rounded-md bg-background divide-y divide-border/40">
+                      <label
+                        v-for="val in filteredPickerValues(cond.id, cond.column)"
+                        :key="val"
+                        class="flex items-center gap-2 px-2 py-1 cursor-pointer hover:bg-muted/40 transition-colors"
+                      >
+                        <input
+                          type="checkbox"
+                          :checked="(cond.values ?? []).includes(val)"
+                          @change="togglePickerValue(cond.id, val, cond.values ?? [])"
+                          class="accent-orange-500 shrink-0"
+                        />
+                        <span class="text-[10px] truncate font-mono" :title="val">{{ val }}</span>
+                      </label>
+                      <div
+                        v-if="!filteredPickerValues(cond.id, cond.column).length"
+                        class="text-[10px] text-center text-muted-foreground py-2"
+                      >{{ t('bi_no_values_found') }}</div>
+                    </div>
+                  </template>
                 </div>
               </div>
 
@@ -906,6 +1239,104 @@ function changeWidgetType(type: WidgetType) {
       </Transition>
 
     </div>
+
+    <!-- ── Save Report Dialog ────────────────────────────────────────────── -->
+    <Teleport to="body">
+      <Transition name="fade">
+        <div v-if="showRpSave" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+          @click.self="showRpSave = false">
+          <div class="bg-background rounded-xl shadow-2xl w-80 p-5 flex flex-col gap-4">
+            <div class="flex items-center justify-between">
+              <span class="font-semibold text-sm">{{ t('bi_save_report_title') }}</span>
+              <button @click="showRpSave = false" class="text-muted-foreground hover:text-foreground">
+                <X class="size-4" />
+              </button>
+            </div>
+            <div>
+              <label class="text-[10px] font-semibold text-muted-foreground mb-1 block">{{ t('bi_name') }}</label>
+              <input
+                v-model="rpSaveName"
+                :placeholder="t('bi_report_name_placeholder')"
+                class="w-full text-xs border rounded-lg px-3 py-2 bg-background
+                       focus:outline-none focus:ring-2 focus:ring-orange-500"
+                @keydown.enter="doSaveRp"
+              />
+            </div>
+            <p v-if="rpSaveMsg" class="text-xs text-center"
+               :class="rpSaveMsg.startsWith('✓') ? 'text-emerald-600' : 'text-red-500'">
+              {{ rpSaveMsg }}
+            </p>
+            <div class="flex gap-2">
+              <button @click="showRpSave = false"
+                class="flex-1 text-xs py-1.5 rounded-lg border hover:bg-accent transition-colors">
+                {{ t('cancel') }}
+              </button>
+              <button @click="doSaveRp" :disabled="rpSaving"
+                class="flex-1 text-xs py-1.5 rounded-lg bg-orange-500 hover:bg-orange-600
+                       text-white font-medium transition-colors disabled:opacity-50">
+                {{ rpSaving ? t('bi_saving') : t('save') }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
+    <!-- ── Load Report Dialog ─────────────────────────────────────────────── -->
+    <Teleport to="body">
+      <Transition name="fade">
+        <div v-if="showRpLoad" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+          @click.self="showRpLoad = false">
+          <div class="bg-background rounded-xl shadow-2xl w-[420px] flex flex-col max-h-[80vh]">
+            <div class="flex items-center justify-between px-5 py-4 border-b">
+              <span class="font-semibold text-sm">{{ t('bi_load_report_title') }}</span>
+              <button @click="showRpLoad = false" class="text-muted-foreground hover:text-foreground">
+                <X class="size-4" />
+              </button>
+            </div>
+            <div class="flex-1 overflow-y-auto p-3">
+              <div v-if="rpLoadBusy" class="flex items-center justify-center py-10 gap-2 text-muted-foreground">
+                <Loader2 class="size-4 animate-spin" />
+                <span class="text-xs">{{ t('bi_loading') }}</span>
+              </div>
+              <div v-else-if="!rpLoadList.length"
+                class="text-center py-10 text-xs text-muted-foreground">{{ t('bi_no_saved_reports') }}</div>
+              <div v-else class="flex flex-col gap-1.5">
+                <div
+                  v-for="item in rpLoadList" :key="item.id"
+                  class="flex items-center gap-2 px-3 py-2.5 rounded-lg border hover:bg-accent cursor-pointer transition-colors"
+                  @click="doLoadRp(item.id)"
+                >
+                  <div class="flex-1 min-w-0">
+                    <p class="text-xs font-semibold truncate">{{ item.name }}</p>
+                    <p class="text-[10px] text-muted-foreground">
+                      {{ item.createdBy }} ·
+                      {{ new Date(item.updatedAt ?? item.createdAt).toLocaleDateString('th-TH') }}
+                    </p>
+                  </div>
+                  <button
+                    @click.stop="doDeleteRp(item.id)"
+                    :disabled="rpDeleting === item.id"
+                    class="shrink-0 p-1 rounded hover:bg-red-100 dark:hover:bg-red-900/30
+                           text-red-500 transition-colors disabled:opacity-50"
+                    :title="t('delete')"
+                  >
+                    <Trash2 class="size-3.5" />
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div class="px-5 py-3 border-t flex justify-end">
+              <button @click="showRpLoad = false"
+                class="text-xs px-4 py-1.5 rounded-lg border hover:bg-accent transition-colors">
+                {{ t('close') }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
   </div>
 </template>
 

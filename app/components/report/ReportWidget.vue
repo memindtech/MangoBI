@@ -7,6 +7,7 @@ import type { ColDef } from 'ag-grid-community'
 import { useReportStore } from '~/stores/report'
 import type { ReportWidget, WidgetType } from '~/stores/report'
 import type { DataRow } from '~/stores/canvas'
+import { groupChartData } from '~/utils/groupChartData'
 
 ModuleRegistry.registerModules([ClientSideRowModelModule, CommunityFeaturesModule])
 
@@ -24,6 +25,7 @@ const emit = defineEmits<{
 }>()
 
 const reportStore = useReportStore()
+const { t } = useI18n()
 
 // ── Computed ──────────────────────────────────────────────────────────────────
 const xField  = computed(() => props.widget.fields.xField  ?? '')
@@ -31,7 +33,8 @@ const yField  = computed(() => props.widget.fields.yField  ?? '')
 const columns = computed(() => {
   const all = props.rows.length ? Object.keys(props.rows[0]) : []
   const sel = props.widget.fields.columns
-  return (sel?.length ? all.filter(c => sel.includes(c)) : all)
+  // Preserve click order (first come first serve) — iterate sel, not all
+  return (sel?.length ? sel.filter(c => all.includes(c)) : all)
 })
 
 // ── AG Grid (table widget) ────────────────────────────────────────────────────
@@ -94,10 +97,13 @@ const isDark    = computed(() => colorMode.value === 'dark')
 const COLORS = ['#6366f1','#f97316','#10b981','#3b82f6','#a855f7','#ef4444','#f59e0b','#06b6d4']
 
 const chartOption = computed(() => {
-  const t      = props.widget.type
-  const labels = props.rows.map(r => String(r[xField.value] ?? ''))
-  const values = props.rows.map(r => Number(r[yField.value] ?? 0))
-  const yList  = props.widget.fields.yFields?.length ? props.widget.fields.yFields : [yField.value]
+  const t     = props.widget.type
+  const yList = props.widget.fields.yFields?.length ? props.widget.fields.yFields : [yField.value]
+
+  // Group by xField, sum yField(s) — prevents duplicate x-values showing as separate bars
+  const grouped = groupChartData(props.rows, xField.value, [yField.value, ...yList])
+  const labels  = grouped.labels
+  const values  = grouped.series(yField.value)
 
   const tc = isDark.value ? '#94a3b8' : '#64748b'
   const sc = isDark.value ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)'
@@ -129,15 +135,18 @@ const chartOption = computed(() => {
     legend: { top: 0, textStyle: { fontSize: 10, color: tc } },
     xAxis: { type: 'category', data: labels, ...ab },
     yAxis: { type: 'value', max: 100, ...ab, axisLabel: { ...ab.axisLabel, formatter: '{value}%' } },
-    series: yList.map((f, i) => ({
-      type: 'bar', stack: 'total', name: f, barMaxWidth: 48,
-      emphasis: { focus: 'series' },
-      itemStyle: { color: COLORS[i % COLORS.length] },
-      data: props.rows.map(r => {
-        const tot = yList.reduce((s, yf) => s + (Number(r[yf]) || 0), 0)
-        return tot ? +((Number(r[f]) || 0) / tot * 100).toFixed(1) : 0
-      }),
-    })),
+    series: yList.map((f, i) => {
+      const seriesVals = grouped.series(f)
+      const totals = labels.map((_, li) =>
+        yList.reduce((s, yf) => s + (grouped.series(yf)[li] ?? 0), 0)
+      )
+      return {
+        type: 'bar', stack: 'total', name: f, barMaxWidth: 48,
+        emphasis: { focus: 'series' },
+        itemStyle: { color: COLORS[i % COLORS.length] },
+        data: seriesVals.map((v, li) => totals[li] ? +((v / totals[li]) * 100).toFixed(1) : 0),
+      }
+    }),
   }
 
   if (t === 'stackedHBar') return {
@@ -150,7 +159,7 @@ const chartOption = computed(() => {
     series: yList.map((f, i) => ({
       type: 'bar', stack: 'total', name: f,
       itemStyle: { color: COLORS[i % COLORS.length] },
-      data: props.rows.map(r => Number(r[f]) || 0),
+      data: grouped.series(f),
     })),
   }
 
@@ -164,7 +173,7 @@ const chartOption = computed(() => {
       type: 'line', stack: 'total', name: f, smooth: true, symbol: 'none',
       lineStyle: { width: 1.5 }, areaStyle: { opacity: 0.35 },
       itemStyle: { color: COLORS[i % COLORS.length] },
-      data: props.rows.map(r => Number(r[f]) || 0),
+      data: grouped.series(f),
     })),
   }
 
@@ -340,7 +349,7 @@ function onResizeCorner(e: MouseEvent) {
         <span
           v-if="activeFilterCount"
           class="flex items-center gap-0.5 text-[9px] px-1.5 py-0.5 rounded bg-orange-500/90 text-white font-bold shrink-0"
-          :title="`${activeFilterCount} filter กำลังใช้งาน`"
+          :title="t('bi_filters_active', { count: activeFilterCount })"
         >
           <Filter class="size-2.5" />
           {{ activeFilterCount }}
@@ -365,7 +374,7 @@ function onResizeCorner(e: MouseEvent) {
           class="h-full flex flex-col items-center justify-center gap-2 text-muted-foreground text-[11px] rounded-lg border border-dashed"
         >
           <component :is="typeIconMap[widget.type]" class="size-6 opacity-25" />
-          <span>ยังไม่มีข้อมูล</span>
+          <span>{{ t('bi_no_data') }}</span>
         </div>
 
         <!-- Charts (all ECharts-backed types) -->
@@ -379,7 +388,7 @@ function onResizeCorner(e: MouseEvent) {
         <div v-else-if="widget.type === 'table'" class="h-full flex flex-col">
           <input
             v-model="tableQuickFilter"
-            placeholder="ค้นหา..."
+            :placeholder="t('bi_search_placeholder')"
             class="text-[10px] border-b px-2 py-1 bg-transparent outline-none shrink-0
                    placeholder:text-muted-foreground/40 focus:ring-0"
             @mousedown.stop @click.stop @wheel.stop
@@ -407,7 +416,7 @@ function onResizeCorner(e: MouseEvent) {
           class="h-full flex flex-col items-center justify-center gap-1"
         >
           <span class="text-3xl font-bold tabular-nums" :class="headerColor[widget.type]">{{ kpiValue }}</span>
-          <span class="text-xs text-muted-foreground">{{ yField || 'กำหนด Field' }}</span>
+          <span class="text-xs text-muted-foreground">{{ yField || t('bi_define_field') }}</span>
         </div>
 
       </div>

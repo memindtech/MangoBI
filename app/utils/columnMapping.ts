@@ -9,6 +9,20 @@ const NUM_DATATYPES = new Set([
   'money', 'smallmoney', 'number',
 ])
 
+const DATE_DATATYPES = new Set([
+  'date', 'datetime', 'datetime2', 'smalldatetime',
+  'timestamp', 'datetimeoffset', 'time',
+])
+
+/** Returns true when the column is a date/datetime type.
+ *  First checks DataType from column_mapping_json; if unavailable,
+ *  falls back to inspecting the sample value for an ISO date pattern. */
+export function isDateMeta(meta: ColMeta | undefined, fallbackValue: unknown): boolean {
+  if (meta?.dataType && DATE_DATATYPES.has(meta.dataType.toLowerCase())) return true
+  if (typeof fallbackValue === 'string') return /^\d{4}-\d{2}-\d{2}/.test(fallbackValue)
+  return false
+}
+
 export function parseColumnMapping(raw: any): Record<string, ColMeta> {
   if (!raw) return {}
   try {

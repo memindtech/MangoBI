@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { ChartType, DataRow } from '~/stores/canvas'
 import EChart from '~/components/report/EChart.vue'
+import { groupChartData } from '~/utils/groupChartData'
 
 const props = defineProps<{
   rows:          DataRow[]
@@ -27,9 +28,14 @@ const ab   = computed(() => ({
 const tip  = { trigger: 'axis' as const, textStyle: { fontSize: 10 }, confine: true }
 const grid = { top: 20, right: 8, bottom: 28, left: 8, containLabel: true }
 
-const labels    = computed(() => props.rows.map(r => String(r[props.xField] ?? '')))
-const values    = computed(() => props.rows.map(r => Number(r[props.yField]  ?? 0)))
-const yList     = computed(() => props.yFields?.length ? props.yFields : [props.yField])
+const yList = computed(() => props.yFields?.length ? props.yFields : [props.yField])
+
+// Group rows by xField, sum yField(s) — fixes duplicate x-value issue
+const grouped = computed(() =>
+  groupChartData(props.rows, props.xField, [props.yField, ...(props.yFields ?? [])]),
+)
+const labels = computed(() => grouped.value.labels)
+const values = computed(() => grouped.value.series(props.yField))
 
 const option = computed<Record<string, any>>(() => {
   const t = props.chartType
@@ -57,16 +63,18 @@ const option = computed<Record<string, any>>(() => {
     xAxis: { type: 'category', data: labels.value, ...ab.value },
     yAxis: { type: 'value', max: 100, ...ab.value,
       axisLabel: { ...ab.value.axisLabel, formatter: '{value}%' } },
-    series: yList.value.map((f, i) => ({
-      type: 'bar', stack: 'total', name: f,
-      emphasis: { focus: 'series' },
-      barMaxWidth: 48,
-      itemStyle: { color: COLORS[i % COLORS.length] },
-      data: props.rows.map(r => {
-        const tot = yList.value.reduce((s, yf) => s + (Number(r[yf]) || 0), 0)
-        return tot ? +((Number(r[f]) || 0) / tot * 100).toFixed(1) : 0
-      }),
-    })),
+    series: yList.value.map((f, i) => {
+      const seriesVals = grouped.value.series(f)
+      const totals = labels.value.map((_, li) =>
+        yList.value.reduce((s, yf) => s + (grouped.value.series(yf)[li] ?? 0), 0)
+      )
+      return {
+        type: 'bar', stack: 'total', name: f,
+        emphasis: { focus: 'series' }, barMaxWidth: 48,
+        itemStyle: { color: COLORS[i % COLORS.length] },
+        data: seriesVals.map((v, li) => totals[li] ? +((v / totals[li]) * 100).toFixed(1) : 0),
+      }
+    }),
   }
 
   // ── Stacked Horizontal Bar ────────────────────────────────────────────────
@@ -80,7 +88,7 @@ const option = computed<Record<string, any>>(() => {
     series: yList.value.map((f, i) => ({
       type: 'bar', stack: 'total', name: f,
       itemStyle: { color: COLORS[i % COLORS.length] },
-      data: props.rows.map(r => Number(r[f]) || 0),
+      data: grouped.value.series(f),
     })),
   }
 
@@ -94,10 +102,9 @@ const option = computed<Record<string, any>>(() => {
     series: yList.value.map((f, i) => ({
       type: 'line', stack: 'total', name: f,
       smooth: true, symbol: 'none',
-      lineStyle: { width: 1.5 },
-      areaStyle: { opacity: 0.35 },
+      lineStyle: { width: 1.5 }, areaStyle: { opacity: 0.35 },
       itemStyle: { color: COLORS[i % COLORS.length] },
-      data: props.rows.map(r => Number(r[f]) || 0),
+      data: grouped.value.series(f),
     })),
   }
 

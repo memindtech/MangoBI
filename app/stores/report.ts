@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import type { DataRow } from './canvas'
 import type { ColMeta } from '~/utils/columnMapping'
-import { metaToColType } from '~/utils/columnMapping'
+import { metaToColType, isDateMeta } from '~/utils/columnMapping'
 
 export type WidgetType =
   | 'bar' | 'line' | 'pie' | 'table' | 'kpi'
@@ -9,10 +9,11 @@ export type WidgetType =
   | 'halfDoughnut' | 'scatter' | 'tree' | 'ecOption'
 
 export interface ReportDataset {
-  id:           string
-  name:         string
-  rows:         DataRow[]
-  columnLabels?: Record<string, ColMeta>
+  id:             string
+  name:           string
+  rows:           DataRow[]
+  columnLabels?:  Record<string, ColMeta>
+  columnSources?: Record<string, string>   // finalColName → source table name
 }
 
 export interface WidgetFields {
@@ -29,12 +30,14 @@ export type FilterOperator =
   | 'gt' | 'gte' | 'lt' | 'lte'
   | 'contains' | 'notContains'
   | 'blank' | 'notBlank'
+  | 'in' | 'notIn'
 
 export interface FilterCondition {
   id:       string
   column:   string
   operator: FilterOperator
-  value:    string
+  value:    string       // used by eq/neq/gt/gte/lt/lte/contains/notContains
+  values?:  string[]    // used by in/notIn only
 }
 
 export interface FilterConfig {
@@ -67,7 +70,7 @@ export const useReportStore = defineStore('report', () => {
     widgets.value  = widgets.value.filter(w => w.datasetId !== id)
   }
 
-  function columnsOf(datasetId: string): { name: string; label: string; type: 'number' | 'string' }[] {
+  function columnsOf(datasetId: string): { name: string; label: string; type: 'number' | 'string' | 'date' }[] {
     const ds = datasets.value.find(d => d.id === datasetId)
     if (!ds?.rows.length) return []
     const first = ds.rows[0]!
@@ -76,7 +79,7 @@ export const useReportStore = defineStore('report', () => {
       return {
         name,
         label: meta?.label || name,
-        type:  metaToColType(meta, first[name]),
+        type:  isDateMeta(meta, first[name]) ? 'date' : metaToColType(meta, first[name]),
       }
     })
   }
