@@ -45,6 +45,8 @@ export interface FilterConfig {
   conditions: FilterCondition[]
 }
 
+export type CellClickMode = 'none' | 'modal'
+
 export interface ReportWidget {
   id:            string
   type:          WidgetType
@@ -53,6 +55,7 @@ export interface ReportWidget {
   fields:        WidgetFields
   filters?:      FilterConfig
   columnWidths?: Record<string, number>
+  cellClickMode?: CellClickMode
   x: number; y: number
   w: number; h: number
 }

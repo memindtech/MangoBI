@@ -4,7 +4,7 @@ import {
   Database, Download, Loader2, AlertCircle,
   LayoutDashboard, ArrowLeft, Plus, X, Trash2,
   ChevronDown, Hash as HashIcon, Type as TypeIcon, Filter,
-  Layers, Activity, Network, Code2,
+  Layers, Activity, Network, Code2, MousePointer2,
 } from 'lucide-vue-next'
 import ReportWidget from '~/components/report/ReportWidget.vue'
 import { MOCK_DATA, DATASET_META, type DatasetKey } from '~/stores/canvas'
@@ -12,6 +12,11 @@ import type { WidgetType, WidgetFields, FilterCondition, FilterOperator, ReportW
 import type { DataRow } from '~/stores/canvas'
 import { parseColumnMapping } from '~/utils/columnMapping'
 import { resolveDynamicValue, DATE_TOKEN_TODAY, DATE_TOKEN_YESTERDAY, DATE_TOKEN_LABELS } from '~/utils/transformData'
+import { AgGridVue } from 'ag-grid-vue3'
+import { ClientSideRowModelModule, CommunityFeaturesModule, ModuleRegistry } from 'ag-grid-community'
+import type { ColDef } from 'ag-grid-community'
+
+ModuleRegistry.registerModules([ClientSideRowModelModule, CommunityFeaturesModule])
 
 // ─── Page meta ────────────────────────────────────────────────────────────────
 definePageMeta({ layout: false, auth: true })
@@ -440,6 +445,76 @@ function updateFilterCondition(id: string, patch: Partial<FilterCondition>) {
     conditions: filters.conditions.map(c => c.id === id ? { ...c, ...patch } : c),
   })
 }
+
+// ─── Cell Click Modal ─────────────────────────────────────────────────────────
+interface CellClickContext {
+  widgetTitle: string
+  datasetId:   string
+  rowData:     Record<string, any>
+  colField:    string
+  cellValue:   any
+}
+
+const cellClickCtx  = ref<CellClickContext | null>(null)
+const cellClickTab  = ref<'detail' | 'related'>('detail')
+const cellModalAfterMounted = ref(false)
+
+watch(cellClickTab, (tab) => { if (tab === 'related') cellModalAfterMounted.value = true })
+watch(cellClickCtx, (v) => { if (v) cellModalAfterMounted.value = false })
+
+function onCellClick(
+  widget: RWidget,
+  payload: { rowData: Record<string, any>; colField: string; cellValue: any },
+) {
+  cellClickCtx.value = {
+    widgetTitle: widget.title || widget.type,
+    datasetId:   widget.datasetId,
+    rowData:     payload.rowData,
+    colField:    payload.colField,
+    cellValue:   payload.cellValue,
+  }
+  cellClickTab.value = 'detail'
+}
+
+function closeCellModal() { cellClickCtx.value = null }
+
+const cellDetailEntries = computed(() => {
+  if (!cellClickCtx.value) return []
+  return Object.entries(cellClickCtx.value.rowData).map(([key, value]) => ({
+    key,
+    label: store.labelOf(cellClickCtx.value!.datasetId, key),
+    value,
+    isClicked: key === cellClickCtx.value!.colField,
+  }))
+})
+
+const cellRelatedRows = computed(() => {
+  if (!cellClickCtx.value) return []
+  const { datasetId, colField, cellValue } = cellClickCtx.value
+  const strVal = String(cellValue ?? '')
+  return store.rowsOf(datasetId).filter(r => String(r[colField] ?? '') === strVal)
+})
+
+const cellRelatedColDefs = computed<ColDef[]>(() => {
+  if (!cellClickCtx.value || !cellRelatedRows.value.length) return []
+  const { datasetId, rowData } = cellClickCtx.value
+  return Object.keys(rowData).map(col => ({
+    field:      col,
+    headerName: store.labelOf(datasetId, col),
+    sortable: true, resizable: true, filter: false, minWidth: 60,
+    valueFormatter: (p: any) =>
+      p.value === null || p.value === undefined ? '—' : String(p.value),
+  }))
+})
+
+function onCellModalFirstData(event: any) {
+  event.api.autoSizeAllColumns()
+}
+
+const colorModeCellModal = useColorMode()
+const cellModalTheme = computed(() =>
+  colorModeCellModal.value === 'dark' ? 'ag-theme-quartz-dark' : 'ag-theme-quartz',
+)
 
 // ─── Canvas click ─────────────────────────────────────────────────────────────
 function onCanvasClick() {
@@ -889,6 +964,7 @@ async function doDeleteRp(id: string) {
             @delete="store.removeWidget(widget.id); if (selectedWidgetId === widget.id) selectedWidgetId = null"
             @move="(x, y) => store.updateWidget(widget.id, { x, y })"
             @resize="(w, h) => store.updateWidget(widget.id, { w, h })"
+            @cell-click="(p) => onCellClick(widget, p)"
           />
         </div>
       </div>
@@ -1234,6 +1310,37 @@ async function doDeleteRp(id: string) {
 
             </div>
 
+            <!-- ── Cell Click (table only) ──────────────────────────────── -->
+            <div v-if="selectedWidget?.type === 'table'" class="border-t pt-3">
+              <div class="flex items-center gap-1.5 mb-2">
+                <MousePointer2 class="size-3 text-muted-foreground" />
+                <p class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Cell Click</p>
+              </div>
+              <div class="flex gap-1.5">
+                <button
+                  @click.stop="store.updateWidget(selectedWidget.id, { cellClickMode: 'none' })"
+                  :class="[
+                    'flex-1 text-[10px] py-1.5 rounded-lg border transition-colors font-medium',
+                    !selectedWidget.cellClickMode || selectedWidget.cellClickMode === 'none'
+                      ? 'bg-muted border-muted-foreground/40 text-foreground font-semibold'
+                      : 'border-border text-muted-foreground hover:bg-muted/50',
+                  ]"
+                >None</button>
+                <button
+                  @click.stop="store.updateWidget(selectedWidget.id, { cellClickMode: 'modal' })"
+                  :class="[
+                    'flex-1 text-[10px] py-1.5 rounded-lg border transition-colors font-medium',
+                    selectedWidget.cellClickMode === 'modal'
+                      ? 'bg-indigo-500 border-indigo-500 text-white font-semibold'
+                      : 'border-border text-muted-foreground hover:bg-muted/50',
+                  ]"
+                >Modal</button>
+              </div>
+              <p v-if="selectedWidget.cellClickMode === 'modal'" class="mt-1.5 text-[9px] text-indigo-500 dark:text-indigo-400">
+                Click any cell to open detail modal
+              </p>
+            </div>
+
           </div>
         </aside>
       </Transition>
@@ -1276,6 +1383,101 @@ async function doDeleteRp(id: string) {
                        text-white font-medium transition-colors disabled:opacity-50">
                 {{ rpSaving ? t('bi_saving') : t('save') }}
               </button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
+    <!-- ── Cell Click Detail Modal ───────────────────────────────────────── -->
+    <Teleport to="body">
+      <Transition name="fade">
+        <div
+          v-if="cellClickCtx"
+          class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+          @click.self="closeCellModal"
+        >
+          <div
+            class="bg-background rounded-2xl shadow-2xl flex flex-col overflow-hidden"
+            style="width: min(90vw, 860px); height: min(85vh, 640px);"
+          >
+            <!-- Header -->
+            <div class="flex items-center gap-2.5 px-5 py-3 border-b shrink-0">
+              <MousePointer2 class="size-4 text-indigo-500" />
+              <div class="flex items-center gap-1.5 min-w-0 flex-1">
+                <span class="text-xs text-muted-foreground truncate">{{ cellClickCtx.widgetTitle }}</span>
+                <span class="text-muted-foreground/40">›</span>
+                <span class="text-xs font-semibold truncate">
+                  {{ store.labelOf(cellClickCtx.datasetId, cellClickCtx.colField) }}
+                </span>
+                <span class="text-muted-foreground/40">:</span>
+                <span class="text-xs font-mono bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-300 px-2 py-0.5 rounded truncate max-w-[200px]">
+                  {{ cellClickCtx.cellValue ?? '—' }}
+                </span>
+              </div>
+              <button @click="closeCellModal" class="text-muted-foreground hover:text-foreground shrink-0">
+                <X class="size-4" />
+              </button>
+            </div>
+
+            <!-- Tabs -->
+            <div class="flex border-b shrink-0">
+              <button
+                v-for="tab in [{ key: 'detail', label: 'Row Detail' }, { key: 'related', label: `Related Rows (${cellRelatedRows.length})` }]"
+                :key="tab.key"
+                @click="cellClickTab = tab.key as any"
+                :class="[
+                  'px-5 py-2.5 text-xs font-semibold border-b-2 transition-colors',
+                  cellClickTab === tab.key
+                    ? 'border-indigo-500 text-indigo-600 dark:text-indigo-400'
+                    : 'border-transparent text-muted-foreground hover:text-foreground',
+                ]"
+              >{{ tab.label }}</button>
+            </div>
+
+            <!-- Tab: Row Detail -->
+            <div v-if="cellClickTab === 'detail'" class="flex-1 overflow-y-auto p-4">
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div
+                  v-for="entry in cellDetailEntries"
+                  :key="entry.key"
+                  :class="[
+                    'rounded-xl border px-3 py-2.5 flex flex-col gap-0.5 transition-colors',
+                    entry.isClicked
+                      ? 'border-indigo-400 bg-indigo-50 dark:bg-indigo-950/40'
+                      : 'border-border bg-muted/20',
+                  ]"
+                >
+                  <span
+                    class="text-[10px] font-semibold uppercase tracking-wide"
+                    :class="entry.isClicked ? 'text-indigo-500' : 'text-muted-foreground'"
+                  >{{ entry.label }}</span>
+                  <span
+                    class="text-sm font-medium break-all"
+                    :class="entry.isClicked ? 'text-indigo-700 dark:text-indigo-300' : 'text-foreground'"
+                  >{{ entry.value ?? '—' }}</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Tab: Related Rows -->
+            <div v-else-if="cellClickTab === 'related'" class="flex-1 min-h-0 flex flex-col">
+              <div v-if="!cellRelatedRows.length"
+                class="flex-1 flex items-center justify-center text-sm text-muted-foreground">
+                No related rows found
+              </div>
+              <AgGridVue
+                v-else-if="cellModalAfterMounted"
+                :class="[cellModalTheme, 'flex-1 min-h-0 w-full']"
+                :rowData="cellRelatedRows"
+                :columnDefs="cellRelatedColDefs"
+                :rowHeight="28"
+                :headerHeight="32"
+                :suppressMovableColumns="true"
+                :suppressCellFocus="true"
+                :enableCellTextSelection="true"
+                @first-data-rendered="onCellModalFirstData"
+              />
             </div>
           </div>
         </div>

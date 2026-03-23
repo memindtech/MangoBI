@@ -18,10 +18,11 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  (e: 'select'):                     void
-  (e: 'delete'):                     void
-  (e: 'move',   x: number, y: number): void
-  (e: 'resize', w: number, h: number): void
+  (e: 'select'):                       void
+  (e: 'delete'):                       void
+  (e: 'move',       x: number, y: number): void
+  (e: 'resize',     w: number, h: number): void
+  (e: 'cell-click', payload: { rowData: Record<string, any>; colField: string; cellValue: any }): void
 }>()
 
 const reportStore = useReportStore()
@@ -40,6 +41,8 @@ const columns = computed(() => {
 // ── AG Grid (table widget) ────────────────────────────────────────────────────
 const tableQuickFilter = ref('')
 
+const isCellClickable = computed(() => props.widget.cellClickMode === 'modal')
+
 const tableColDefs = computed<ColDef[]>(() =>
   columns.value.map(col => {
     const isNum   = props.rows.length > 0 && typeof props.rows[0][col] === 'number'
@@ -52,7 +55,10 @@ const tableColDefs = computed<ColDef[]>(() =>
       filter:     false,
       minWidth:   72,
       ...(savedW ? { width: savedW } : { flex: 1 }),
-      cellStyle: isNum ? { textAlign: 'right', fontFamily: 'monospace' } : {},
+      cellStyle: {
+        ...(isNum ? { textAlign: 'right', fontFamily: 'monospace' } : {}),
+        ...(isCellClickable.value ? { cursor: 'pointer' } : {}),
+      },
       valueFormatter: (p: any) => {
         if (p.value === null || p.value === undefined || p.value === '') return ''
         return isNum ? Number(p.value).toLocaleString() : String(p.value)
@@ -60,6 +66,15 @@ const tableColDefs = computed<ColDef[]>(() =>
     }
   })
 )
+
+function onCellClicked(event: any) {
+  if (!isCellClickable.value) return
+  emit('cell-click', {
+    rowData:   event.data,
+    colField:  event.colDef.field as string,
+    cellValue: event.value,
+  })
+}
 
 function onColumnResized(event: any) {
   if (!event.finished || !event.columns?.length) return
@@ -403,7 +418,8 @@ function onResizeCorner(e: MouseEvent) {
             :headerHeight="30"
             :suppressMovableColumns="true"
             :suppressCellFocus="true"
-            :enableCellTextSelection="true"
+            :enableCellTextSelection="!isCellClickable"
+            @cell-clicked="onCellClicked"
             @column-resized="onColumnResized"
             @wheel.stop
             @click.stop
