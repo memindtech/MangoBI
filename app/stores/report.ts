@@ -2,6 +2,8 @@ import { defineStore } from 'pinia'
 import type { DataRow } from './canvas'
 import type { ColMeta } from '~/utils/columnMapping'
 import { metaToColType, isDateMeta } from '~/utils/columnMapping'
+import type { NumericFormat } from '~/utils/formatValue'
+export type { NumericFormat }
 
 export type WidgetType =
   | 'bar' | 'line' | 'pie' | 'table' | 'kpi'
@@ -14,6 +16,7 @@ export interface ReportDataset {
   rows:           DataRow[]
   columnLabels?:  Record<string, ColMeta>
   columnSources?: Record<string, string>   // finalColName → source table name
+  numericFormat?: NumericFormat            // applies to all numeric columns
 }
 
 export interface WidgetFields {
@@ -48,14 +51,15 @@ export interface FilterConfig {
 export type CellClickMode = 'none' | 'modal'
 
 export interface ReportWidget {
-  id:            string
-  type:          WidgetType
-  datasetId:     string
-  title:         string
-  fields:        WidgetFields
-  filters?:      FilterConfig
-  columnWidths?: Record<string, number>
+  id:             string
+  type:           WidgetType
+  datasetId:      string
+  title:          string
+  fields:         WidgetFields
+  filters?:       FilterConfig
+  columnWidths?:  Record<string, number>
   cellClickMode?: CellClickMode
+  xAxisRotate?:   number   // x-axis label rotation in degrees (0 = horizontal)
   x: number; y: number
   w: number; h: number
 }
@@ -65,7 +69,7 @@ export const useReportStore = defineStore('report', () => {
   const widgets  = ref<ReportWidget[]>([])
 
   function addDataset(ds: ReportDataset) {
-    if (!datasets.value.find(d => d.id === ds.id)) datasets.value.push(ds)
+    if (!datasets.value.some(d => d.id === ds.id)) datasets.value.push(ds)
   }
 
   function removeDataset(id: string) {
@@ -93,6 +97,10 @@ export const useReportStore = defineStore('report', () => {
 
   function rowsOf(datasetId: string): DataRow[] {
     return datasets.value.find(d => d.id === datasetId)?.rows ?? []
+  }
+
+  function numericFormatOf(datasetId: string): NumericFormat {
+    return datasets.value.find(d => d.id === datasetId)?.numericFormat ?? {}
   }
 
   function addWidget(w: ReportWidget) {
@@ -125,7 +133,7 @@ export const useReportStore = defineStore('report', () => {
 
   return {
     datasets, widgets,
-    addDataset, removeDataset, columnsOf, rowsOf, labelOf,
+    addDataset, removeDataset, columnsOf, rowsOf, labelOf, numericFormatOf,
     addWidget, updateWidget, updateFields, updateFilters, removeWidget, resetAll,
   }
 })

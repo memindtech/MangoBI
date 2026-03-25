@@ -8,6 +8,7 @@ import { useReportStore } from '~/stores/report'
 import type { ReportWidget, WidgetType } from '~/stores/report'
 import type { DataRow } from '~/stores/canvas'
 import { groupChartData } from '~/utils/groupChartData'
+import { formatDateValue, formatNumericValue } from '~/utils/formatValue'
 
 ModuleRegistry.registerModules([ClientSideRowModelModule, CommunityFeaturesModule])
 
@@ -43,10 +44,20 @@ const tableQuickFilter = ref('')
 
 const isCellClickable = computed(() => props.widget.cellClickMode === 'modal')
 
+const datasetFmt   = computed(() => reportStore.numericFormatOf(props.widget.datasetId))
+const datasetCols  = computed(() => reportStore.columnsOf(props.widget.datasetId))
+
 const tableColDefs = computed<ColDef[]>(() =>
   columns.value.map(col => {
-    const isNum   = props.rows.length > 0 && typeof props.rows[0][col] === 'number'
+    const colMeta = datasetCols.value.find(c => c.name === col)
+    const isNum   = colMeta?.type === 'number'
+    const isDate  = colMeta?.type === 'date' || (
+      props.rows.length > 0 &&
+      typeof props.rows[0][col] === 'string' &&
+      /^\d{4}-\d{2}-\d{2}/.test(String(props.rows[0][col] ?? ''))
+    )
     const savedW  = props.widget.columnWidths?.[col]
+    const fmt     = datasetFmt.value
     return {
       field:      col,
       headerName: reportStore.labelOf(props.widget.datasetId, col),
@@ -61,7 +72,12 @@ const tableColDefs = computed<ColDef[]>(() =>
       },
       valueFormatter: (p: any) => {
         if (p.value === null || p.value === undefined || p.value === '') return ''
-        return isNum ? Number(p.value).toLocaleString() : String(p.value)
+        if (isDate && fmt.datePattern)
+          return formatDateValue(p.value, fmt.datePattern, fmt.dateEra ?? 'CE')
+        const isExcluded = fmt.excludeDecimalCols?.includes(col) ?? false
+        if (isNum && !isExcluded && (fmt.comma || fmt.decimals !== undefined))
+          return formatNumericValue(p.value, fmt)
+        return String(p.value)
       },
     }
   })
@@ -76,9 +92,27 @@ function onCellClicked(event: any) {
   })
 }
 
+// ── Chart click → find matching row → re-use same cell-click modal ────────────
+function onChartClick(params: { name: string; value: any; seriesName: string; dataIndex: number }) {
+  const x = xField.value
+  // scatter: value is [x, y] — match on xField numeric value
+  if (props.widget.type === 'scatter') {
+    const xVal = Array.isArray(params.value) ? params.value[0] : params.value
+    const row  = props.rows.find(r => Number(r[x]) === Number(xVal))
+    if (!row || !x) return
+    emit('cell-click', { rowData: row, colField: x, cellValue: xVal })
+    return
+  }
+  // all category charts: params.name = xField label
+  if (!x || !params.name) return
+  const row = props.rows.find(r => String(r[x] ?? '') === params.name)
+  if (!row) return
+  emit('cell-click', { rowData: row, colField: x, cellValue: params.name })
+}
+
 function onColumnResized(event: any) {
   if (!event.finished || !event.columns?.length) return
-  const widths: Record<string, number> = { ...(props.widget.columnWidths ?? {}) }
+  const widths: Record<string, number> = { ...props.widget.columnWidths }
   for (const col of event.columns) {
     const field = col.getColDef().field
     if (field) widths[field] = col.getActualWidth()
@@ -120,16 +154,24 @@ const chartOption = computed(() => {
   const labels  = grouped.labels
   const values  = grouped.series(yField.value)
 
-  const tc = isDark.value ? '#94a3b8' : '#64748b'
-  const sc = isDark.value ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)'
+  const tc     = isDark.value ? '#94a3b8' : '#64748b'
+  const sc     = isDark.value ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)'
+  const rotate = props.widget.xAxisRotate ?? 0
   const ab = {
     axisLine:  { lineStyle: { color: sc } },
     axisTick:  { show: false },
     axisLabel: { fontSize: 10, color: tc },
     splitLine: { lineStyle: { color: sc } },
   }
+  // x-axis with rotation applied
+  const abX = {
+    ...ab,
+    axisLabel: { ...ab.axisLabel, rotate },
+  }
   const tip  = { trigger: 'axis' as const, textStyle: { fontSize: 11 }, confine: true }
-  const grid = { top: 20, right: 8, bottom: 28, left: 8, containLabel: true }
+  // add bottom padding when labels are rotated so they don't get clipped
+  const bottomPad = rotate === 0 ? 28 : Math.min(80, Math.abs(rotate))
+  const grid = { top: 20, right: 8, bottom: bottomPad, left: 8, containLabel: true }
 
   if (t === 'ecOption') {
     const json = props.widget.fields.ecOptionJson?.trim()
@@ -139,7 +181,7 @@ const chartOption = computed(() => {
 
   if (t === 'bar') return {
     color: COLORS, grid, tooltip: tip,
-    xAxis: { type: 'category', data: labels, ...ab },
+    xAxis: { type: 'category', data: labels, ...abX },
     yAxis: { type: 'value', ...ab },
     series: [{ type: 'bar', data: values, barMaxWidth: 48, itemStyle: { borderRadius: [3, 3, 0, 0] } }],
   }
@@ -148,7 +190,7 @@ const chartOption = computed(() => {
     color: COLORS, grid,
     tooltip: { ...tip, axisPointer: { type: 'shadow' } },
     legend: { top: 0, textStyle: { fontSize: 10, color: tc } },
-    xAxis: { type: 'category', data: labels, ...ab },
+    xAxis: { type: 'category', data: labels, ...abX },
     yAxis: { type: 'value', max: 100, ...ab, axisLabel: { ...ab.axisLabel, formatter: '{value}%' } },
     series: yList.map((f, i) => {
       const seriesVals = grouped.series(f)
@@ -182,7 +224,7 @@ const chartOption = computed(() => {
     color: COLORS, grid,
     tooltip: tip,
     legend: { top: 0, textStyle: { fontSize: 10, color: tc } },
-    xAxis: { type: 'category', data: labels, boundaryGap: false, ...ab },
+    xAxis: { type: 'category', data: labels, boundaryGap: false, ...abX },
     yAxis: { type: 'value', ...ab },
     series: yList.map((f, i) => ({
       type: 'line', stack: 'total', name: f, smooth: true, symbol: 'none',
@@ -194,7 +236,7 @@ const chartOption = computed(() => {
 
   if (t === 'line') return {
     color: COLORS, grid, tooltip: tip,
-    xAxis: { type: 'category', data: labels, boundaryGap: false, ...ab },
+    xAxis: { type: 'category', data: labels, boundaryGap: false, ...abX },
     yAxis: { type: 'value', ...ab },
     series: [{ type: 'line', data: values, smooth: true,
       symbol: 'circle', symbolSize: 5, lineStyle: { width: 2 }, areaStyle: { opacity: 0.12 } }],
@@ -396,6 +438,7 @@ function onResizeCorner(e: MouseEvent) {
         <EChart
           v-else-if="widget.type !== 'table' && widget.type !== 'kpi'"
           :option="chartOption"
+          @chart-click="onChartClick"
           @wheel.stop
         />
 

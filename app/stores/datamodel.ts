@@ -3,11 +3,14 @@ import type { DataRow } from './canvas'
 import type { ColMeta } from '~/utils/columnMapping'
 import { metaToColType, isDateMeta } from '~/utils/columnMapping'
 import type { TransformConfig, TransformFilter } from '~/utils/transformData'
+import type { NumericFormat } from '~/utils/formatValue'
+
+export type { NumericFormat }
 
 export interface ModelTable {
-  id:           string
-  name:         string
-  rows:         DataRow[]
+  id:            string
+  name:          string
+  rows:          DataRow[]
   columnLabels?: Record<string, ColMeta>   // ColumnName → { label, dataType }
 }
 
@@ -23,14 +26,36 @@ export interface ModelRelation {
   cardinality: Cardinality
 }
 
+export interface CanvasNode { id: string; position: { x: number; y: number } }
+export interface CanvasEdge { id: string; source: string; target: string; [k: string]: any }
+
 export const useDataModelStore = defineStore('datamodel', () => {
-  const tables      = ref<ModelTable[]>([])
-  const relations   = ref<Record<string, ModelRelation>>({})
-  const transforms  = ref<Record<string, TransformConfig>>({})
-  const nodeFilters = ref<Record<string, TransformFilter[]>>({})
+  const tables         = ref<ModelTable[]>([])
+  const relations      = ref<Record<string, ModelRelation>>({})
+  const transforms     = ref<Record<string, TransformConfig>>({})
+  const nodeFilters    = ref<Record<string, TransformFilter[]>>({})
+  const numericFormats = ref<Record<string, NumericFormat>>({})   // keyed by compKey
+  const canvasNodes    = ref<CanvasNode[]>([])
+  const canvasEdges    = ref<CanvasEdge[]>([])
+  const canvasSavedId  = ref<string | null>(null)
+  const canvasSaveName = ref('')
+
+  function saveCanvas(ns: CanvasNode[], es: CanvasEdge[], savedId?: string | null, saveName?: string) {
+    canvasNodes.value  = ns
+    canvasEdges.value  = es
+    if (savedId  !== undefined) canvasSavedId.value  = savedId
+    if (saveName !== undefined) canvasSaveName.value = saveName
+  }
+
+  function clearCanvas() {
+    canvasNodes.value  = []
+    canvasEdges.value  = []
+    canvasSavedId.value  = null
+    canvasSaveName.value = ''
+  }
 
   function addTable(table: ModelTable) {
-    if (!tables.value.find(t => t.id === table.id)) {
+    if (!tables.value.some(t => t.id === table.id)) {
       tables.value.push(table)
     }
   }
@@ -42,6 +67,7 @@ export const useDataModelStore = defineStore('datamodel', () => {
       if (r && (r.fromTable === id || r.toTable === id)) delete relations.value[key]
     }
     delete nodeFilters.value[id]
+    delete numericFormats.value[id]
   }
 
   function getTable(id: string) {
@@ -94,11 +120,22 @@ export const useDataModelStore = defineStore('datamodel', () => {
     delete nodeFilters.value[tableId]
   }
 
+  function setNumericFormat(compKey: string, fmt: NumericFormat) {
+    numericFormats.value[compKey] = { ...numericFormats.value[compKey], ...fmt }
+  }
+
+  function getNumericFormat(compKey: string): NumericFormat {
+    return numericFormats.value[compKey] ?? {}
+  }
+
   return {
-    tables, relations, transforms, nodeFilters,
+    tables, relations, transforms, nodeFilters, numericFormats,
+    canvasNodes, canvasEdges, canvasSavedId, canvasSaveName,
     addTable, removeTable, getTable, columnsOf,
     setRelation, removeRelation,
     setTransform, getTransform, removeTransform,
     setNodeFilters, getNodeFilters, removeNodeFilters,
+    setNumericFormat, getNumericFormat,
+    saveCanvas, clearCanvas,
   }
 })

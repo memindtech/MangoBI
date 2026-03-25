@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import {
-  LayoutDashboard, BarChart2, TrendingUp, FileText, Settings,
-  Sun, Moon, LogOut, ChevronUp, Languages, GitMerge, Share2,
+  BarChart2, Share2,
+  Sun, Moon, LogOut, ChevronUp, Languages,
+  LayoutDashboard, Send, Code2,
 } from 'lucide-vue-next'
 import {
   Sidebar, SidebarContent, SidebarFooter, SidebarGroup,
@@ -30,16 +31,12 @@ const userInitial = computed(() => userName.value?.charAt(0)?.toUpperCase() || '
 const userRole = computed(() => user.value?.position || user.value?.role || '')
 
 // รายการ Nav
-const navItems = computed(() => [
-  { icon: LayoutDashboard, label: t('nav_dashboard'), path: '/' },
-  { icon: BarChart2,       label: t('nav_reports'),   path: '/reports' },
-  { icon: TrendingUp,      label: t('nav_analytics'), path: '/analytics' },
-  { icon: GitMerge,        label: 'BI Canvas',         path: '/canvas'     },
-  { icon: Share2,          label: 'Data Model',        path: '/datamodel'  },
-  { icon: LayoutDashboard, label: 'Report Builder',    path: '/report'     },
-  { icon: FileText,        label: t('nav_documents'), path: '/documents' },
-  { icon: Settings,        label: t('nav_settings'),  path: '/settings' },
-])
+const navItems = [
+  { icon: Share2,          label: 'Data Model',      path: '/datamodel'    },
+  { icon: LayoutDashboard, label: 'Report Builder',  path: '/report'       },
+  { icon: Send,            label: 'Send Report',     path: '/send-report'  },
+  { icon: Code2,           label: 'SQL Builder',     path: '/sql-builder'  },
+]
 
 // ตัวเลือกภาษา
 const languages = [

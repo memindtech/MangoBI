@@ -1,13 +1,13 @@
 <script setup lang="ts">
-import { markRaw } from 'vue'
+import { markRaw, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { VueFlow, useVueFlow, type Node, type Edge, type Connection } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls }   from '@vue-flow/controls'
 import '@vue-flow/controls/dist/style.css'
 import {
   Database, Download, Loader2, AlertCircle, Bug,
-  GitMerge, ArrowLeft, Trash2, Link2, X, Table2, ArrowRight,
-  Shuffle, Plus, ChevronDown, Layers,
+  GitMerge, Home, Trash2, Link2, X, Table2, ArrowRight,
+  Shuffle, Plus, ChevronDown, Layers, RotateCcw,
 } from 'lucide-vue-next'
 import {
   applyTransform, componentKey,
@@ -22,6 +22,7 @@ import { AgGridVue } from 'ag-grid-vue3'
 import { ClientSideRowModelModule, CommunityFeaturesModule, ModuleRegistry } from 'ag-grid-community'
 import type { ColDef } from 'ag-grid-community'
 import { parseColumnMapping, isDateMeta } from '~/utils/columnMapping'
+import { formatDateValue, formatNumericValue, DATE_PATTERNS } from '~/utils/formatValue'
 
 ModuleRegistry.registerModules([ClientSideRowModelModule, CommunityFeaturesModule])
 
@@ -51,6 +52,28 @@ const nodeTypes = { modelTable: markRaw(ModelTableNode) }
 
 const nodes = ref<Node[]>([])
 const edges = ref<Edge[]>([])
+
+// ─── Restore canvas from store on mount (back-navigation support) ─────────────
+onMounted(() => {
+  if (dmStore.canvasNodes.length) {
+    nodes.value = dmStore.canvasNodes.map(n => ({
+      id: n.id, type: 'modelTable', position: n.position, data: {},
+    }))
+    edges.value = dmStore.canvasEdges.map(e => ({ ...e }))
+    if (dmStore.canvasSavedId)  dmSavedId.value  = dmStore.canvasSavedId
+    if (dmStore.canvasSaveName) dmSaveName.value = dmStore.canvasSaveName
+    nextTick(() => fitView())
+  }
+})
+
+onBeforeUnmount(() => {
+  dmStore.saveCanvas(
+    nodes.value.map(n => ({ id: n.id, position: n.position })),
+    edges.value.map(e => ({ ...e })),
+    dmSavedId.value,
+    dmSaveName.value,
+  )
+})
 
 // ─── Selected relationship ────────────────────────────────────────────────────
 const selectedEdgeId = ref<string | null>(null)
@@ -181,6 +204,47 @@ const txColumns = computed(() =>
   txJoinedRows.value.length ? Object.keys(txJoinedRows.value[0]) : [],
 )
 
+// Format config for the current component (numeric + date)
+const txNumericFormat = computed(() =>
+  selectedCompKey.value ? dmStore.getNumericFormat(selectedCompKey.value) : {},
+)
+
+function setTxNumericFormat(patch: import('~/utils/formatValue').NumericFormat) {
+  if (!selectedCompKey.value) return
+  dmStore.setNumericFormat(selectedCompKey.value, patch)
+}
+
+function toggleTxExcludeDecimalCol(col: string) {
+  const excluded = txNumericFormat.value.excludeDecimalCols ?? []
+  const next = excluded.includes(col)
+    ? excluded.filter(c => c !== col)
+    : [...excluded, col]
+  setTxNumericFormat({ excludeDecimalCols: next })
+}
+
+// Numeric columns in the current joined result
+const txNumericColumns = computed(() =>
+  txColumns.value.filter(col => typeof txJoinedRows.value[0]?.[col] === 'number'),
+)
+
+const txExcludeSearch = ref('')
+const txFilteredNumericColumns = computed(() => {
+  const q = txExcludeSearch.value.trim().toLowerCase()
+  if (!q) return txNumericColumns.value
+  return txNumericColumns.value.filter(col => txColLabel(col).toLowerCase().includes(q))
+})
+
+// Aggregation column search
+const txAggSearch = ref('')
+const txFilteredAggGroups = computed(() => {
+  const q = txAggSearch.value.trim().toLowerCase()
+  if (!q) return txColGroups.value
+  return txColGroups.value.map(g => ({
+    ...g,
+    cols: g.cols.filter(c => c !== txGroupBy.value && txColLabel(c).toLowerCase().includes(q)),
+  })).filter(g => g.cols.length)
+})
+
 const txFilters      = ref<TransformFilter[]>([])
 const txGroupBy      = ref('')
 const txAggregations = ref<Record<string, AggFn>>({})
@@ -265,12 +329,37 @@ function txRemoveFilter(i: number) { txFilters.value.splice(i, 1) }
 // Input sample = the actual joined rows the transform will be applied to
 const txInputSample = computed(() => txJoinedRows.value.slice(0, 200))
 
+// Shared valueFormatter for TX grids — handles numeric and date columns
+function makeTxFmt(col: string) {
+  const fmt  = txNumericFormat.value
+  const isNum  = typeof txJoinedRows.value[0]?.[col] === 'number'
+  const isDate = isDateField(col)
+  if (isDate && fmt.datePattern) {
+    const pattern = fmt.datePattern
+    const era     = fmt.dateEra ?? 'CE'
+    return (p: any) => formatDateValue(p.value, pattern, era)
+  }
+  const isExcluded = fmt.excludeDecimalCols?.includes(col) ?? false
+  if (isNum && !isExcluded && (fmt.comma || fmt.decimals !== undefined)) {
+    return (p: any) => {
+      if (p.value === null || p.value === undefined) return ''
+      return formatNumericValue(p.value, fmt)
+    }
+  }
+  return undefined
+}
+
 // AG Grid col defs for modal — based on joined rows
 const txInputColDefs = computed<ColDef[]>(() =>
-  txColumns.value.map(col => ({
-    field: col, headerName: txColLabel(col),
-    sortable: true, resizable: true, filter: true, minWidth: 60,
-  }))
+  txColumns.value.map(col => {
+    const isNum = typeof txJoinedRows.value[0]?.[col] === 'number'
+    return {
+      field: col, headerName: txColLabel(col),
+      sortable: true, resizable: true, filter: true, minWidth: 60,
+      cellStyle: isNum ? { textAlign: 'right', fontFamily: 'monospace' } : {},
+      valueFormatter: makeTxFmt(col),
+    }
+  })
 )
 
 // Output sample as computed — auto-tracks all reactive dependencies (filters, groupBy, aggs, rows)
@@ -284,10 +373,15 @@ const txOutputSample = computed<any[]>(() => {
 
 const txOutputColDefs = computed<ColDef[]>(() => {
   if (!txOutputSample.value.length) return []
-  return Object.keys(txOutputSample.value[0]).map(col => ({
-    field: col, headerName: txColLabel(col),
-    sortable: true, resizable: true, filter: true, minWidth: 60,
-  }))
+  return Object.keys(txOutputSample.value[0]).map(col => {
+    const isNum = typeof txOutputSample.value[0]?.[col] === 'number'
+    return {
+      field: col, headerName: txColLabel(col),
+      sortable: true, resizable: true, filter: true, minWidth: 60,
+      cellStyle: isNum ? { textAlign: 'right', fontFamily: 'monospace' } : {},
+      valueFormatter: makeTxFmt(col),
+    }
+  })
 })
 
 // Lazy-mount flag: output grid mounts only when user first visits the results tab
@@ -939,7 +1033,7 @@ function joinStep(
   return { result, truncated }
 }
 
-function buildJoinedDatasets(): { id: string; name: string; rows: any[] }[] {
+function buildJoinedDatasets(): { id: string; name: string; rows: any[]; columnLabels?: ReturnType<typeof parseColumnMapping>; columnSources?: Record<string, string>; numericFormat?: import('~/utils/formatValue').NumericFormat }[] {
   const tables = dmStore.tables
   if (!tables.length) return []
 
@@ -948,11 +1042,13 @@ function buildJoinedDatasets(): { id: string; name: string; rows: any[] }[] {
   // No relations → each table becomes its own dataset
   if (!rels.length) {
     return tables.map(t => {
-      const cfg = dmStore.getTransform(t.id)
-      const rows = cfg && (cfg.filters.length || cfg.groupByField)
-        ? applyTransform(t.rows, cfg)
-        : t.rows
-      return { id: `dm_${t.id}_${Date.now()}`, name: t.name, rows, columnLabels: t.columnLabels }
+      const cfg    = dmStore.getTransform(t.id)
+      const preF   = dmStore.getNodeFilters(t.id)
+      const base   = preF.length ? t.rows.filter(r => matchFilters(r, preF)) : t.rows
+      const rows   = cfg && (cfg.filters.length || cfg.groupByField) ? applyTransform(base, cfg) : base
+      const rawFmt = dmStore.getNumericFormat(t.id)
+      const fmt    = Object.keys(rawFmt).length ? rawFmt : undefined
+      return { id: `dm_${t.id}_${Date.now()}`, name: t.name, rows, columnLabels: t.columnLabels, numericFormat: fmt }
     })
   }
 
@@ -980,13 +1076,13 @@ function buildJoinedDatasets(): { id: string; name: string; rows: any[] }[] {
     components.push(comp)
   }
 
-  const datasets: { id: string; name: string; rows: any[]; columnLabels?: ReturnType<typeof parseColumnMapping>; columnSources?: Record<string, string> }[] = []
+  const datasets: { id: string; name: string; rows: any[]; columnLabels?: ReturnType<typeof parseColumnMapping>; columnSources?: Record<string, string>; numericFormat?: import('~/utils/formatValue').NumericFormat }[] = []
   let anyTruncated = false
 
   for (const comp of components) {
     const compRels = rels.filter(r => comp.includes(r.fromTable) && comp.includes(r.toTable))
 
-    // merge columnLabels from all tables in the component
+    // merge columnLabels from all tables + get numeric format for this component
     const mergedLabels: ReturnType<typeof parseColumnMapping> = {}
     for (const tableId of comp) {
       const t = dmStore.getTable(tableId)
@@ -995,14 +1091,16 @@ function buildJoinedDatasets(): { id: string; name: string; rows: any[] }[] {
     const columnLabels = Object.keys(mergedLabels).length ? mergedLabels : undefined
 
     if (!compRels.length) {
-      const t = dmStore.getTable(comp[0]!)!
+      const t      = dmStore.getTable(comp[0]!)!
+      const rawFmt = dmStore.getNumericFormat(t.id)
+      const fmt    = Object.keys(rawFmt).length ? rawFmt : undefined
       const preF = dmStore.getNodeFilters(t.id)
       const baseRows = preF.length ? t.rows.filter(r => matchFilters(r, preF)) : t.rows
       const isoCfg = dmStore.getTransform(t.id)
       const isoRows = isoCfg && (isoCfg.filters.length || isoCfg.groupByField)
         ? applyTransform(baseRows, isoCfg)
         : baseRows
-      datasets.push({ id: `dm_${t.id}_${Date.now()}`, name: t.name, rows: isoRows, columnLabels })
+      datasets.push({ id: `dm_${t.id}_${Date.now()}`, name: t.name, rows: isoRows, columnLabels, numericFormat: fmt })
       continue
     }
 
@@ -1060,10 +1158,12 @@ function buildJoinedDatasets(): { id: string; name: string; rows: any[] }[] {
       if (txCfg && txCfg.filters.length) rows = applyTransform(rows, txCfg)
     }
 
+    const joinedRawFmt = dmStore.getNumericFormat(compKey)
     datasets.push({
       id: `dm_joined_${Date.now()}_${Math.random().toString(36).slice(2)}`,
       name, rows, columnLabels,
-      columnSources: Object.keys(columnSources).length > 0 ? columnSources : undefined,
+      numericFormat:  Object.keys(joinedRawFmt).length ? joinedRawFmt : undefined,
+      columnSources:  Object.keys(columnSources).length > 0 ? columnSources : undefined,
     })
   }
 
@@ -1181,7 +1281,6 @@ const dmLoadBusy   = ref(false)
 const dmDeleting   = ref<string | null>(null)
 
 async function openDmSave() {
-  dmSaveName.value = ''
   dmSaveMsg.value  = ''
   showDmSave.value = true
 }
@@ -1202,10 +1301,12 @@ async function doSaveDm() {
       id: t.id, name: t.name, rows: t.rows, columnLabels: t.columnLabels,
     }))
     const nodesJson = JSON.stringify({
-      nodes:      nodesPayload,
-      edges:      edgesPayload,
-      tables:     tablesPayload,
-      transforms: dmStore.transforms,
+      nodes:         nodesPayload,
+      edges:         edgesPayload,
+      tables:        tablesPayload,
+      transforms:    dmStore.transforms,
+      nodeFilters:   dmStore.nodeFilters,
+      numericFormats: dmStore.numericFormats,
     })
     const relationsJson = JSON.stringify({ relations: dmStore.relations })
 
@@ -1245,17 +1346,28 @@ async function doLoadDm(id: string) {
 
     // restore store
     dmStore.tables.splice(0)
-    for (const k of Object.keys(dmStore.relations)) delete dmStore.relations[k]
-    for (const k of Object.keys(dmStore.transforms)) delete dmStore.transforms[k]
+    for (const k of Object.keys(dmStore.relations))      delete dmStore.relations[k]
+    for (const k of Object.keys(dmStore.transforms))     delete dmStore.transforms[k]
+    for (const k of Object.keys(dmStore.nodeFilters))    delete dmStore.nodeFilters[k]
+    for (const k of Object.keys(dmStore.numericFormats)) delete dmStore.numericFormats[k]
 
     for (const t of (payload.tables ?? [])) dmStore.addTable(t)
-    for (const [k, v] of Object.entries(relPay.relations ?? {})) dmStore.setRelation(k, v as any)
-    for (const [k, v] of Object.entries(payload.transforms ?? {})) dmStore.setTransform(k, v as any)
+    for (const [k, v] of Object.entries(relPay.relations        ?? {})) dmStore.setRelation(k, v as any)
+    for (const [k, v] of Object.entries(payload.transforms      ?? {})) dmStore.setTransform(k, v as any)
+    for (const [k, v] of Object.entries(payload.nodeFilters     ?? {})) dmStore.setNodeFilters(k, v as any)
+    for (const [k, v] of Object.entries(payload.numericFormats  ?? {})) dmStore.setNumericFormat(k, v as any)
 
     nodes.value = (payload.nodes ?? []).map((n: any) => ({
       id: n.id, type: 'modelTable', position: n.position, data: {},
     }))
     edges.value = (payload.edges ?? []).map((e: any) => ({ ...e }))
+
+    // sync canvas store so back-navigation restores the loaded state
+    dmStore.saveCanvas(
+      nodes.value.map(n => ({ id: n.id, position: n.position })),
+      edges.value.map(e => ({ ...e })),
+      id, row.name ?? '',
+    )
 
     dmSavedId.value  = id
     dmSaveName.value = row.name ?? ''
@@ -1276,6 +1388,24 @@ async function doDeleteDm(id: string) {
   } catch { }
   finally { dmDeleting.value = null }
 }
+
+function goHome() { router.push('/') }
+
+function clearDatamodel() {
+  if (!confirm('Clear all tables, relations and transforms?')) return
+  dmStore.tables.length = 0
+  for (const k of Object.keys(dmStore.relations))      delete dmStore.relations[k]
+  for (const k of Object.keys(dmStore.transforms))     delete dmStore.transforms[k]
+  for (const k of Object.keys(dmStore.nodeFilters))    delete dmStore.nodeFilters[k]
+  for (const k of Object.keys(dmStore.numericFormats)) delete dmStore.numericFormats[k]
+  dmStore.clearCanvas()
+  nodes.value = []
+  edges.value = []
+  dmSavedId.value  = null
+  dmSaveName.value = ''
+  selectedNodeId.value = null
+  selectedEdgeId.value = null
+}
 </script>
 
 <template>
@@ -1284,15 +1414,23 @@ async function doDeleteDm(id: string) {
     <!-- ── Header ─────────────────────────────────────────────────────────── -->
     <header class="flex items-center gap-3 px-4 h-12 border-b shrink-0 bg-background z-20">
       <button
-        @click="router.back()"
+        @click="goHome"
         class="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
       >
-        <ArrowLeft class="size-4" />
-        Back
+        <Home class="size-4" />
+        Home
       </button>
       <div class="h-4 w-px bg-border" />
       <GitMerge class="size-4 text-indigo-500" />
       <span class="font-semibold text-sm">Data Model</span>
+      <button
+        @click="clearDatamodel"
+        title="Clear all tables, relations and transforms"
+        class="flex items-center gap-1 text-xs px-2 py-1 rounded-lg text-destructive hover:bg-destructive/10 transition-colors border border-destructive/30"
+      >
+        <RotateCcw class="size-3" />
+        Clear
+      </button>
 
       <div class="ml-auto flex items-center gap-3">
         <span class="text-xs text-muted-foreground">
@@ -2092,7 +2230,10 @@ async function doDeleteDm(id: string) {
             <div class="flex flex-1 min-h-0">
 
               <!-- Left: config panel -->
-              <div class="w-80 shrink-0 border-r flex flex-col overflow-y-auto p-4 gap-5">
+              <div class="w-80 shrink-0 border-r flex flex-col" style="min-height:0">
+                <!-- scrollable config area -->
+                <div class="flex-1 overflow-y-auto p-4" style="min-height:0">
+                <div class="flex flex-col gap-5">
 
                 <!-- Filter -->
                 <div class="space-y-2">
@@ -2179,17 +2320,26 @@ async function doDeleteDm(id: string) {
                 <!-- Aggregations (shown only when group by is set) -->
                 <div v-if="txGroupBy" class="space-y-1.5">
                   <p class="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Aggregation</p>
-                  <div class="space-y-1 max-h-64 overflow-y-auto pr-1">
-                    <template v-for="g in txColGroups" :key="g.sourceName">
-                      <p v-if="txColGroups.length > 1 && g.cols.some(c => c !== txGroupBy)"
+                  <!-- search -->
+                  <div class="relative flex items-center">
+                    <input
+                      v-model="txAggSearch"
+                      placeholder="Filter columns..."
+                      class="w-full text-[10px] border rounded-md px-2 py-1 pr-6 bg-background
+                             focus:outline-none focus:ring-1 focus:ring-violet-400 placeholder:text-muted-foreground/40"
+                    />
+                    <button v-if="txAggSearch" @click="txAggSearch = ''"
+                      class="absolute right-1.5 text-muted-foreground hover:text-foreground">
+                      <X class="size-3" />
+                    </button>
+                  </div>
+                  <div class="space-y-1 max-h-52 overflow-y-auto pr-1">
+                    <template v-for="g in txFilteredAggGroups" :key="g.sourceName">
+                      <p v-if="txColGroups.length > 1 && g.cols.length"
                          class="text-[9px] font-semibold text-muted-foreground/50 uppercase tracking-wide pt-1 pb-0.5 pl-0.5">
                         {{ g.sourceName }}
                       </p>
-                      <div
-                        v-for="col in g.cols.filter(c => c !== txGroupBy)"
-                        :key="col"
-                        class="flex items-center gap-2"
-                      >
+                      <div v-for="col in g.cols" :key="col" class="flex items-center gap-2">
                         <span class="flex-1 min-w-0 text-[10px] text-muted-foreground truncate" :title="col">{{ txColLabel(col) }}</span>
                         <select
                           :value="txAggregations[col] ?? 'first'"
@@ -2200,11 +2350,154 @@ async function doDeleteDm(id: string) {
                         </select>
                       </div>
                     </template>
+                    <p v-if="!txFilteredAggGroups.length" class="text-[10px] text-muted-foreground/50 text-center py-2">No columns match</p>
                   </div>
                 </div>
 
-                <!-- Row count summary -->
-                <div class="mt-auto pt-3 border-t">
+                <!-- Number Format -->
+                <div class="rounded-xl border border-border overflow-hidden">
+                  <div class="px-3 py-2 bg-muted/40 border-b border-border">
+                    <p class="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Number Format</p>
+                  </div>
+                  <div class="divide-y divide-border/60">
+                    <!-- Comma toggle -->
+                    <label class="flex items-center justify-between gap-3 px-3 py-2.5 hover:bg-muted/30 cursor-pointer transition-colors">
+                      <div class="flex flex-col gap-0.5">
+                        <span class="text-[11px] font-medium">Thousands separator</span>
+                        <span class="text-[10px] text-muted-foreground font-mono">
+                          {{ txNumericFormat.comma ? '1,000,000' : '1000000' }}
+                        </span>
+                      </div>
+                      <!-- switch -->
+                      <div
+                        class="relative w-8 h-4.5 rounded-full transition-colors shrink-0"
+                        :class="txNumericFormat.comma ? 'bg-violet-500' : 'bg-muted-foreground/30'"
+                      >
+                        <input
+                          type="checkbox"
+                          :checked="txNumericFormat.comma === true"
+                          @change="setTxNumericFormat({ ...txNumericFormat, comma: ($event.target as HTMLInputElement).checked })"
+                          class="absolute inset-0 opacity-0 w-full h-full cursor-pointer"
+                        />
+                        <span
+                          class="absolute top-0.5 left-0.5 size-3.5 rounded-full bg-white shadow transition-transform"
+                          :class="txNumericFormat.comma ? 'translate-x-3.5' : 'translate-x-0'"
+                        />
+                      </div>
+                    </label>
+                    <!-- Decimal places -->
+                    <div class="flex items-center justify-between gap-3 px-3 py-2.5">
+                      <div class="flex flex-col gap-0.5">
+                        <span class="text-[11px] font-medium">Decimal places</span>
+                        <span class="text-[10px] text-muted-foreground font-mono">
+                          {{ txNumericFormat.decimals !== undefined ? (1234.5678).toFixed(txNumericFormat.decimals) : '—' }}
+                        </span>
+                      </div>
+                      <div class="flex items-center gap-1 shrink-0">
+                        <button
+                          @click="setTxNumericFormat({ ...txNumericFormat, decimals: txNumericFormat.decimals !== undefined && txNumericFormat.decimals > 0 ? txNumericFormat.decimals - 1 : undefined })"
+                          class="size-6 flex items-center justify-center rounded border border-border text-muted-foreground hover:bg-muted/50 text-sm font-bold transition-colors"
+                        >−</button>
+                        <span class="w-7 text-center text-[11px] font-mono font-semibold">
+                          {{ txNumericFormat.decimals ?? 'auto' }}
+                        </span>
+                        <button
+                          @click="setTxNumericFormat({ ...txNumericFormat, decimals: txNumericFormat.decimals === undefined ? 0 : Math.min(10, txNumericFormat.decimals + 1) })"
+                          class="size-6 flex items-center justify-center rounded border border-border text-muted-foreground hover:bg-muted/50 text-sm font-bold transition-colors"
+                        >+</button>
+                      </div>
+                    </div>
+
+                    <!-- Per-column exclusion (shown when comma or decimals is active) -->
+                    <div v-if="txNumericColumns.length && (txNumericFormat.comma || txNumericFormat.decimals !== undefined)"
+                         class="px-3 py-2.5 flex flex-col gap-1.5">
+                      <span class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Exclude columns</span>
+                      <div class="relative flex items-center">
+                        <input
+                          v-model="txExcludeSearch"
+                          placeholder="Filter columns..."
+                          class="w-full text-[10px] border rounded-md px-2 py-1 pr-6 bg-background
+                                 focus:outline-none focus:ring-1 focus:ring-violet-400 placeholder:text-muted-foreground/40"
+                        />
+                        <button v-if="txExcludeSearch" @click="txExcludeSearch = ''"
+                          class="absolute right-1.5 text-muted-foreground hover:text-foreground">
+                          <X class="size-3" />
+                        </button>
+                      </div>
+                      <div class="space-y-1 max-h-36 overflow-y-auto">
+                        <label
+                          v-for="col in txFilteredNumericColumns"
+                          :key="col"
+                          class="flex items-center gap-2 cursor-pointer hover:bg-muted/30 rounded px-1 py-0.5"
+                        >
+                          <input
+                            type="checkbox"
+                            :checked="txNumericFormat.excludeDecimalCols?.includes(col) ?? false"
+                            @change="toggleTxExcludeDecimalCol(col)"
+                            class="accent-violet-500 shrink-0"
+                          />
+                          <span class="text-[10px] truncate flex-1" :title="col">{{ txColLabel(col) }}</span>
+                          <span v-if="txNumericFormat.excludeDecimalCols?.includes(col)"
+                                class="text-[9px] text-muted-foreground/50 shrink-0">excluded</span>
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Date Format -->
+                <div class="rounded-xl border border-border overflow-hidden">
+                  <div class="px-3 py-2 bg-muted/40 border-b border-border">
+                    <p class="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Date Format</p>
+                  </div>
+                  <div class="divide-y divide-border/60">
+                    <!-- Pattern -->
+                    <div class="px-3 py-2.5 flex flex-col gap-1.5">
+                      <span class="text-[11px] font-medium">Pattern</span>
+                      <select
+                        :value="txNumericFormat.datePattern ?? ''"
+                        @change="setTxNumericFormat({ ...txNumericFormat, datePattern: ($event.target as HTMLSelectElement).value || undefined })"
+                        class="w-full text-[11px] border rounded-lg px-2 py-1.5 bg-background
+                               focus:outline-none focus:ring-1 focus:ring-violet-400"
+                      >
+                        <option value="">— original —</option>
+                        <option v-for="p in DATE_PATTERNS" :key="p.value" :value="p.value">{{ p.label }}</option>
+                      </select>
+                    </div>
+                    <!-- Era -->
+                    <div class="px-3 py-2.5 flex flex-col gap-1.5">
+                      <span class="text-[11px] font-medium">Year era</span>
+                      <div class="flex gap-1.5">
+                        <button
+                          v-for="era in [{ v: 'CE', label: 'ค.ศ.' }, { v: 'BE', label: 'พ.ศ.' }]"
+                          :key="era.v"
+                          @click="setTxNumericFormat({ ...txNumericFormat, dateEra: era.v as 'CE' | 'BE' })"
+                          :class="[
+                            'flex-1 text-[11px] py-1.5 rounded-lg border transition-colors font-medium',
+                            (txNumericFormat.dateEra ?? 'CE') === era.v
+                              ? 'bg-violet-500 border-violet-500 text-white'
+                              : 'border-border text-muted-foreground hover:bg-muted/50',
+                          ]"
+                        >{{ era.label }}</button>
+                      </div>
+                    </div>
+                    <!-- Preview -->
+                    <div v-if="txNumericFormat.datePattern" class="px-3 py-2 bg-muted/20">
+                      <div class="flex items-center justify-between">
+                        <span class="text-[10px] text-muted-foreground">Preview</span>
+                        <span class="text-[11px] font-mono font-semibold text-violet-600 dark:text-violet-400">
+                          {{ formatDateValue('2024-03-15', txNumericFormat.datePattern, txNumericFormat.dateEra ?? 'CE') }}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                </div><!-- end inner flex col -->
+                </div><!-- end scrollable config area -->
+
+                <!-- Row count summary — fixed at bottom -->
+                <div class="shrink-0 px-4 py-3 border-t bg-background">
                   <div class="flex items-center justify-between text-[10px]">
                     <span class="text-muted-foreground">{{ t('bi_original_data') }}</span>
                     <span class="font-semibold">{{ txJoinedRows.length.toLocaleString() }} {{ t('bi_rows') }}</span>

@@ -2,9 +2,9 @@
 import {
   BarChart2, TrendingUp, PieChart, Table2, Hash,
   Database, Download, Loader2, AlertCircle,
-  LayoutDashboard, ArrowLeft, Plus, X, Trash2,
-  ChevronDown, Hash as HashIcon, Type as TypeIcon, Filter,
-  Layers, Activity, Network, Code2, MousePointer2,
+  LayoutDashboard, Home, Plus, X, Trash2,
+  ChevronDown, ChevronLeft, Hash as HashIcon, Type as TypeIcon, Filter,
+  Layers, Activity, Network, Code2, MousePointer2, Link2, Check, RotateCcw,
 } from 'lucide-vue-next'
 import ReportWidget from '~/components/report/ReportWidget.vue'
 import { MOCK_DATA, DATASET_META, type DatasetKey } from '~/stores/canvas'
@@ -12,6 +12,7 @@ import type { WidgetType, WidgetFields, FilterCondition, FilterOperator, ReportW
 import type { DataRow } from '~/stores/canvas'
 import { parseColumnMapping } from '~/utils/columnMapping'
 import { resolveDynamicValue, DATE_TOKEN_TODAY, DATE_TOKEN_YESTERDAY, DATE_TOKEN_LABELS } from '~/utils/transformData'
+import { formatDateValue, formatNumericValue } from '~/utils/formatValue'
 import { AgGridVue } from 'ag-grid-vue3'
 import { ClientSideRowModelModule, CommunityFeaturesModule, ModuleRegistry } from 'ag-grid-community'
 import type { ColDef } from 'ag-grid-community'
@@ -33,10 +34,6 @@ const { $xt } = useNuxtApp() as any
 // ─── Selection ────────────────────────────────────────────────────────────────
 const selectedWidgetId = ref<string | null>(null)
 const selectedWidget   = computed(() => store.widgets.find(w => w.id === selectedWidgetId.value) ?? null)
-const selectedDataset  = computed(() => selectedWidget.value
-  ? store.datasets.find(d => d.id === selectedWidget.value!.datasetId) ?? null
-  : null,
-)
 
 // Active field well: when user clicks a field well, the next column click assigns to it
 const activeField = ref<keyof WidgetFields | null>(null)
@@ -101,20 +98,11 @@ let _placeCursor = 40
 function addWidget(type: WidgetType) {
   if (!store.datasets.length) return
   const id = `widget_${Date.now()}`
-  const ds = store.datasets[0]
-  const cols = store.columnsOf(ds.id)
-  const numCols = cols.filter(c => c.type === 'number')
-  const strCols = cols.filter(c => c.type === 'string')
-
-  const defaultFields: WidgetFields = {
-    xField:  strCols[0]?.name ?? cols[0]?.name ?? '',
-    yField:  numCols[0]?.name ?? '',
-    columns: cols.slice(0, 6).map(c => c.name),
-  }
+  const ds = store.datasets[0]!
   store.addWidget({
     id, type, datasetId: ds.id,
     title: `${WIDGET_TYPES.find(t => t.type === type)?.label} ${store.widgets.length + 1}`,
-    fields: defaultFields,
+    fields: { xField: '', yField: '', columns: [] },
     x: _placeCursor, y: _placeCursor,
     w: type === 'kpi' ? 200 : type === 'table' ? 460 : 340,
     h: type === 'kpi' ? 140 : 260,
@@ -153,7 +141,7 @@ async function fetchSqlTemplates() {
       `Planning/Master/GetSqlFlowTemplate?passcode=${encodeURIComponent(sqlPasscode.value.trim())}`,
     )
     sqlTemplates.value = Array.isArray(res?.data) ? res.data : []
-    if (sqlTemplates.value.length) selectedTemplateId.value = sqlTemplates.value[0].template_id
+    if (sqlTemplates.value.length) selectedTemplateId.value = sqlTemplates.value[0]?.template_id ?? null
   } catch { sqlTemplates.value = [] }
   finally { sqlLoading.value = false; sqlTemplatesLoaded.value = true }
 }
@@ -178,9 +166,6 @@ function extractSqlPayload(res: any): { rows: any[]; column_mapping_json?: any }
   return { rows, column_mapping_json: inner?.column_mapping_json }
 }
 
-function extractRows(res: any): any[] | null {
-  return extractSqlPayload(res)?.rows ?? null
-}
 
 function addMockDataset() {
   const name = customName.value.trim() || DATASET_META[selectedKey.value].label
@@ -376,6 +361,15 @@ const filterCols = computed(() =>
   selectedWidget.value ? store.columnsOf(selectedWidget.value.datasetId) : [],
 )
 
+const filterColSearch = ref('')
+const filteredFilterCols = computed(() => {
+  const q = filterColSearch.value.trim().toLowerCase()
+  if (!q) return filterCols.value
+  return filterCols.value.filter(c =>
+    c.label.toLowerCase().includes(q) || c.name.toLowerCase().includes(q),
+  )
+})
+
 const filterConditions = computed(() =>
   selectedWidget.value?.filters?.conditions ?? [],
 )
@@ -459,8 +453,85 @@ const cellClickCtx  = ref<CellClickContext | null>(null)
 const cellClickTab  = ref<'detail' | 'related'>('detail')
 const cellModalAfterMounted = ref(false)
 
+// ── Modal resize / move ───────────────────────────────────────────────────────
+const modalW = ref(860)
+const modalH = ref(640)
+const modalX = ref<number | null>(null)   // null = centered
+const modalY = ref<number | null>(null)
+
+function clampModal(w: number, h: number, x: number | null, y: number | null) {
+  const vw = window.innerWidth
+  const vh = window.innerHeight
+  const nw = Math.max(380, Math.min(w, vw - 32))
+  const nh = Math.max(280, Math.min(h, vh - 32))
+  const nx = x === null ? null : Math.max(0, Math.min(x, vw - nw))
+  const ny = y === null ? null : Math.max(0, Math.min(y, vh - nh))
+  return { nw, nh, nx, ny }
+}
+
+function absorbNextClick() {
+  const handler = (e: Event) => { e.stopPropagation(); document.removeEventListener('click', handler, true) }
+  document.addEventListener('click', handler, true)
+}
+
+function startModalResize(e: MouseEvent, dir: 'r' | 'b' | 'br') {
+  e.preventDefault()
+  const startX = e.clientX
+  const startY = e.clientY
+  const startW = modalW.value
+  const startH = modalH.value
+  const onMove = (me: MouseEvent) => {
+    const dx = me.clientX - startX
+    const dy = me.clientY - startY
+    const { nw, nh } = clampModal(
+      dir !== 'b' ? startW + dx : startW,
+      dir !== 'r' ? startH + dy : startH,
+      modalX.value, modalY.value,
+    )
+    if (dir !== 'b') modalW.value = nw
+    if (dir !== 'r') modalH.value = nh
+  }
+  const onUp = () => {
+    document.removeEventListener('mousemove', onMove)
+    document.removeEventListener('mouseup', onUp)
+    absorbNextClick()
+  }
+  document.addEventListener('mousemove', onMove)
+  document.addEventListener('mouseup', onUp)
+}
+
+function startModalMove(e: MouseEvent) {
+  if ((e.target as HTMLElement).closest('button')) return
+  e.preventDefault()
+  const el = (e.currentTarget as HTMLElement).closest<HTMLElement>('.modal-box')
+  if (!el) return
+  const rect = el.getBoundingClientRect()
+  if (modalX.value === null) modalX.value = rect.left
+  if (modalY.value === null) modalY.value = rect.top
+  const startX = e.clientX - modalX.value
+  const startY = e.clientY - modalY.value
+  const onMove = (me: MouseEvent) => {
+    const { nx, ny } = clampModal(modalW.value, modalH.value, me.clientX - startX, me.clientY - startY)
+    modalX.value = nx
+    modalY.value = ny
+  }
+  const onUp = () => {
+    document.removeEventListener('mousemove', onMove)
+    document.removeEventListener('mouseup', onUp)
+    absorbNextClick()
+  }
+  document.addEventListener('mousemove', onMove)
+  document.addEventListener('mouseup', onUp)
+}
+
 watch(cellClickTab, (tab) => { if (tab === 'related') cellModalAfterMounted.value = true })
-watch(cellClickCtx, (v) => { if (v) cellModalAfterMounted.value = false })
+watch(cellClickCtx, (v) => {
+  if (v) {
+    cellModalAfterMounted.value = false
+    modalX.value = null
+    modalY.value = null
+  }
+})
 
 function onCellClick(
   widget: RWidget,
@@ -480,12 +551,33 @@ function closeCellModal() { cellClickCtx.value = null }
 
 const cellDetailEntries = computed(() => {
   if (!cellClickCtx.value) return []
-  return Object.entries(cellClickCtx.value.rowData).map(([key, value]) => ({
-    key,
-    label: store.labelOf(cellClickCtx.value!.datasetId, key),
-    value,
-    isClicked: key === cellClickCtx.value!.colField,
-  }))
+  const { datasetId } = cellClickCtx.value
+  const fmt  = store.numericFormatOf(datasetId)
+  const cols = store.columnsOf(datasetId)
+  return Object.entries(cellClickCtx.value.rowData).map(([key, raw]) => {
+    const colMeta = cols.find(c => c.name === key)
+    const isDate  = colMeta?.type === 'date' || (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}/.test(raw))
+    const isNum   = colMeta?.type === 'number' || (typeof raw === 'number')
+    const isExcluded = fmt.excludeDecimalCols?.includes(key) ?? false
+    const colFmt = isExcluded ? { ...fmt, decimals: undefined } : fmt
+    let display: string
+    if (raw === null || raw === undefined) {
+      display = '—'
+    } else if (isDate && fmt.datePattern) {
+      display = formatDateValue(raw, fmt.datePattern, fmt.dateEra ?? 'CE')
+    } else if (isNum && (colFmt.comma || colFmt.decimals !== undefined)) {
+      display = formatNumericValue(raw, colFmt)
+    } else {
+      display = String(raw)
+    }
+    return {
+      key,
+      label:     store.labelOf(datasetId, key),
+      value:     display,
+      rawValue:  raw,
+      isClicked: key === cellClickCtx.value!.colField,
+    }
+  })
 })
 
 const cellRelatedRows = computed(() => {
@@ -498,13 +590,27 @@ const cellRelatedRows = computed(() => {
 const cellRelatedColDefs = computed<ColDef[]>(() => {
   if (!cellClickCtx.value || !cellRelatedRows.value.length) return []
   const { datasetId, rowData } = cellClickCtx.value
-  return Object.keys(rowData).map(col => ({
-    field:      col,
-    headerName: store.labelOf(datasetId, col),
-    sortable: true, resizable: true, filter: false, minWidth: 60,
-    valueFormatter: (p: any) =>
-      p.value === null || p.value === undefined ? '—' : String(p.value),
-  }))
+  const fmt  = store.numericFormatOf(datasetId)
+  const cols = store.columnsOf(datasetId)
+  return Object.keys(rowData).map(col => {
+    const colMeta = cols.find(c => c.name === col)
+    const isDate  = colMeta?.type === 'date'
+    const isNum   = colMeta?.type === 'number'
+    return {
+      field:      col,
+      headerName: store.labelOf(datasetId, col),
+      sortable: true, resizable: true, filter: false, minWidth: 60,
+      valueFormatter: (p: any) => {
+        if (p.value === null || p.value === undefined) return '—'
+        const raw = p.value
+        const looksDate = isDate || (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}/.test(raw))
+        const looksNum  = isNum  || typeof raw === 'number'
+        if (looksDate && fmt.datePattern) return formatDateValue(raw, fmt.datePattern, fmt.dateEra ?? 'CE')
+        if (looksNum  && (fmt.comma || fmt.decimals !== undefined)) return formatNumericValue(raw, fmt)
+        return String(raw)
+      },
+    }
+  })
 })
 
 function onCellModalFirstData(event: any) {
@@ -533,16 +639,9 @@ function onTitleInput(e: Event) {
 function onDatasetChange(e: Event) {
   if (!selectedWidgetId.value) return
   const dsId = (e.target as HTMLSelectElement).value
-  const cols = store.columnsOf(dsId)
-  const numCols = cols.filter(c => c.type === 'number')
-  const strCols = cols.filter(c => c.type === 'string')
   store.updateWidget(selectedWidgetId.value, {
     datasetId: dsId,
-    fields: {
-      xField: strCols[0]?.name ?? cols[0]?.name ?? '',
-      yField: numCols[0]?.name ?? '',
-      columns: cols.slice(0, 6).map(c => c.name),
-    },
+    fields: { xField: '', yField: '', columns: [] },
   })
 }
 
@@ -567,9 +666,29 @@ const rpLoadBusy  = ref(false)
 const rpDeleting  = ref<string | null>(null)
 
 async function openRpSave() {
-  rpSaveName.value = ''
+  if (!rpSaveName.value) rpSaveName.value = ''
   rpSaveMsg.value  = ''
   showRpSave.value = true
+}
+
+function goHome() { router.push('/') }
+
+function clearReport() {
+  if (!confirm('Clear all widgets and datasets?')) return
+  store.resetAll()
+  rpSavedId.value  = null
+  rpSaveName.value = ''
+  selectedWidgetId.value = null
+}
+
+const shareCopied = ref(false)
+function copyShareUrl() {
+  if (!rpSavedId.value) return
+  const url = `${globalThis.location.origin}/view/${rpSavedId.value}`
+  navigator.clipboard.writeText(url).then(() => {
+    shareCopied.value = true
+    setTimeout(() => { shareCopied.value = false }, 2000)
+  })
 }
 
 async function doSaveRp() {
@@ -578,7 +697,10 @@ async function doSaveRp() {
   rpSaveMsg.value = ''
   try {
     const datasetsPayload = store.datasets.map(d => ({
-      id: d.id, name: d.name, rows: d.rows, columnLabels: d.columnLabels,
+      id: d.id, name: d.name, rows: d.rows,
+      columnLabels: d.columnLabels,
+      columnSources: d.columnSources,
+      numericFormat: d.numericFormat,
     }))
     const widgetsJson = JSON.stringify({ widgets: store.widgets, datasets: datasetsPayload })
     const savedId = await biApi.saveReport({
@@ -644,15 +766,31 @@ async function doDeleteRp(id: string) {
       @click.stop
     >
       <button
-        @click="router.back()"
+        @click="goHome"
         class="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
       >
-        <ArrowLeft class="size-4" />
-        Back
+        <Home class="size-4" />
+        Home
+      </button>
+      <div class="h-4 w-px bg-border" />
+      <button
+        @click="router.push('/datamodel')"
+        class="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors"
+      >
+        <ChevronLeft class="size-4" />
+        Data Model
       </button>
       <div class="h-4 w-px bg-border" />
       <LayoutDashboard class="size-4 text-orange-500" />
       <span class="font-semibold text-sm">Report Builder</span>
+      <button
+        @click.stop="clearReport"
+        title="Clear all widgets and datasets"
+        class="flex items-center gap-1 text-xs px-2 py-1 rounded-lg text-destructive hover:bg-destructive/10 transition-colors border border-destructive/30"
+      >
+        <RotateCcw class="size-3" />
+        Clear
+      </button>
 
       <div class="ml-auto flex items-center gap-2">
         <span class="text-xs text-muted-foreground">
@@ -679,6 +817,18 @@ async function doDeleteRp(id: string) {
         >
           <Loader2 class="size-3.5" />
           {{ t('bi_load_report_title') }}
+        </button>
+        <button
+          v-if="rpSavedId"
+          @click.stop="copyShareUrl"
+          title="Copy share URL"
+          class="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg font-medium transition-colors
+                 bg-emerald-100 hover:bg-emerald-200 dark:bg-emerald-900/40 dark:hover:bg-emerald-800/50
+                 text-emerald-700 dark:text-emerald-300"
+        >
+          <Check v-if="shareCopied" class="size-3.5" />
+          <Link2 v-else class="size-3.5" />
+          {{ shareCopied ? 'Copied!' : 'Share' }}
         </button>
 
         <!-- Add Data -->
@@ -840,7 +990,7 @@ async function doDeleteRp(id: string) {
       <Transition name="slide-panel">
         <div
           v-if="showAddPanel"
-          class="w-64 border-r bg-background z-20 flex flex-col shrink-0 shadow-lg absolute left-52 top-0 bottom-0"
+          class="w-64 border-r bg-background z-20 flex flex-col shadow-lg absolute left-52 top-0 bottom-0"
           @click.stop
         >
           <!-- Tabs + Close -->
@@ -935,7 +1085,7 @@ async function doDeleteRp(id: string) {
 
       <!-- ── Canvas ──────────────────────────────────────────────────────── -->
       <div
-        class="flex-1 relative overflow-auto bg-background bg-[radial-gradient(circle,_hsl(var(--border))_1px,_transparent_1px)] bg-[size:24px_24px]"
+        class="flex-1 relative overflow-auto pr-3 bg-background bg-[radial-gradient(circle,_hsl(var(--border))_1px,_transparent_1px)] bg-[size:24px_24px]"
         @click="onCanvasClick"
       >
         <!-- Empty state -->
@@ -953,7 +1103,7 @@ async function doDeleteRp(id: string) {
         </div>
 
         <!-- Canvas size extender -->
-        <div style="min-width: 1400px; min-height: 900px; position: relative;">
+        <div style="min-width: 1400px; min-height: 900px; position: relative; padding: 12px;">
           <ReportWidget
             v-for="widget in store.widgets"
             :key="widget.id"
@@ -1153,6 +1303,21 @@ async function doDeleteRp(id: string) {
                 </div>
               </div>
 
+              <!-- Column search -->
+              <div class="relative flex items-center mb-2">
+                <input
+                  v-model="filterColSearch"
+                  placeholder="Search column..."
+                  class="w-full text-[10px] border rounded-md px-2 py-1 pr-6 bg-background
+                         focus:outline-none focus:ring-1 focus:ring-orange-400 placeholder:text-muted-foreground/40"
+                />
+                <button
+                  v-if="filterColSearch"
+                  @click.stop="filterColSearch = ''"
+                  class="absolute right-1.5 text-muted-foreground hover:text-foreground"
+                ><X class="size-3" /></button>
+              </div>
+
               <!-- Condition rows -->
               <div class="space-y-2">
                 <div
@@ -1172,7 +1337,7 @@ async function doDeleteRp(id: string) {
                       })"
                       class="flex-1 text-[10px] border rounded-md px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-orange-400 min-w-0 truncate"
                     >
-                      <option v-for="col in filterCols" :key="col.name" :value="col.name">
+                      <option v-for="col in filteredFilterCols" :key="col.name" :value="col.name">
                         {{ col.label }}{{ col.label !== col.name ? ` (${col.name})` : '' }}
                       </option>
                     </select>
@@ -1310,6 +1475,35 @@ async function doDeleteRp(id: string) {
 
             </div>
 
+            <!-- ── X-Axis Rotation (category charts) ───────────────────── -->
+            <div
+              v-if="selectedWidget && ['bar','line','stackedBar','stackedLine'].includes(selectedWidget.type)"
+              class="border-t pt-3"
+            >
+              <div class="flex items-center justify-between mb-2">
+                <p class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">X-Axis Rotation</p>
+                <div class="flex items-center gap-1">
+                  <button
+                    @click.stop="store.updateWidget(selectedWidget.id, { xAxisRotate: Math.max(-90, (selectedWidget.xAxisRotate ?? 0) - 15) })"
+                    class="size-6 flex items-center justify-center rounded border text-muted-foreground hover:bg-muted/50 text-sm font-bold transition-colors"
+                  >−</button>
+                  <span class="w-10 text-center text-[11px] font-mono font-semibold">
+                    {{ selectedWidget.xAxisRotate ?? 0 }}°
+                  </span>
+                  <button
+                    @click.stop="store.updateWidget(selectedWidget.id, { xAxisRotate: Math.min(90, (selectedWidget.xAxisRotate ?? 0) + 15) })"
+                    class="size-6 flex items-center justify-center rounded border text-muted-foreground hover:bg-muted/50 text-sm font-bold transition-colors"
+                  >+</button>
+                  <button
+                    v-if="selectedWidget.xAxisRotate"
+                    @click.stop="store.updateWidget(selectedWidget.id, { xAxisRotate: 0 })"
+                    class="size-6 flex items-center justify-center rounded border text-muted-foreground hover:bg-muted/50 transition-colors"
+                    title="Reset to 0°"
+                  ><X class="size-3" /></button>
+                </div>
+              </div>
+            </div>
+
             <!-- ── Cell Click (table only) ──────────────────────────────── -->
             <div v-if="selectedWidget?.type === 'table'" class="border-t pt-3">
               <div class="flex items-center gap-1.5 mb-2">
@@ -1394,15 +1588,25 @@ async function doDeleteRp(id: string) {
       <Transition name="fade">
         <div
           v-if="cellClickCtx"
-          class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+          class="fixed inset-0 z-50 bg-black/60"
+          :class="modalX === null ? 'flex items-center justify-center' : ''"
           @click.self="closeCellModal"
         >
           <div
-            class="bg-background rounded-2xl shadow-2xl flex flex-col overflow-hidden"
-            style="width: min(90vw, 860px); height: min(85vh, 640px);"
+            class="modal-box bg-background rounded-2xl shadow-2xl flex flex-col overflow-hidden select-none"
+            :style="{
+              width:    modalW + 'px',
+              height:   modalH + 'px',
+              position: modalX !== null ? 'fixed' : 'relative',
+              left:     modalX !== null ? modalX + 'px' : undefined,
+              top:      modalY !== null ? modalY + 'px' : undefined,
+            }"
           >
-            <!-- Header -->
-            <div class="flex items-center gap-2.5 px-5 py-3 border-b shrink-0">
+            <!-- Header (drag to move) -->
+            <div
+              class="flex items-center gap-2.5 px-5 py-3 border-b shrink-0 cursor-move"
+              @mousedown="startModalMove"
+            >
               <MousePointer2 class="size-4 text-indigo-500" />
               <div class="flex items-center gap-1.5 min-w-0 flex-1">
                 <span class="text-xs text-muted-foreground truncate">{{ cellClickCtx.widgetTitle }}</span>
@@ -1479,6 +1683,18 @@ async function doDeleteRp(id: string) {
                 @first-data-rendered="onCellModalFirstData"
               />
             </div>
+
+            <!-- Resize handles -->
+            <div class="absolute right-0 top-0 bottom-4 w-1.5 cursor-ew-resize hover:bg-indigo-400/30 rounded-r-2xl"
+                 @mousedown.stop="startModalResize($event, 'r')" />
+            <div class="absolute bottom-0 left-4 right-4 h-1.5 cursor-ns-resize hover:bg-indigo-400/30 rounded-b-2xl"
+                 @mousedown.stop="startModalResize($event, 'b')" />
+            <div class="absolute bottom-0 right-0 w-4 h-4 cursor-nwse-resize"
+                 @mousedown.stop="startModalResize($event, 'br')">
+              <svg class="absolute bottom-1 right-1 text-muted-foreground/40" width="10" height="10" viewBox="0 0 10 10">
+                <path d="M9 1L1 9M9 5L5 9M9 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              </svg>
+            </div>
           </div>
         </div>
       </Transition>
@@ -1544,12 +1760,12 @@ async function doDeleteRp(id: string) {
 
 <style scoped>
 .slide-panel-enter-active,
-.slide-panel-leave-active { transition: all 0.2s ease; }
+.slide-panel-leave-active { transition: opacity 0.15s ease; }
 .slide-panel-enter-from,
-.slide-panel-leave-to     { transform: translateX(-100%); opacity: 0; }
+.slide-panel-leave-to     { opacity: 0; }
 
 .slide-right-enter-active,
-.slide-right-leave-active { transition: all 0.2s ease; }
+.slide-right-leave-active { transition: opacity 0.15s ease; }
 .slide-right-enter-from,
-.slide-right-leave-to     { transform: translateX(100%); opacity: 0; }
+.slide-right-leave-to     { opacity: 0; }
 </style>
