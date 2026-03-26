@@ -88,7 +88,7 @@ const submitLogin = async (target: 'standard' | 'microsoft') => {
   if (isLoading.value) return
   
   if (!form.maincode) {
-    showAlert(`Error`, `Please select a working company`, `danger`)
+    showAlert(t('login_err_title_error'), t('login_err_no_company'), 'danger')
     return
   }
 
@@ -101,7 +101,7 @@ const submitLogin = async (target: 'standard' | 'microsoft') => {
       form.oauth2 = 'Y'
       const success = await msLogin()
       if (!success || !form.ms_access_token) {
-        showAlert(`Information`, `ไม่สามารถเข้าระบบผ่าน Microsoft ได้`, `info`)
+        showAlert(t('login_err_title_info'), t('login_err_ms_fail'), 'info')
         isLoading.value = false
         return
       }
@@ -109,7 +109,7 @@ const submitLogin = async (target: 'standard' | 'microsoft') => {
       form.ms_access_token = null
       form.oauth2 = 'N'
       if (!form.userid || !form.userpass) {
-        msgError.value = 'กรุณากรอก Username และ Password'
+        msgError.value = t('login_err_no_cred')
         isLoading.value = false
         return
       }
@@ -117,35 +117,35 @@ const submitLogin = async (target: 'standard' | 'microsoft') => {
 
     const attempt = sessionStorage.getItem('attempt') || '1'
     const action = `api/public/Login?is_api=N&app_name=ERP&attempt=${attempt}`
-    const resp = await $xt.postServerJson(action, form)
+    const resp = await $xt.postServerJson(action, form) as any
 
     if (resp.error) {
       if (resp.error.indexOf('Request OTP;') === 0) {
-        showAlert('OTP Required', 'ระบบต้องการการยืนยันตัวตนผ่าน OTP', 'info')
+        showAlert(t('login_err_title_otp'), t('login_err_otp'), 'info')
         return
       }
 
       if (resp.error_type === 'L') {
         let nextAttempt = (parseInt(attempt) + 1).toString()
         sessionStorage.setItem('attempt', nextAttempt)
-        showAlert('System Error', `${resp.error}: หากผิดเกิน ${resp.lock_limit_login} ครั้งจะถูก Lock`, 'danger')
+        showAlert(t('login_err_title_error'), `${resp.error}: ${t('login_err_locked', { limit: resp.lock_limit_login })}`, 'danger')
         return
       }
 
       if (resp.error_type === 'L1') {
         sessionStorage.clear()
-        showAlert('Contact Admin', resp.error, 'warning')
+        showAlert(t('login_err_title_admin'), resp.error, 'warning')
         return
       }
 
       if (resp.error_type === 'C') {
-        showAlert('System Error', resp.error, 'danger')
+        showAlert(t('login_err_title_error'), resp.error, 'danger')
         // TODO: open change password modal
         return
       }
 
       if (resp.error_type === 'F') {
-        showAlert('Full Session', resp.error, 'warning')
+        showAlert(t('login_err_title_full'), resp.error, 'warning')
         return
       }
 
@@ -191,19 +191,19 @@ onMounted(() => {
     <Card class="w-full max-w-md shadow-lg">
       <CardHeader class="space-y-1 text-center">
         <div class="flex justify-center mb-4">
-           <div class="h-12 w-12 bg-orange-500 rounded-xl flex items-center justify-center text-white font-bold text-2xl shadow-inner">PPN</div>
+           <div class="h-12 w-12 bg-orange-500 rounded-xl flex items-center justify-center text-white font-bold text-2xl shadow-inner">BI</div>
         </div>
-        <CardTitle class="text-2xl font-bold">Mango Planning System</CardTitle>
-        <CardDescription>เข้าสู่ระบบเพื่อใช้งานโปรแกรม</CardDescription>
+        <CardTitle class="text-2xl font-bold">{{ t('login_app_name') }}</CardTitle>
+        <CardDescription>{{ t('login_subtitle') }}</CardDescription>
       </CardHeader>
       
       <CardContent>
         <div class="space-y-4">
           <div class="space-y-2">
-            <Label>Company</Label>
+            <Label>{{ t('login_company') }}</Label>
             <Select v-model="form.maincode">
               <SelectTrigger>
-                <SelectValue placeholder="-- Please Select --" />
+                <SelectValue :placeholder="t('login_company_ph')" />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem v-for="item in companyList" :key="item.maincode" :value="item.maincode">
@@ -214,17 +214,17 @@ onMounted(() => {
           </div>
 
           <div class="space-y-2">
-            <Label>Username</Label>
-            <Input v-model="form.userid" placeholder="Username" @keyup.enter="submitLogin('standard')" />
+            <Label>{{ t('login_username') }}</Label>
+            <Input v-model="form.userid" :placeholder="t('login_username')" @keyup.enter="submitLogin('standard')" />
           </div>
 
           <div class="space-y-2">
-            <Label>Password</Label>
+            <Label>{{ t('login_password') }}</Label>
             <div class="relative">
-              <Input 
-                v-model="form.userpass" 
-                :type="isPasswordVisible ? 'text' : 'password'" 
-                placeholder="Password" 
+              <Input
+                v-model="form.userpass"
+                :type="isPasswordVisible ? 'text' : 'password'"
+                :placeholder="t('login_password')"
                 @keyup.enter="submitLogin('standard')"
               />
               <button 
@@ -244,7 +244,7 @@ onMounted(() => {
 
           <Button @click="submitLogin('standard')" class="w-full bg-orange-600 hover:bg-orange-700 text-white" :disabled="isLoading">
             <Loader2 v-if="isLoading && form.oauth2 === 'N'" class="mr-2 size-4 animate-spin" />
-            Sign in
+            {{ t('login_btn') }}
           </Button>
 
           <div class="relative my-4">
@@ -252,7 +252,7 @@ onMounted(() => {
               <span class="w-full border-t" />
             </div>
             <div class="relative flex justify-center text-xs uppercase">
-              <span class="bg-background px-2 text-muted-foreground">Or continue with</span>
+              <span class="bg-background px-2 text-muted-foreground">{{ t('login_or') }}</span>
             </div>
           </div>
 
@@ -262,7 +262,7 @@ onMounted(() => {
               <svg class="mr-2 h-4 w-4" viewBox="0 0 23 23" xmlns="http://www.w3.org/2000/svg">
                 <path fill="#f35325" d="M1 1h10v10H1z"/><path fill="#81bc06" d="M12 1h10v10H12z"/><path fill="#05a6f0" d="M1 12h10v10H1z"/><path fill="#ffba08" d="M12 12h10v10H12z"/>
               </svg>
-              Sign in with Microsoft
+              {{ t('login_ms_btn') }}
             </template>
           </Button>
         </div>
@@ -280,7 +280,7 @@ onMounted(() => {
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogAction @click="alertState.isOpen = false">ตกลง</AlertDialogAction>
+          <AlertDialogAction @click="alertState.isOpen = false">{{ t('login_ok') }}</AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

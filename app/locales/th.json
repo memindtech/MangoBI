@@ -1305,5 +1305,27 @@
   "page_title_dashboard": "หน้าหลัก",
   "page_title_canvas":    "Canvas",
   "page_title_datamodel": "Data Model",
-  "page_title_report":    "Report Builder"
+  "page_title_report":    "Report Builder",
+
+  "login_app_name":        "MangoBI",
+  "login_subtitle":        "เข้าสู่ระบบเพื่อใช้งานโปรแกรม",
+  "login_company":         "บริษัท",
+  "login_company_ph":      "-- กรุณาเลือก --",
+  "login_username":        "ชื่อผู้ใช้",
+  "login_password":        "รหัสผ่าน",
+  "login_btn":             "เข้าสู่ระบบ",
+  "login_or":              "หรือเข้าสู่ระบบด้วย",
+  "login_ms_btn":          "เข้าสู่ระบบด้วย Microsoft",
+  "login_ok":              "ตกลง",
+  "login_err_no_company":  "กรุณาเลือกบริษัท",
+  "login_err_no_cred":     "กรุณากรอก Username และ Password",
+  "login_err_ms_fail":     "ไม่สามารถเข้าระบบผ่าน Microsoft ได้",
+  "login_err_otp":         "ระบบต้องการการยืนยันตัวตนผ่าน OTP",
+  "login_err_locked":      "หากผิดเกิน {limit} ครั้งจะถูก Lock",
+  "login_err_title_error": "ข้อผิดพลาด",
+  "login_err_title_info":  "แจ้งเตือน",
+  "login_err_title_otp":   "ต้องการ OTP",
+  "login_err_title_admin": "ติดต่อผู้ดูแลระบบ",
+  "login_err_title_full":  "Session เต็ม",
+  "login_err_title_fail":  "เข้าสู่ระบบไม่สำเร็จ"
 }

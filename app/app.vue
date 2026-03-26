@@ -2,8 +2,15 @@
 // 1. ดึง Store และ i18n มาใช้งาน
 const authStore = useAuthStore()
 const route = useRoute()
+const router = useRouter()
 const { locale } = useI18n()
 const { start: startSessionGuard } = useSessionGuard()
+const { initFontSize } = useAppFontSize()
+const { start: startLoading, finish: finishLoading } = useLoadingIndicator()
+
+// Trigger loading bar on every client-side navigation
+router.beforeEach(() => { startLoading() })
+router.afterEach(() => { finishLoading() })
 
 // สถานะการโหลดแอป
 const isReady = ref(false)
@@ -11,6 +18,7 @@ const isReady = ref(false)
 // 2. เริ่มต้นโหลดข้อมูล (Lifecycle ของ Nuxt 4)
 onBeforeMount(async () => {
   if (import.meta.client) {
+    initFontSize()
     // --- จุดที่แก้ไข: ข้ามการโหลดข้อมูลถ้าอยู่หน้า Login หรือหน้าที่ไม่ต้องใช้ Auth ---
     if (route.path.includes('/login')) {
       isReady.value = true
@@ -49,6 +57,8 @@ onBeforeMount(async () => {
 </script>
 
 <template>
+  <NuxtLoadingIndicator color="#f97316" :height="3" />
+
   <div v-if="!isReady" class="flex h-screen w-screen flex-col items-center justify-center bg-background">
     <div class="flex flex-col items-center gap-4">
       <div class="h-12 w-12 animate-spin rounded-full border-4 border-orange-500 border-t-transparent"></div>

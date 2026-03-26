@@ -33,6 +33,7 @@ interface Widget {
   filters?: { logic: 'and' | 'or'; conditions: FilterCondition[] }
   columnWidths?: Record<string, number>
   xAxisRotate?: number
+  fontSize?: number
   cellClickMode?: 'none' | 'modal'
   x: number; y: number; w: number; h: number
 }
@@ -127,20 +128,20 @@ function filteredRows(w: Widget): any[] {
 // ── Chart option ──────────────────────────────────────────────────────────────
 const COLORS = ['#6366f1','#f97316','#10b981','#3b82f6','#a855f7','#ef4444','#f59e0b','#06b6d4']
 
-function makeAxisBase(tc: string, sc: string) {
+function makeAxisBase(tc: string, sc: string, fs = 10) {
   return {
     axisLine:  { lineStyle: { color: sc } },
     axisTick:  { show: false },
-    axisLabel: { fontSize: 10, color: tc },
+    axisLabel: { fontSize: fs, color: tc },
     splitLine: { lineStyle: { color: sc } },
   }
 }
 
-function makePieSeries(labels: string[], values: number[], tc: string, radius: string[], center: string[], extra = {}) {
+function makePieSeries(labels: string[], values: number[], tc: string, radius: string[], center: string[], extra = {}, fs = 10) {
   return {
     type: 'pie', radius, center,
     data: labels.map((n, i) => ({ name: n, value: values[i] })),
-    label: { fontSize: 10, color: tc },
+    label: { fontSize: fs, color: tc },
     itemStyle: { borderWidth: 2, borderColor: isDark.value ? '#1e1e2e' : '#fff' },
     ...extra,
   }
@@ -158,13 +159,15 @@ function chartOption(w: Widget) {
   const tc      = isDark.value ? '#94a3b8' : '#64748b'
   const sc      = isDark.value ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)'
   const rotate  = w.xAxisRotate ?? 0
-  const ab      = makeAxisBase(tc, sc)
+  const fs      = w.fontSize ?? 11
+  const fsSmall = Math.max(8, fs - 1)
+  const ab      = makeAxisBase(tc, sc, fsSmall)
   const abX     = { ...ab, axisLabel: { ...ab.axisLabel, rotate } }
-  const tip     = { trigger: 'axis' as const, textStyle: { fontSize: 11 }, confine: true }
+  const tip     = { trigger: 'axis' as const, textStyle: { fontSize: fsSmall }, confine: true }
   const bottomPad = rotate === 0 ? 28 : Math.min(80, Math.abs(rotate))
   const grid    = { top: 20, right: 8, bottom: bottomPad, left: 8, containLabel: true }
-  const legend  = { top: 0, textStyle: { fontSize: 10, color: tc } }
-  const itemTip = { trigger: 'item' as const, formatter: '{b}: {c} ({d}%)', textStyle: { fontSize: 11 }, confine: true }
+  const legend  = { top: 0, textStyle: { fontSize: fsSmall, color: tc } }
+  const itemTip = { trigger: 'item' as const, formatter: '{b}: {c} ({d}%)', textStyle: { fontSize: fsSmall }, confine: true }
 
   if (t === 'ecOption') { try { return JSON.parse(w.fields.ecOptionJson?.trim() ?? '') } catch { return {} } }
   if (t === 'bar')  return { color: COLORS, grid, tooltip: tip,
@@ -176,10 +179,10 @@ function chartOption(w: Widget) {
       lineStyle: { width: 2 }, areaStyle: { opacity: 0.12 } }] }
   if (t === 'pie')         return { color: COLORS, tooltip: itemTip,
     series: [makePieSeries(labels, values, tc, ['32%','66%'], ['50%','50%'],
-      { labelLine: { lineStyle: { color: tc } } })] }
+      { labelLine: { lineStyle: { color: tc } } }, fsSmall)] }
   if (t === 'halfDoughnut') return { color: COLORS, tooltip: itemTip,
     series: [makePieSeries(labels, values, tc, ['40%','72%'], ['50%','72%'],
-      { startAngle: 180, endAngle: 360 })] }
+      { startAngle: 180, endAngle: 360 }, fsSmall)] }
   if (t === 'stackedBar') {
     const totals = labels.map((_: any, li: number) =>
       yList.reduce((s: number, yf: string) => s + (grouped.series(yf)[li] ?? 0), 0))
@@ -203,7 +206,7 @@ function chartOption(w: Widget) {
       data: grouped.series(f) })) }
   if (t === 'scatter') return { color: COLORS, grid,
     tooltip: { trigger: 'item' as const, confine: true,
-      formatter: (p: any) => `${p.value[0]}, ${p.value[1]}`, textStyle: { fontSize: 11 } },
+      formatter: (p: any) => `${p.value[0]}, ${p.value[1]}`, textStyle: { fontSize: fsSmall } },
     xAxis: { type: 'value', ...ab }, yAxis: { type: 'value', ...ab },
     series: [{ type: 'scatter', symbolSize: 7, itemStyle: { color: COLORS[0], opacity: 0.8 },
       data: rows.map(r => [Number(r[xField] ?? 0), Number(r[yField] ?? 0)]) }] }
@@ -247,12 +250,17 @@ function kpiValue(w: Widget): string {
   if (!yf) return '—'
   const rows = filteredRows(w)
   if (!rows.length) return '—'
-  return rows.map(r => Number(r[yf]) || 0).reduce((a, b) => a + b, 0).toLocaleString()
+  const total    = rows.map(r => Number(r[yf]) || 0).reduce((a, b) => a + b, 0)
+  const fmt      = fmtOf(w.datasetId)
+  const excluded = fmt.excludeDecimalCols?.includes(yf) ?? false
+  if (!excluded && (fmt.comma || fmt.decimals !== undefined)) return formatNumericValue(total, fmt)
+  return total.toLocaleString()
 }
 
 // ── Click modal ───────────────────────────────────────────────────────────────
 interface ClickCtx {
   datasetId: string; rowData: any; colField: string; cellValue: any; widgetRows: any[]
+  fontSize?: number
 }
 const clickCtx  = ref<ClickCtx | null>(null)
 const clickTab  = ref<'detail' | 'related'>('detail')
@@ -341,10 +349,9 @@ function formatCell(dsId: string, key: string, raw: any): string {
   const isDate  = colMeta?.type === 'date' || (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}/.test(raw))
   const isNum   = colMeta?.type === 'number' || typeof raw === 'number'
   const isExcluded = fmt.excludeDecimalCols?.includes(key) ?? false
-  const colFmt  = isExcluded ? { ...fmt, decimals: undefined } : fmt
   if (raw === null || raw === undefined) return '—'
   if (isDate && fmt.datePattern) return formatDateValue(raw, fmt.datePattern, fmt.dateEra ?? 'CE')
-  if (isNum && (colFmt.comma || colFmt.decimals !== undefined)) return formatNumericValue(raw, colFmt)
+  if (isNum && !isExcluded && (fmt.comma || fmt.decimals !== undefined)) return formatNumericValue(raw, fmt)
   return String(raw)
 }
 
@@ -394,15 +401,17 @@ const relatedColDefs = computed<ColDef[]>(() => {
   })
 })
 
-function openModal(dsId: string, rowData: any, colField: string, cellValue: any, widgetRows: any[]) {
-  clickCtx.value = { datasetId: dsId, rowData, colField, cellValue, widgetRows }
+function openModal(dsId: string, rowData: any, colField: string, cellValue: any, widgetRows: any[], fontSize?: number) {
+  clickCtx.value = { datasetId: dsId, rowData, colField, cellValue, widgetRows, fontSize }
 }
+
+const modalFontSize = computed(() => clickCtx.value?.fontSize ?? 11)
 
 // table cell click — only when cellClickMode === 'modal'
 function onCellClicked(w: Widget, e: any) {
   if (w.cellClickMode !== 'modal') return
   if (!e?.data) return
-  openModal(w.datasetId, e.data, e.colDef?.field ?? '', e.value, filteredRows(w))
+  openModal(w.datasetId, e.data, e.colDef?.field ?? '', e.value, filteredRows(w), w.fontSize)
 }
 
 // chart click — always opens modal (mirrors ReportWidget.vue — no cellClickMode gate for charts)
@@ -413,13 +422,13 @@ function onChartClick(w: Widget, params: { name: string; value: any; seriesName:
     const xVal = Array.isArray(params.value) ? params.value[0] : params.value
     const row  = rows.find(r => Number(r[x]) === Number(xVal))
     if (!row || !x) return
-    openModal(w.datasetId, row, x, xVal, rows)
+    openModal(w.datasetId, row, x, xVal, rows, w.fontSize)
     return
   }
   if (!x || !params.name) return
   const row = rows.find(r => String(r[x] ?? '') === params.name)
   if (!row) return
-  openModal(w.datasetId, row, x, params.name, rows)
+  openModal(w.datasetId, row, x, params.name, rows, w.fontSize)
 }
 
 function onRelatedFirstData(e: any) { e.api.autoSizeAllColumns() }
@@ -492,13 +501,15 @@ function onRelatedFirstData(e: any) { e.api.autoSizeAllColumns() }
             />
 
             <!-- Table -->
-            <div v-else-if="w.type === 'table'" class="h-full flex flex-col">
+            <div v-else-if="w.type === 'table'" class="h-full flex flex-col"
+              :style="{ '--vw-fs': (w.fontSize ?? 11) + 'px', '--vw-fsh': Math.max(8, (w.fontSize ?? 11) - 1) + 'px' }"
+            >
               <AgGridVue
-                :class="[themeClass, 'flex-1 min-h-0 w-full']"
+                :class="[themeClass, 'ag-view-table flex-1 min-h-0 w-full']"
                 :rowData="filteredRows(w)"
                 :columnDefs="tableColDefs(w)"
-                :rowHeight="26"
-                :headerHeight="30"
+                :rowHeight="Math.max(26, (w.fontSize ?? 11) + 15)"
+                :headerHeight="Math.max(30, (w.fontSize ?? 11) + 19)"
                 :suppressMovableColumns="true"
                 :suppressCellFocus="true"
                 :enableCellTextSelection="w.cellClickMode !== 'modal'"
@@ -589,8 +600,8 @@ function onRelatedFirstData(e: any) { e.api.autoSizeAllColumns() }
                     ? 'border-indigo-400 bg-indigo-50 dark:bg-indigo-950/30'
                     : 'border-border bg-muted/20'"
                 >
-                  <p class="text-[10px] text-muted-foreground truncate">{{ entry.label }}</p>
-                  <p class="text-xs font-semibold break-all">{{ entry.value }}</p>
+                  <p class="text-muted-foreground truncate" :style="{ fontSize: Math.max(9, modalFontSize - 2) + 'px' }">{{ entry.label }}</p>
+                  <p class="font-semibold break-all" :style="{ fontSize: modalFontSize + 'px' }">{{ entry.value }}</p>
                 </div>
               </div>
             </div>
@@ -601,17 +612,21 @@ function onRelatedFirstData(e: any) { e.api.autoSizeAllColumns() }
                 v-if="!relatedRows.length"
                 class="flex-1 flex items-center justify-center text-sm text-muted-foreground"
               >No related rows found</div>
-              <AgGridVue
-                v-else-if="showRelated"
-                :class="[themeClass, 'flex-1 min-h-0 w-full']"
-                :rowData="relatedRows"
-                :columnDefs="relatedColDefs"
-                :rowHeight="28"
-                :headerHeight="32"
-                :suppressMovableColumns="true"
-                :suppressCellFocus="true"
-                @first-data-rendered="onRelatedFirstData"
-              />
+              <div v-else-if="showRelated"
+                class="flex-1 min-h-0"
+                :style="{ '--mf': modalFontSize + 'px', '--mf-h': Math.max(9, modalFontSize - 1) + 'px' }"
+              >
+                <AgGridVue
+                  :class="[themeClass, 'ag-modal-table h-full w-full']"
+                  :rowData="relatedRows"
+                  :columnDefs="relatedColDefs"
+                  :rowHeight="Math.max(28, modalFontSize + 17)"
+                  :headerHeight="Math.max(32, modalFontSize + 21)"
+                  :suppressMovableColumns="true"
+                  :suppressCellFocus="true"
+                  @first-data-rendered="onRelatedFirstData"
+                />
+              </div>
             </div>
 
             <!-- Resize handles -->
@@ -635,4 +650,20 @@ function onRelatedFirstData(e: any) { e.api.autoSizeAllColumns() }
 <style>
 .fade-enter-active, .fade-leave-active { transition: opacity .15s }
 .fade-enter-from, .fade-leave-to { opacity: 0 }
+
+.ag-view-table .ag-header-cell-text {
+  font-size: var(--vw-fsh, 10px);
+  font-weight: 600;
+}
+.ag-view-table .ag-cell {
+  font-size: var(--vw-fs, 11px);
+}
+
+.ag-modal-table .ag-header-cell-text {
+  font-size: var(--mf-h, 10px);
+  font-weight: 600;
+}
+.ag-modal-table .ag-cell {
+  font-size: var(--mf, 11px);
+}
 </style>

@@ -60,6 +60,7 @@ export interface ReportWidget {
   columnWidths?:  Record<string, number>
   cellClickMode?: CellClickMode
   xAxisRotate?:   number   // x-axis label rotation in degrees (0 = horizontal)
+  fontSize?:      number   // table cell font size in px (default 11)
   x: number; y: number
   w: number; h: number
 }

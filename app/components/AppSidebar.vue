@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import {
   BarChart2, Share2,
-  Sun, Moon, LogOut, ChevronUp, Languages,
+  Sun, Moon, LogOut, ChevronUp, Languages, ALargeSmall,
   LayoutDashboard, Send, Code2,
 } from 'lucide-vue-next'
 import {
@@ -19,6 +19,7 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 
 const { t, locale, setLocale } = useI18n()
 const colorMode = useColorMode()
+const { fontSize, fontSizeOptions, applySize } = useAppFontSize()
 const authStore = useAuthStore()
 const route  = useRoute()
 const router = useRouter()
@@ -123,6 +124,34 @@ function isActive(path: string) {
               {{ isDark ? t('nav_theme_light') : t('nav_theme_dark') }}
             </span>
           </SidebarMenuButton>
+        </SidebarMenuItem>
+
+        <!-- Font Size -->
+        <SidebarMenuItem>
+          <DropdownMenu>
+            <DropdownMenuTrigger as-child>
+              <SidebarMenuButton tooltip="ขนาดตัวอักษร">
+                <ALargeSmall class="size-4 shrink-0" />
+                <span class="group-data-[collapsible=icon]:hidden">
+                  ตัวอักษร ({{ fontSize }}px)
+                </span>
+              </SidebarMenuButton>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent side="right" align="end" class="min-w-44">
+              <DropdownMenuLabel>ขนาดตัวอักษร</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuRadioGroup :model-value="String(fontSize)" @update:model-value="v => applySize(Number(v))">
+                <DropdownMenuRadioItem
+                  v-for="opt in fontSizeOptions"
+                  :key="opt.value"
+                  :value="String(opt.value)"
+                  class="cursor-pointer"
+                >
+                  {{ opt.label }}
+                </DropdownMenuRadioItem>
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </SidebarMenuItem>
 
         <!-- Language Switcher -->

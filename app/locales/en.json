@@ -1308,5 +1308,27 @@
   "page_title_dashboard": "Dashboard",
   "page_title_canvas":    "Canvas",
   "page_title_datamodel": "Data Model",
-  "page_title_report":    "Report Builder"
+  "page_title_report":    "Report Builder",
+
+  "login_app_name":        "MangoBI",
+  "login_subtitle":        "Sign in to continue",
+  "login_company":         "Company",
+  "login_company_ph":      "-- Please Select --",
+  "login_username":        "Username",
+  "login_password":        "Password",
+  "login_btn":             "Sign in",
+  "login_or":              "Or continue with",
+  "login_ms_btn":          "Sign in with Microsoft",
+  "login_ok":              "OK",
+  "login_err_no_company":  "Please select a working company",
+  "login_err_no_cred":     "Please enter Username and Password",
+  "login_err_ms_fail":     "Unable to sign in with Microsoft",
+  "login_err_otp":         "OTP verification required",
+  "login_err_locked":      "If wrong more than {limit} times, account will be locked",
+  "login_err_title_error": "Error",
+  "login_err_title_info":  "Information",
+  "login_err_title_otp":   "OTP Required",
+  "login_err_title_admin": "Contact Admin",
+  "login_err_title_full":  "Full Session",
+  "login_err_title_fail":  "Login Failed"
 }

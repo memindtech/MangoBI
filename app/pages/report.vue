@@ -447,6 +447,7 @@ interface CellClickContext {
   rowData:     Record<string, any>
   colField:    string
   cellValue:   any
+  fontSize?:   number
 }
 
 const cellClickCtx  = ref<CellClickContext | null>(null)
@@ -543,11 +544,14 @@ function onCellClick(
     rowData:     payload.rowData,
     colField:    payload.colField,
     cellValue:   payload.cellValue,
+    fontSize:    widget.fontSize,
   }
   cellClickTab.value = 'detail'
 }
 
 function closeCellModal() { cellClickCtx.value = null }
+
+const modalFontSize = computed(() => cellClickCtx.value?.fontSize ?? 11)
 
 const cellDetailEntries = computed(() => {
   if (!cellClickCtx.value) return []
@@ -559,14 +563,13 @@ const cellDetailEntries = computed(() => {
     const isDate  = colMeta?.type === 'date' || (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}/.test(raw))
     const isNum   = colMeta?.type === 'number' || (typeof raw === 'number')
     const isExcluded = fmt.excludeDecimalCols?.includes(key) ?? false
-    const colFmt = isExcluded ? { ...fmt, decimals: undefined } : fmt
     let display: string
     if (raw === null || raw === undefined) {
       display = '—'
     } else if (isDate && fmt.datePattern) {
       display = formatDateValue(raw, fmt.datePattern, fmt.dateEra ?? 'CE')
-    } else if (isNum && (colFmt.comma || colFmt.decimals !== undefined)) {
-      display = formatNumericValue(raw, colFmt)
+    } else if (isNum && !isExcluded && (fmt.comma || fmt.decimals !== undefined)) {
+      display = formatNumericValue(raw, fmt)
     } else {
       display = String(raw)
     }
@@ -593,9 +596,10 @@ const cellRelatedColDefs = computed<ColDef[]>(() => {
   const fmt  = store.numericFormatOf(datasetId)
   const cols = store.columnsOf(datasetId)
   return Object.keys(rowData).map(col => {
-    const colMeta = cols.find(c => c.name === col)
-    const isDate  = colMeta?.type === 'date'
-    const isNum   = colMeta?.type === 'number'
+    const colMeta    = cols.find(c => c.name === col)
+    const isDate     = colMeta?.type === 'date'
+    const isNum      = colMeta?.type === 'number'
+    const isExcluded = fmt.excludeDecimalCols?.includes(col) ?? false
     return {
       field:      col,
       headerName: store.labelOf(datasetId, col),
@@ -606,7 +610,7 @@ const cellRelatedColDefs = computed<ColDef[]>(() => {
         const looksDate = isDate || (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}/.test(raw))
         const looksNum  = isNum  || typeof raw === 'number'
         if (looksDate && fmt.datePattern) return formatDateValue(raw, fmt.datePattern, fmt.dateEra ?? 'CE')
-        if (looksNum  && (fmt.comma || fmt.decimals !== undefined)) return formatNumericValue(raw, fmt)
+        if (looksNum && !isExcluded && (fmt.comma || fmt.decimals !== undefined)) return formatNumericValue(raw, fmt)
         return String(raw)
       },
     }
@@ -1504,6 +1508,32 @@ async function doDeleteRp(id: string) {
               </div>
             </div>
 
+            <!-- ── Font Size (all except ecOption) ─────────────────────── -->
+            <div v-if="selectedWidget && selectedWidget.type !== 'ecOption'" class="border-t pt-3">
+              <div class="flex items-center justify-between mb-2">
+                <p class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Font Size</p>
+                <div class="flex items-center gap-1">
+                  <button
+                    @click.stop="store.updateWidget(selectedWidget.id, { fontSize: Math.max(8, (selectedWidget.fontSize ?? 11) - 1) })"
+                    class="size-6 flex items-center justify-center rounded border text-muted-foreground hover:bg-muted/50 text-sm font-bold transition-colors"
+                  >−</button>
+                  <span class="w-10 text-center text-[11px] font-mono font-semibold">
+                    {{ selectedWidget.fontSize ?? 11 }}px
+                  </span>
+                  <button
+                    @click.stop="store.updateWidget(selectedWidget.id, { fontSize: Math.min(20, (selectedWidget.fontSize ?? 11) + 1) })"
+                    class="size-6 flex items-center justify-center rounded border text-muted-foreground hover:bg-muted/50 text-sm font-bold transition-colors"
+                  >+</button>
+                  <button
+                    v-if="selectedWidget.fontSize && selectedWidget.fontSize !== 11"
+                    @click.stop="store.updateWidget(selectedWidget.id, { fontSize: 11 })"
+                    class="size-6 flex items-center justify-center rounded border text-muted-foreground hover:bg-muted/50 transition-colors"
+                    title="Reset to 11px"
+                  ><X class="size-3" /></button>
+                </div>
+              </div>
+            </div>
+
             <!-- ── Cell Click (table only) ──────────────────────────────── -->
             <div v-if="selectedWidget?.type === 'table'" class="border-t pt-3">
               <div class="flex items-center gap-1.5 mb-2">
@@ -1653,11 +1683,13 @@ async function doDeleteRp(id: string) {
                   ]"
                 >
                   <span
-                    class="text-[10px] font-semibold uppercase tracking-wide"
+                    class="font-semibold uppercase tracking-wide"
+                    :style="{ fontSize: Math.max(9, modalFontSize - 2) + 'px' }"
                     :class="entry.isClicked ? 'text-indigo-500' : 'text-muted-foreground'"
                   >{{ entry.label }}</span>
                   <span
-                    class="text-sm font-medium break-all"
+                    class="font-medium break-all"
+                    :style="{ fontSize: modalFontSize + 'px' }"
                     :class="entry.isClicked ? 'text-indigo-700 dark:text-indigo-300' : 'text-foreground'"
                   >{{ entry.value ?? '—' }}</span>
                 </div>
@@ -1670,18 +1702,22 @@ async function doDeleteRp(id: string) {
                 class="flex-1 flex items-center justify-center text-sm text-muted-foreground">
                 No related rows found
               </div>
-              <AgGridVue
-                v-else-if="cellModalAfterMounted"
-                :class="[cellModalTheme, 'flex-1 min-h-0 w-full']"
-                :rowData="cellRelatedRows"
-                :columnDefs="cellRelatedColDefs"
-                :rowHeight="28"
-                :headerHeight="32"
-                :suppressMovableColumns="true"
-                :suppressCellFocus="true"
-                :enableCellTextSelection="true"
-                @first-data-rendered="onCellModalFirstData"
-              />
+              <div v-else-if="cellModalAfterMounted"
+                class="flex-1 min-h-0"
+                :style="{ '--mf': modalFontSize + 'px', '--mf-h': Math.max(9, modalFontSize - 1) + 'px' }"
+              >
+                <AgGridVue
+                  :class="[cellModalTheme, 'ag-modal-table h-full w-full']"
+                  :rowData="cellRelatedRows"
+                  :columnDefs="cellRelatedColDefs"
+                  :rowHeight="Math.max(28, modalFontSize + 17)"
+                  :headerHeight="Math.max(32, modalFontSize + 21)"
+                  :suppressMovableColumns="true"
+                  :suppressCellFocus="true"
+                  :enableCellTextSelection="true"
+                  @first-data-rendered="onCellModalFirstData"
+                />
+              </div>
             </div>
 
             <!-- Resize handles -->
@@ -1759,6 +1795,14 @@ async function doDeleteRp(id: string) {
 </template>
 
 <style scoped>
+:deep(.ag-modal-table .ag-header-cell-text) {
+  font-size: var(--mf-h, 10px);
+  font-weight: 600;
+}
+:deep(.ag-modal-table .ag-cell) {
+  font-size: var(--mf, 11px);
+}
+
 .slide-panel-enter-active,
 .slide-panel-leave-active { transition: opacity 0.15s ease; }
 .slide-panel-enter-from,
