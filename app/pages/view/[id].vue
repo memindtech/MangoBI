@@ -41,11 +41,26 @@ interface Widget {
 // ── State ─────────────────────────────────────────────────────────────────────
 const loading    = ref(true)
 const error      = ref('')
+const expired    = ref(false)
+const expiresAt  = ref<Date | null>(null)
 const reportName = ref('')
 const datasets   = ref<Dataset[]>([])
 const widgets    = ref<Widget[]>([])
 
 onMounted(async () => {
+  // ── ตรวจสอบ link expiry ─────────────────────────────────────────────────
+  const expParam = route.query.exp
+  if (expParam) {
+    const expSec = Number(expParam)
+    const expDate = new Date(expSec * 1000)
+    expiresAt.value = expDate
+    if (Date.now() > expSec * 1000) {
+      expired.value = true
+      loading.value = false
+      return
+    }
+  }
+
   try {
     const row = await biApi.loadReport(route.params.id as string)
     if (!row) { error.value = 'Report not found'; return }
@@ -444,12 +459,38 @@ function onRelatedFirstData(e: any) { e.api.autoSizeAllColumns() }
       <span class="text-[11px] text-muted-foreground">
         {{ widgets.length }} visual{{ widgets.length !== 1 ? 's' : '' }}
       </span>
+      <span v-if="expiresAt && !expired"
+        class="text-[11px] text-amber-600 dark:text-amber-400 ml-2"
+        :title="`ลิ้งค์หมดอายุ: ${expiresAt.toLocaleString('th-TH')}`"
+      >
+        หมดอายุ {{ expiresAt.toLocaleDateString('th-TH') }}
+      </span>
     </header>
 
     <!-- Loading -->
     <div v-if="loading" class="flex-1 flex items-center justify-center gap-2 text-muted-foreground">
       <Loader2 class="size-5 animate-spin" />
       <span class="text-sm">Loading…</span>
+    </div>
+
+    <!-- Link Expired -->
+    <div v-else-if="expired" class="flex-1 flex items-center justify-center p-8">
+      <div class="text-center space-y-4 max-w-sm">
+        <div class="mx-auto flex size-16 items-center justify-center rounded-full bg-amber-100 dark:bg-amber-950/40">
+          <svg class="size-8 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+            <path stroke-linecap="round" stroke-linejoin="round"
+              d="M12 6v6l4 2m6-2a10 10 0 11-20 0 10 10 0 0120 0z" />
+          </svg>
+        </div>
+        <div>
+          <p class="text-lg font-bold text-foreground">ลิ้งค์หมดอายุแล้ว</p>
+          <p class="text-sm text-muted-foreground mt-1">
+            ลิ้งค์นี้หมดอายุเมื่อ
+            {{ expiresAt ? expiresAt.toLocaleString('th-TH') : '' }}
+          </p>
+        </div>
+        <p class="text-xs text-muted-foreground">กรุณาติดต่อผู้ส่งรายงานเพื่อขอลิ้งค์ใหม่</p>
+      </div>
     </div>
 
     <!-- Error -->

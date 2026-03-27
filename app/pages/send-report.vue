@@ -3,7 +3,7 @@ import {
   Send, Mail, Plus, X, Pencil, Trash2, Search,
   Users, FileText, Clock, RefreshCw, CheckCircle2,
   MessageSquare, ToggleLeft, ToggleRight, ChevronDown,
-  Loader2, CalendarDays,
+  Loader2, CalendarDays, SendHorizontal,
 } from 'lucide-vue-next'
 import { useMangoBIApi, type BIListItem } from '~/composables/useMangoBIApi'
 import {
@@ -31,6 +31,7 @@ interface ScheduleItem {
   messageBody?:    string
   receiverEmpnos:  string[]
   receiverCount:   number
+  linkExpiryDays?: number | null
 }
 
 interface Employee {
@@ -97,16 +98,17 @@ onMounted(async () => {
 
 // ── Form modal ────────────────────────────────────────────────────────────────
 type FormModel = {
-  id:             string
-  reportId:       string
-  subject:        string
-  messageBody:    string
-  scheduleTime:   string
-  intervalDays:   number
-  isActive:       boolean
-  sendViaLine:    boolean
-  sendViaEmail:   boolean
-  receiverEmpnos: string[]
+  id:              string
+  reportId:        string
+  subject:         string
+  messageBody:     string
+  scheduleTime:    string
+  intervalDays:    number
+  isActive:        boolean
+  sendViaLine:     boolean
+  sendViaEmail:    boolean
+  receiverEmpnos:  string[]
+  linkExpiryDays:  number   // 0 = ไม่หมดอายุ
 }
 
 const showModal = ref(false)
@@ -117,6 +119,25 @@ const deleting  = ref<string | null>(null)
 // ── Confirm delete dialog ─────────────────────────────────────────────────────
 const confirmDeleteId   = ref<string | null>(null)
 const confirmDeleteName = ref('')
+
+// ── Send Now ──────────────────────────────────────────────────────────────────
+const sendingNow     = ref<string | null>(null)   // id ที่กำลังส่ง
+const sendNowResult  = ref<{ id: string; sent: number; receivers: number } | null>(null)
+
+async function doSendNow(item: ScheduleItem) {
+  sendingNow.value    = item.id
+  sendNowResult.value = null
+  try {
+    const res: any = await $xt.postServerJson(`Planning/MangoBISchedule/SendNow?id=${item.id}`, {})
+    sendNowResult.value = { id: item.id, sent: res?.data?.sent ?? 0, receivers: res?.data?.receivers ?? 0 }
+    // clear feedback after 4 s
+    setTimeout(() => {
+      if (sendNowResult.value?.id === item.id) sendNowResult.value = null
+    }, 4000)
+  } finally {
+    sendingNow.value = null
+  }
+}
 
 function askDelete(item: ScheduleItem) {
   confirmDeleteId.value   = item.id
@@ -134,7 +155,7 @@ function emptyForm(): FormModel {
     id: '', reportId: '', subject: '', messageBody: '',
     scheduleTime: '08:00', intervalDays: 1,
     isActive: true, sendViaLine: false, sendViaEmail: true,
-    receiverEmpnos: [],
+    receiverEmpnos: [], linkExpiryDays: 7,
   }
 }
 const form = ref<FormModel>(emptyForm())
@@ -159,18 +180,21 @@ function openAdd() {
 function openEdit(item: ScheduleItem) {
   isEdit.value = true
   form.value = {
-    id:             item.id,
-    reportId:       item.reportId,
-    subject:        item.subject ?? '',
-    messageBody:    item.messageBody ?? '',
-    scheduleTime:   item.scheduleTime,
-    intervalDays:   item.intervalDays ?? 1,
-    isActive:       item.isActive,
-    sendViaLine:    item.sendViaLine,
-    sendViaEmail:   item.sendViaEmail,
-    receiverEmpnos: item.receiverEmpnos ?? [],
+    id:              item.id,
+    reportId:        item.reportId,
+    subject:         item.subject ?? '',
+    messageBody:     item.messageBody ?? '',
+    scheduleTime:    item.scheduleTime,
+    intervalDays:    item.intervalDays ?? 1,
+    isActive:        item.isActive,
+    sendViaLine:     item.sendViaLine,
+    sendViaEmail:    item.sendViaEmail,
+    receiverEmpnos:  (item.receiverEmpnos ?? []).map(String).filter(Boolean),
+    linkExpiryDays:  item.linkExpiryDays ?? 7,
   }
   showModal.value = true
+  // โหลดรายชื่อพนักงานใน background เพื่อให้ชิปแสดงได้ทันที
+  loadEmployees()
 }
 
 async function doSave() {
@@ -178,17 +202,18 @@ async function doSave() {
   saving.value = true
   try {
     await $xt.postServerJson('Planning/MangoBISchedule/Save', {
-      id:             form.value.id || undefined,
-      reportId:       form.value.reportId,
-      reportName:     formReportName.value,
-      scheduleTime:   form.value.scheduleTime,
-      intervalDays:   form.value.intervalDays,
-      isActive:       form.value.isActive,
-      sendViaLine:    form.value.sendViaLine,
-      sendViaEmail:   form.value.sendViaEmail,
-      subject:        form.value.subject,
-      messageBody:    form.value.messageBody,
-      receiverEmpnos: form.value.receiverEmpnos,
+      id:              form.value.id || undefined,
+      reportId:        form.value.reportId,
+      reportName:      formReportName.value,
+      scheduleTime:    form.value.scheduleTime,
+      intervalDays:    form.value.intervalDays,
+      isActive:        form.value.isActive,
+      sendViaLine:     form.value.sendViaLine,
+      sendViaEmail:    form.value.sendViaEmail,
+      subject:         form.value.subject,
+      messageBody:     form.value.messageBody,
+      receiverEmpnos:  form.value.receiverEmpnos,
+      linkExpiryDays:  form.value.linkExpiryDays,
     })
     showModal.value = false
     await loadSchedules()
@@ -228,15 +253,16 @@ const filteredEmployees = computed(() => {
   )
 })
 
-function toggleEmployee(empcode: string) {
-  if (form.value.receiverEmpnos.includes(empcode))
-    form.value.receiverEmpnos = form.value.receiverEmpnos.filter(x => x !== empcode)
+function toggleEmployee(empno: number | string) {
+  const key = String(empno)
+  if (form.value.receiverEmpnos.includes(key))
+    form.value.receiverEmpnos = form.value.receiverEmpnos.filter(x => x !== key)
   else
-    form.value.receiverEmpnos = [...form.value.receiverEmpnos, empcode]
+    form.value.receiverEmpnos = [...form.value.receiverEmpnos, key]
 }
 
 const selectedEmployees = computed(() =>
-  employees.value.filter(e => form.value.receiverEmpnos.includes(e.empcode)),
+  employees.value.filter(e => form.value.receiverEmpnos.includes(String(e.empno))),
 )
 
 async function openEmpModal() {
@@ -275,6 +301,24 @@ watch(showModal, (v) => {
     })
   }
 })
+
+// ── Link expiry options ────────────────────────────────────────────────────────
+const EXPIRY_OPTIONS = [
+  { label: 'ไม่หมดอายุ',      value: 0  },
+  { label: '1 วัน',            value: 1  },
+  { label: '3 วัน',            value: 3  },
+  { label: '7 วัน (ค่าเริ่มต้น)', value: 7  },
+  { label: '14 วัน',           value: 14 },
+  { label: '30 วัน',           value: 30 },
+  { label: '60 วัน',           value: 60 },
+  { label: '90 วัน',           value: 90 },
+]
+
+function expiryLabel(days: number | null | undefined): string {
+  if (days === null || days === undefined) return '7 วัน'
+  if (days === 0) return 'ไม่หมดอายุ'
+  return EXPIRY_OPTIONS.find(o => o.value === days)?.label ?? `${days} วัน`
+}
 
 // ── Interval label ────────────────────────────────────────────────────────────
 const INTERVAL_OPTIONS = [
@@ -356,7 +400,7 @@ function intervalLabel(days: number): string {
 
       <!-- Table header -->
       <div v-else>
-        <div class="grid grid-cols-[1fr_100px_150px_100px_100px_80px_100px] gap-4 px-5 py-3
+        <div class="grid grid-cols-[1fr_100px_150px_100px_100px_80px_136px] gap-4 px-5 py-3
                     text-xs font-semibold uppercase tracking-wide text-muted-foreground
                     border-b bg-muted/40">
           <span>รายงาน</span>
@@ -372,7 +416,7 @@ function intervalLabel(days: number): string {
         <div
           v-for="(item, idx) in filteredSchedules"
           :key="item.id"
-          :class="['grid grid-cols-[1fr_100px_150px_100px_100px_80px_100px] gap-4 px-5 py-4 items-center text-sm',
+          :class="['grid grid-cols-[1fr_100px_150px_100px_100px_80px_136px] gap-4 px-5 py-4 items-center text-sm',
                    idx % 2 === 1 ? 'bg-muted/20' : '',
                    !item.isActive && 'opacity-50']"
         >
@@ -393,8 +437,9 @@ function intervalLabel(days: number): string {
           </div>
 
           <!-- Time -->
-          <div class="text-center font-mono font-semibold text-indigo-600 dark:text-indigo-400 text-base">
-            {{ item.scheduleTime }}
+          <div class="flex flex-col items-center gap-0.5">
+            <span class="font-mono font-semibold text-indigo-600 dark:text-indigo-400 text-base">{{ item.scheduleTime }}</span>
+            <span class="text-[10px] text-muted-foreground">{{ expiryLabel(item.linkExpiryDays) }}</span>
           </div>
 
           <!-- Interval -->
@@ -431,7 +476,23 @@ function intervalLabel(days: number): string {
           </div>
 
           <!-- Actions -->
-          <div class="flex items-center justify-center gap-1.5">
+          <div class="flex items-center justify-center gap-1">
+            <!-- Send Now -->
+            <button
+              @click="doSendNow(item)"
+              :disabled="sendingNow === item.id"
+              class="size-8 flex items-center justify-center rounded-lg border transition-colors disabled:opacity-50"
+              :class="sendNowResult?.id === item.id
+                ? 'bg-emerald-500/10 border-emerald-400 text-emerald-600'
+                : 'hover:bg-emerald-500/10 hover:border-emerald-400 hover:text-emerald-600 text-muted-foreground'"
+              :title="sendNowResult?.id === item.id
+                ? `ส่งแล้ว ${sendNowResult.sent} ข้อความ (${sendNowResult.receivers} คน)`
+                : 'ส่งทันที'"
+            >
+              <Loader2      v-if="sendingNow === item.id"  class="size-4 animate-spin" />
+              <CheckCircle2 v-else-if="sendNowResult?.id === item.id" class="size-4" />
+              <SendHorizontal v-else                       class="size-4" />
+            </button>
             <button
               @click="openEdit(item)"
               class="size-8 flex items-center justify-center rounded-lg border
@@ -545,6 +606,29 @@ function intervalLabel(days: number): string {
               </div>
             </div>
 
+            <!-- Link Expiry -->
+            <div class="flex flex-col gap-1.5">
+              <label for="f-expiry" class="text-xs font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1">
+                <Clock class="size-3" /> อายุลิ้งค์
+              </label>
+              <div class="relative">
+                <select
+                  id="f-expiry"
+                  v-model.number="form.linkExpiryDays"
+                  class="w-full text-sm border rounded-xl px-3 py-2.5 bg-background
+                         focus:outline-none focus:ring-2 focus:ring-emerald-400/50 appearance-none pr-8"
+                >
+                  <option v-for="opt in EXPIRY_OPTIONS" :key="opt.value" :value="opt.value">
+                    {{ opt.label }}
+                  </option>
+                </select>
+                <ChevronDown class="absolute right-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground pointer-events-none" />
+              </div>
+              <p v-if="form.linkExpiryDays === 0" class="text-[10px] text-amber-600">
+                ลิ้งค์จะไม่มีวันหมดอายุ — ผู้รับสามารถเข้าถึงได้ตลอด
+              </p>
+            </div>
+
             <!-- Channels (multi-select checkboxes) -->
             <div class="flex flex-col gap-1.5">
               <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1">
@@ -599,18 +683,17 @@ function intervalLabel(days: number): string {
                   <Plus class="size-4" /> เลือกพนักงาน
                 </button>
               </div>
-
               <!-- Selected employees chips -->
               <div v-if="selectedEmployees.length" class="flex flex-wrap gap-1.5">
                 <span
                   v-for="emp in selectedEmployees"
-                  :key="emp.empcode"
+                  :key="emp.empno"
                   class="inline-flex items-center gap-1 text-[10px] font-medium
                          bg-emerald-500/10 text-emerald-700 dark:text-emerald-300
                          border border-emerald-500/30 rounded-full px-2 py-0.5"
                 >
                   {{ emp.empfullname_t ?? emp.userid ?? emp.empcode }}
-                  <button type="button" @click="toggleEmployee(emp.empcode)"
+                  <button type="button" @click="toggleEmployee(emp.empno)"
                     class="hover:text-destructive transition-colors ml-0.5">
                     <X class="size-2.5" />
                   </button>
@@ -786,7 +869,7 @@ function intervalLabel(days: number): string {
             </div>
             <div class="flex gap-2 mt-2">
               <button
-                @click="filteredEmployees.forEach(e => { if (!form.receiverEmpnos.includes(e.empcode)) form.receiverEmpnos.push(e.empcode) })"
+                @click="form.receiverEmpnos = [...new Set([...form.receiverEmpnos, ...filteredEmployees.map(e => String(e.empno)).filter(Boolean)])]"
                 class="text-[10px] px-2 py-1 rounded-lg border hover:bg-accent transition-colors text-muted-foreground"
               >เลือกทั้งหมด</button>
               <button
@@ -805,15 +888,15 @@ function intervalLabel(days: number): string {
           <div v-else class="flex-1 overflow-y-auto divide-y">
             <button
               v-for="emp in filteredEmployees"
-              :key="emp.empcode"
+              :key="emp.empno"
               type="button"
-              @click="toggleEmployee(emp.empcode)"
+              @click="toggleEmployee(emp.empno)"
               :class="['w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-accent transition-colors',
-                       form.receiverEmpnos.includes(emp.empcode) && 'bg-emerald-500/5']"
+                       form.receiverEmpnos.includes(String(emp.empno)) && 'bg-emerald-500/5']"
             >
               <!-- Avatar -->
               <div :class="['flex size-8 items-center justify-center rounded-full shrink-0 text-xs font-bold text-white',
-                             form.receiverEmpnos.includes(emp.empcode) ? 'bg-emerald-500' : 'bg-muted-foreground/30 !text-foreground']">
+                             form.receiverEmpnos.includes(String(emp.empno)) ? 'bg-emerald-500' : 'bg-muted-foreground/30 !text-foreground']">
                 {{ empInitial(emp) }}
               </div>
               <!-- Info -->
@@ -828,7 +911,7 @@ function intervalLabel(days: number): string {
               </div>
               <!-- Check -->
               <CheckCircle2
-                v-if="form.receiverEmpnos.includes(emp.empcode)"
+                v-if="form.receiverEmpnos.includes(String(emp.empno))"
                 class="size-4 text-emerald-500 shrink-0"
               />
             </button>
