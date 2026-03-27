@@ -3,7 +3,8 @@
  * Routes: Planning/MangoBI/<action>
  */
 
-const BASE = 'Planning/MangoBI'
+const BASE        = 'Planning/MangoBI'
+const BASE_PUBLIC = 'Planning/Public'
 
 export interface BIListItem {
   id:        string
@@ -15,6 +16,22 @@ export interface BIListItem {
 
 export function useMangoBIApi() {
   const { $xt } = useNuxtApp() as any
+  const config  = useRuntimeConfig()
+
+  // ── Public (no-auth, no-redirect) ─────────────────────────────────────────
+
+  /** Load a report via the public endpoint — no login required, no 401 redirect. */
+  async function loadPublicReport(id: string): Promise<any> {
+    try {
+      const res: any = await $fetch(
+        `${config.public.planningBase}${BASE_PUBLIC}/GetPublicReport?id=${id}`,
+        { method: 'GET' },
+      )
+      return res?.data ?? null
+    } catch {
+      return null
+    }
+  }
 
   // ── Report ────────────────────────────────────────────────────────────────
 
@@ -70,6 +87,7 @@ export function useMangoBIApi() {
   }
 
   return {
+    loadPublicReport,
     listReports, loadReport, saveReport, deleteReport,
     listDataModels, loadDataModel, saveDataModel, deleteDataModel,
   }

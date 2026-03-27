@@ -457,7 +457,7 @@ watch(selectedEdgeId, () => {
 // ─── Add Table panel ─────────────────────────────────────────────────────────
 const showAddPanel    = ref(false)
 const showLayersPanel = ref(false)
-const addMode       = ref<'mock' | 'sql'>('mock')
+const addMode       = ref<'mock' | 'passcode' | 'rawsql'>('mock')
 const customName    = ref('')
 const selectedKey   = ref<DatasetKey>('sales_monthly')
 const loading       = ref(false)
@@ -494,7 +494,66 @@ async function fetchSqlTemplates() {
   }
 }
 
-watch(addMode, (m) => { if (m === 'sql') { sqlTemplatesLoaded.value = false; sqlTemplates.value = [] } })
+watch(addMode, (m) => {
+  if (m === 'passcode') { sqlTemplatesLoaded.value = false; sqlTemplates.value = [] }
+  rawSqlErrors.value = []
+})
+
+// ─── Raw SQL mode ─────────────────────────────────────────────────────────────
+const rawSqlText   = ref('')
+const rawSqlErrors = ref<string[]>([])
+const rawSqlLoading = ref(false)
+
+const BLOCKED_SQL_KEYWORDS = [
+  'DROP', 'DELETE', 'UPDATE', 'INSERT', 'ALTER', 'CREATE', 'TRUNCATE',
+  'EXEC', 'EXECUTE', 'SP_', 'XP_', 'GRANT', 'REVOKE', 'MERGE',
+  'BULK', 'OPENROWSET', 'OPENDATASOURCE',
+]
+
+function validateRawSql(sql: string): string[] {
+  const errors: string[] = []
+  const trimmed = sql.trim()
+
+  if (!trimmed) { errors.push('กรุณาใส่ SQL'); return errors }
+  if (!/^SELECT\b/i.test(trimmed))
+    errors.push('SQL ต้องเริ่มต้นด้วย SELECT เท่านั้น')
+  if (trimmed.includes(';'))
+    errors.push('ไม่อนุญาตให้ใช้ semicolon (;) เพื่อป้องกันการ inject หลาย statement')
+
+  const upper = trimmed.toUpperCase()
+  for (const kw of BLOCKED_SQL_KEYWORDS) {
+    const pattern = new RegExp(`\\b${kw}\\b`)
+    if (pattern.test(upper))
+      errors.push(`พบคำสั่งที่ไม่อนุญาต: ${kw}`)
+  }
+  return errors
+}
+
+async function addRawSqlTable() {
+  rawSqlErrors.value = validateRawSql(rawSqlText.value)
+  if (rawSqlErrors.value.length) return
+
+  rawSqlLoading.value = true
+  errorMsg.value = ''
+  try {
+    const res: any = await $xt.postServerJson('Planning/MangoBI/ExecuteCustomSql', {
+      sql:  rawSqlText.value.trim(),
+      name: customName.value.trim() || 'Custom SQL',
+    })
+    if (res?.error) throw new Error(res.error)
+    const payload = extractSqlPayload(res)
+    if (!payload?.rows?.length) throw new Error(t('bi_no_data_found'))
+    const name = customName.value.trim() || 'Custom SQL'
+    placeTableNode(`rawsql_${Date.now()}`, name, payload.rows, parseColumnMapping(payload.column_mapping_json))
+    showAddPanel.value = false
+    customName.value   = ''
+    rawSqlText.value   = ''
+  } catch (e: any) {
+    errorMsg.value = e?.message ?? t('bi_error')
+  } finally {
+    rawSqlLoading.value = false
+  }
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function extractSqlPayload(res: any): { rows: any[]; column_mapping_json?: any } | null {
@@ -1541,7 +1600,7 @@ function clearDatamodel() {
           <!-- Mode tabs -->
           <div class="flex border-b text-[10px] shrink-0">
             <button
-              v-for="[m, label] in ([['mock','📦 Demo'],['sql','🗄️ SQL']] as const)"
+              v-for="[m, label] in ([['mock','📦 Demo'],['passcode','🔑 Passcode'],['rawsql','🗄️ SQL']] as const)"
               :key="m"
               @click="addMode = m; errorMsg = ''"
               :class="[
@@ -1585,8 +1644,8 @@ function clearDatamodel() {
               </button>
             </template>
 
-            <!-- SQL Template mode -->
-            <template v-else>
+            <!-- Passcode / SQL Template mode -->
+            <template v-else-if="addMode === 'passcode'">
               <!-- Passcode -->
               <div>
                 <p class="text-[10px] font-semibold text-muted-foreground mb-1">Passcode</p>
@@ -1671,6 +1730,66 @@ function clearDatamodel() {
                   <Bug v-else class="size-3" />
                 </button>
               </div>
+            </template>
+
+            <!-- Raw SQL mode -->
+            <template v-else-if="addMode === 'rawsql'">
+              <!-- Validation errors -->
+              <div
+                v-if="rawSqlErrors.length"
+                class="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 space-y-0.5"
+              >
+                <p class="text-[10px] font-semibold text-destructive mb-1">SQL ไม่ผ่านการตรวจสอบ</p>
+                <p v-for="err in rawSqlErrors" :key="err" class="text-[10px] text-destructive flex items-start gap-1">
+                  <AlertCircle class="size-3 shrink-0 mt-0.5" />
+                  {{ err }}
+                </p>
+              </div>
+
+              <!-- SQL textarea -->
+              <div>
+                <div class="flex items-center justify-between mb-1">
+                  <p class="text-[10px] font-semibold text-muted-foreground">SQL Statement</p>
+                  <span class="text-[9px] text-muted-foreground/60">SELECT เท่านั้น</span>
+                </div>
+                <textarea
+                  v-model="rawSqlText"
+                  rows="10"
+                  placeholder="SELECT col1, col2&#10;FROM table_name&#10;WHERE condition"
+                  spellcheck="false"
+                  class="w-full text-[10px] font-mono border rounded-lg px-2 py-1.5 bg-background
+                         focus:outline-none focus:ring-1 focus:ring-indigo-400 resize-none leading-relaxed"
+                  :class="rawSqlErrors.length ? 'border-destructive' : ''"
+                  @input="rawSqlErrors = []"
+                />
+              </div>
+
+              <!-- Security note -->
+              <div class="flex items-start gap-1.5 text-[10px] text-muted-foreground bg-muted/40 rounded-lg px-2.5 py-2">
+                <AlertCircle class="size-3 shrink-0 mt-0.5 text-amber-500" />
+                <span>ระบบจะตรวจสอบ SQL ทั้ง client และ server — อนุญาตเฉพาะ SELECT เท่านั้น</span>
+              </div>
+
+              <!-- Error -->
+              <div
+                v-if="errorMsg"
+                class="flex items-start gap-1.5 text-[10px] text-destructive bg-destructive/10 rounded-lg px-2 py-1.5"
+              >
+                <AlertCircle class="size-3 shrink-0 mt-0.5" />
+                <span class="break-all">{{ errorMsg }}</span>
+              </div>
+
+              <button
+                @click="addRawSqlTable"
+                :disabled="rawSqlLoading || !rawSqlText.trim()"
+                class="w-full flex items-center justify-center gap-1.5 text-xs py-2
+                       bg-indigo-500 hover:bg-indigo-600 text-white rounded-lg font-medium
+                       transition-colors disabled:opacity-60"
+              >
+                <Loader2 v-if="rawSqlLoading" class="size-3 animate-spin" />
+                <Download v-else class="size-3" />
+                {{ rawSqlLoading ? t('bi_loading') : t('bi_add_table') }}
+              </button>
             </template>
           </div>
         </aside>

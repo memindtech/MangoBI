@@ -103,11 +103,12 @@ function onChartClick(params: { name: string; value: any; seriesName: string; da
     emit('cell-click', { rowData: row, colField: x, cellValue: xVal })
     return
   }
-  // all category charts: params.name = xField label
+  // all category charts: params.name = xField label (normalized whitespace)
   if (!x || !params.name) return
-  const row = props.rows.find(r => String(r[x] ?? '') === params.name)
+  const norm = (v: unknown) => String(v ?? '').trim().replaceAll(/\s+/g, ' ')
+  const row = props.rows.find(r => norm(r[x]) === params.name)
   if (!row) return
-  emit('cell-click', { rowData: row, colField: x, cellValue: params.name })
+  emit('cell-click', { rowData: row, colField: x, cellValue: norm(row[x]) })
 }
 
 function onColumnResized(event: any) {
@@ -153,8 +154,11 @@ const chartOption = computed(() => {
   const t     = props.widget.type
   const yList = props.widget.fields.yFields?.length ? props.widget.fields.yFields : [yField.value]
 
-  // Group by xField, sum yField(s) — prevents duplicate x-values showing as separate bars
-  const grouped = groupChartData(props.rows, xField.value, [yField.value, ...yList])
+  // Deduplicate yFields before passing to groupChartData (non-stacked charts set both yField and yFields=[yField])
+  const yFieldsForGroup = [...new Set([yField.value, ...yList].filter(Boolean))]
+
+  // Group by xField, aggregate yField(s) — prevents duplicate x-values showing as separate bars
+  const grouped = groupChartData(props.rows, xField.value, yFieldsForGroup, props.widget.fields.aggregation ?? 'sum')
   const labels  = grouped.labels
   const values  = grouped.series(yField.value)
 
@@ -165,6 +169,8 @@ const chartOption = computed(() => {
   const fsSmall  = Math.max(8, fs - 1)
 
   const xColType = cols.find(c => c.name === xField.value)?.type
+  const labelOf  = (f: string) => cols.find(c => c.name === f)?.label ?? f
+  const yLabel   = labelOf(yField.value)
   // Format x-axis label (date → apply datePattern)
   const fmtX = (val: string): string =>
     (xColType === 'date' && fmt.datePattern)
@@ -213,7 +219,7 @@ const chartOption = computed(() => {
     color: COLORS, grid,
     tooltip: { ...tip, formatter: (params: any) => {
       const p = Array.isArray(params) ? params[0] : params
-      return `${fmtX(p.name)}<br/>${p.marker}${fmtY(p.value, yField.value)}`
+      return `${fmtX(p.name)}<br/>${p.marker}${yLabel}: ${fmtY(p.value, yField.value)}`
     }},
     xAxis: { type: 'category', data: labels, ...abX },
     yAxis: { type: 'value', ...abYNum },
@@ -226,10 +232,10 @@ const chartOption = computed(() => {
       formatter: (params: any) => {
         const items = Array.isArray(params) ? params : [params]
         const xLabel = fmtX(items[0]?.name ?? '')
-        return [xLabel, ...items.map((p: any) => `${p.marker}${p.seriesName}: ${p.value}%`)].join('<br/>')
+        return [xLabel, ...items.map((p: any) => `${p.marker}${labelOf(p.seriesName)}: ${p.value}%`)].join('<br/>')
       },
     },
-    legend: { top: 0, textStyle: { fontSize: fsSmall, color: tc } },
+    legend: { top: 0, textStyle: { fontSize: fsSmall, color: tc }, formatter: (name: string) => labelOf(name) },
     xAxis: { type: 'category', data: labels, ...abX },
     yAxis: { type: 'value', max: 100, ...ab, axisLabel: { ...ab.axisLabel, formatter: '{value}%' } },
     series: yList.map((f, i) => {
@@ -252,10 +258,10 @@ const chartOption = computed(() => {
       formatter: (params: any) => {
         const items = Array.isArray(params) ? params : [params]
         const xLabel = fmtX(items[0]?.name ?? '')
-        return [xLabel, ...items.map((p: any) => `${p.marker}${p.seriesName}: ${fmtY(p.value, p.seriesName)}`)].join('<br/>')
+        return [xLabel, ...items.map((p: any) => `${p.marker}${labelOf(p.seriesName)}: ${fmtY(p.value, p.seriesName)}`)].join('<br/>')
       },
     },
-    legend: { top: 0, textStyle: { fontSize: fsSmall, color: tc } },
+    legend: { top: 0, textStyle: { fontSize: fsSmall, color: tc }, formatter: (name: string) => labelOf(name) },
     xAxis: { type: 'value', ...ab,
       axisLabel: { ...ab.axisLabel, formatter: (v: any) => fmtY(v, yField.value) } },
     yAxis: { type: 'category', data: labels, ...ab,
@@ -273,10 +279,10 @@ const chartOption = computed(() => {
       formatter: (params: any) => {
         const items = Array.isArray(params) ? params : [params]
         const xLabel = fmtX(items[0]?.name ?? '')
-        return [xLabel, ...items.map((p: any) => `${p.marker}${p.seriesName}: ${fmtY(p.value, p.seriesName)}`)].join('<br/>')
+        return [xLabel, ...items.map((p: any) => `${p.marker}${labelOf(p.seriesName)}: ${fmtY(p.value, p.seriesName)}`)].join('<br/>')
       },
     },
-    legend: { top: 0, textStyle: { fontSize: fsSmall, color: tc } },
+    legend: { top: 0, textStyle: { fontSize: fsSmall, color: tc }, formatter: (name: string) => labelOf(name) },
     xAxis: { type: 'category', data: labels, boundaryGap: false, ...abX },
     yAxis: { type: 'value', ...ab,
       axisLabel: { ...ab.axisLabel, formatter: (v: any) => fmtY(v, yField.value) } },
@@ -292,7 +298,7 @@ const chartOption = computed(() => {
     color: COLORS, grid,
     tooltip: { ...tip, formatter: (params: any) => {
       const p = Array.isArray(params) ? params[0] : params
-      return `${fmtX(p.name)}<br/>${p.marker}${fmtY(p.value, yField.value)}`
+      return `${fmtX(p.name)}<br/>${p.marker}${yLabel}: ${fmtY(p.value, yField.value)}`
     }},
     xAxis: { type: 'category', data: labels, boundaryGap: false, ...abX },
     yAxis: { type: 'value', ...abYNum },

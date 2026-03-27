@@ -8,7 +8,7 @@ import {
 } from 'lucide-vue-next'
 import ReportWidget from '~/components/report/ReportWidget.vue'
 import { MOCK_DATA, DATASET_META, type DatasetKey } from '~/stores/canvas'
-import type { WidgetType, WidgetFields, FilterCondition, FilterOperator, ReportWidget as RWidget } from '~/stores/report'
+import type { WidgetType, WidgetFields, FilterCondition, FilterOperator, ReportWidget as RWidget, AggregationType } from '~/stores/report'
 import type { DataRow } from '~/stores/canvas'
 import { parseColumnMapping } from '~/utils/columnMapping'
 import { resolveDynamicValue, DATE_TOKEN_TODAY, DATE_TOKEN_YESTERDAY, DATE_TOKEN_LABELS } from '~/utils/transformData'
@@ -272,19 +272,61 @@ function matchCondition(row: DataRow, c: FilterCondition): boolean {
 function filteredRowsOf(widget: RWidget): DataRow[] {
   const rows = store.rowsOf(widget.datasetId)
   const filters = widget.filters
-  if (!filters?.conditions.length) return rows
-  const valid = filters.conditions.filter(c => {
-    if (!c.column) return false
-    if (c.operator === 'blank' || c.operator === 'notBlank') return true
-    if (c.operator === 'in' || c.operator === 'notIn') return (c.values?.length ?? 0) > 0
-    return c.value !== ''
+  let result = rows
+  if (filters?.conditions.length) {
+    const valid = filters.conditions.filter(c => {
+      if (!c.column) return false
+      if (c.operator === 'blank' || c.operator === 'notBlank') return true
+      if (c.operator === 'in' || c.operator === 'notIn') return (c.values?.length ?? 0) > 0
+      return c.value !== ''
+    })
+    if (valid.length) {
+      result = rows.filter(row =>
+        filters.logic === 'and'
+          ? valid.every(c => matchCondition(row, c))
+          : valid.some(c => matchCondition(row, c)),
+      )
+    }
+  }
+  return applyGroupBy(result, widget)
+}
+
+function applyGroupBy(rows: DataRow[], widget: RWidget): DataRow[] {
+  const { groupByField, aggregation = 'sum' } = widget.fields
+  if (!groupByField) return rows
+
+  const cols       = store.columnsOf(widget.datasetId)
+  const numCols    = cols.filter(c => c.type === 'number').map(c => c.name)
+  const nonNumCols = cols.filter(c => c.type !== 'number').map(c => c.name)
+
+  const groups = new Map<string, DataRow[]>()
+  for (const row of rows) {
+    const key = String(row[groupByField] ?? '').trim().replace(/\s+/g, ' ')
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key)!.push(row)
+  }
+
+  return [...groups.entries()].map(([key, groupRows]) => {
+    const result: DataRow = { [groupByField]: key }
+
+    // non-numeric: carry first row's values
+    for (const col of nonNumCols) {
+      if (col !== groupByField) result[col] = groupRows[0]?.[col] ?? ''
+    }
+
+    // numeric: aggregate
+    for (const col of numCols) {
+      const vals = groupRows.map(r => Number(r[col] ?? 0)).filter(v => !isNaN(v))
+      switch (aggregation) {
+        case 'sum':   result[col] = vals.reduce((a, b) => a + b, 0); break
+        case 'avg':   result[col] = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0; break
+        case 'count': result[col] = groupRows.length; break
+        case 'min':   result[col] = vals.length ? Math.min(...vals) : 0; break
+        case 'max':   result[col] = vals.length ? Math.max(...vals) : 0; break
+      }
+    }
+    return result
   })
-  if (!valid.length) return rows
-  return rows.filter(row =>
-    filters.logic === 'and'
-      ? valid.every(c => matchCondition(row, c))
-      : valid.some(c => matchCondition(row, c)),
-  )
 }
 
 // ─── Filter panel helpers ─────────────────────────────────────────────────────
@@ -453,6 +495,7 @@ interface CellClickContext {
 const cellClickCtx  = ref<CellClickContext | null>(null)
 const cellClickTab  = ref<'detail' | 'related'>('detail')
 const cellModalAfterMounted = ref(false)
+const cellRelatedSearch = ref('')
 
 // ── Modal resize / move ───────────────────────────────────────────────────────
 const modalW = ref(860)
@@ -529,6 +572,7 @@ watch(cellClickTab, (tab) => { if (tab === 'related') cellModalAfterMounted.valu
 watch(cellClickCtx, (v) => {
   if (v) {
     cellModalAfterMounted.value = false
+    cellRelatedSearch.value = ''
     modalX.value = null
     modalY.value = null
   }
@@ -586,8 +630,17 @@ const cellDetailEntries = computed(() => {
 const cellRelatedRows = computed(() => {
   if (!cellClickCtx.value) return []
   const { datasetId, colField, cellValue } = cellClickCtx.value
-  const strVal = String(cellValue ?? '')
-  return store.rowsOf(datasetId).filter(r => String(r[colField] ?? '') === strVal)
+  const norm = (v: unknown) => String(v ?? '').trim().replaceAll(/\s+/g, ' ')
+  const strVal = norm(cellValue)
+  return store.rowsOf(datasetId).filter(r => norm(r[colField]) === strVal)
+})
+
+const filteredCellRelatedRows = computed(() => {
+  const q = cellRelatedSearch.value.trim().toLowerCase()
+  if (!q) return cellRelatedRows.value
+  return cellRelatedRows.value.filter(r =>
+    Object.values(r).some(v => String(v ?? '').toLowerCase().includes(q)),
+  )
 })
 
 const cellRelatedColDefs = computed<ColDef[]>(() => {
@@ -1281,6 +1334,66 @@ async function doDeleteRp(id: string) {
               </div>
             </div>
 
+            <!-- ── Group By ────────────────────────────────────────────── -->
+            <div v-if="selectedWidget.type !== 'ecOption'" class="border-t pt-3">
+              <div class="flex items-center gap-1.5 mb-2">
+                <Layers class="size-3 text-muted-foreground" />
+                <p class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Group By</p>
+                <span
+                  v-if="selectedWidget.fields.groupByField"
+                  class="bg-indigo-500 text-white text-[9px] font-bold rounded-full px-1.5 py-0.5 leading-none"
+                >ON</span>
+              </div>
+
+              <div class="space-y-2">
+                <!-- Column picker -->
+                <div>
+                  <p class="text-[10px] font-medium text-muted-foreground mb-1">Column</p>
+                  <div class="flex gap-1">
+                    <select
+                      :value="selectedWidget.fields.groupByField ?? ''"
+                      @change="store.updateFields(selectedWidget.id, {
+                        groupByField: ($event.target as HTMLSelectElement).value || undefined
+                      })"
+                      class="flex-1 text-[10px] border rounded-md px-1.5 py-1 bg-background
+                             focus:outline-none focus:ring-1 focus:ring-orange-400 min-w-0"
+                    >
+                      <option value="">— ไม่ใช้ Group By —</option>
+                      <option
+                        v-for="col in store.columnsOf(selectedWidget.datasetId)"
+                        :key="col.name"
+                        :value="col.name"
+                      >{{ col.label }}</option>
+                    </select>
+                    <button
+                      v-if="selectedWidget.fields.groupByField"
+                      @click.stop="store.updateFields(selectedWidget.id, { groupByField: undefined })"
+                      class="text-muted-foreground hover:text-destructive shrink-0 px-1"
+                    ><X class="size-3" /></button>
+                  </div>
+                </div>
+
+                <!-- Aggregation -->
+                <div v-if="selectedWidget.fields.groupByField">
+                  <p class="text-[10px] font-medium text-muted-foreground mb-1">Aggregation</p>
+                  <select
+                    :value="selectedWidget.fields.aggregation ?? 'sum'"
+                    @change="store.updateFields(selectedWidget.id, {
+                      aggregation: ($event.target as HTMLSelectElement).value as AggregationType
+                    })"
+                    class="w-full text-[10px] border rounded-md px-1.5 py-1 bg-background
+                           focus:outline-none focus:ring-1 focus:ring-orange-400"
+                  >
+                    <option value="sum">Sum (ผลรวม)</option>
+                    <option value="avg">Average (เฉลี่ย)</option>
+                    <option value="count">Count (จำนวนแถว)</option>
+                    <option value="min">Min (ต่ำสุด)</option>
+                    <option value="max">Max (สูงสุด)</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
             <!-- ── Filters ─────────────────────────────────────────────── -->
             <div class="border-t pt-3">
 
@@ -1698,9 +1811,26 @@ async function doDeleteRp(id: string) {
 
             <!-- Tab: Related Rows -->
             <div v-else-if="cellClickTab === 'related'" class="flex-1 min-h-0 flex flex-col">
+              <!-- Search bar -->
+              <div class="px-4 py-2 border-b shrink-0 flex items-center gap-2">
+                <input
+                  v-model="cellRelatedSearch"
+                  placeholder="Search..."
+                  class="flex-1 text-xs border rounded-lg px-2.5 py-1.5 bg-background
+                         focus:outline-none focus:ring-1 focus:ring-indigo-400
+                         placeholder:text-muted-foreground/40"
+                />
+                <span class="text-[10px] text-muted-foreground shrink-0">
+                  {{ filteredCellRelatedRows.length }}/{{ cellRelatedRows.length }}
+                </span>
+              </div>
               <div v-if="!cellRelatedRows.length"
                 class="flex-1 flex items-center justify-center text-sm text-muted-foreground">
                 No related rows found
+              </div>
+              <div v-else-if="!filteredCellRelatedRows.length"
+                class="flex-1 flex items-center justify-center text-sm text-muted-foreground">
+                No results match "{{ cellRelatedSearch }}"
               </div>
               <div v-else-if="cellModalAfterMounted"
                 class="flex-1 min-h-0"
@@ -1708,7 +1838,7 @@ async function doDeleteRp(id: string) {
               >
                 <AgGridVue
                   :class="[cellModalTheme, 'ag-modal-table h-full w-full']"
-                  :rowData="cellRelatedRows"
+                  :rowData="filteredCellRelatedRows"
                   :columnDefs="cellRelatedColDefs"
                   :rowHeight="Math.max(28, modalFontSize + 17)"
                   :headerHeight="Math.max(32, modalFontSize + 21)"
