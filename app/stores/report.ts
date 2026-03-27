@@ -10,6 +10,8 @@ export type WidgetType =
   | 'stackedBar' | 'stackedHBar' | 'stackedLine'
   | 'halfDoughnut' | 'scatter' | 'tree' | 'ecOption'
 
+export type AggregationType = 'sum' | 'avg' | 'count' | 'min' | 'max'
+
 export interface ReportDataset {
   id:             string
   name:           string
@@ -25,6 +27,8 @@ export interface WidgetFields {
   yFields?:      string[]      // stacked / multi-series
   columns?:      string[]      // table: visible columns
   ecOptionJson?: string        // raw ECharts option JSON
+  groupByField?: string        // group rows by this column before rendering
+  aggregation?:  AggregationType  // aggregation function for numeric columns (default: sum)
 }
 
 // ── Filter types ──────────────────────────────────────────────────────────────
@@ -60,6 +64,7 @@ export interface ReportWidget {
   columnWidths?:  Record<string, number>
   cellClickMode?: CellClickMode
   xAxisRotate?:   number   // x-axis label rotation in degrees (0 = horizontal)
+  fontSize?:      number   // table cell font size in px (default 11)
   x: number; y: number
   w: number; h: number
 }
@@ -80,13 +85,18 @@ export const useReportStore = defineStore('report', () => {
   function columnsOf(datasetId: string): { name: string; label: string; type: 'number' | 'string' | 'date' }[] {
     const ds = datasets.value.find(d => d.id === datasetId)
     if (!ds?.rows.length) return []
-    const first = ds.rows[0]!
+    const first   = ds.rows[0]!
+    const samples = ds.rows.slice(0, 20)   // scan first 20 rows to handle null in row[0]
     return Object.keys(first).map(name => {
       const meta = ds.columnLabels?.[name]
+      // When metadata provides a DataType, trust it; otherwise find first non-null value
+      const fallback = meta
+        ? first[name]
+        : (samples.find(r => r[name] !== null && r[name] !== undefined)?.[name] ?? first[name])
       return {
         name,
         label: meta?.label || name,
-        type:  isDateMeta(meta, first[name]) ? 'date' : metaToColType(meta, first[name]),
+        type:  isDateMeta(meta, fallback) ? 'date' : metaToColType(meta, fallback),
       }
     })
   }

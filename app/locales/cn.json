@@ -1306,5 +1306,27 @@
   "page_title_dashboard": "主页",
   "page_title_canvas":    "Canvas",
   "page_title_datamodel": "数据模型",
-  "page_title_report":    "报告生成器"
+  "page_title_report":    "报告生成器",
+
+  "login_app_name":        "MangoBI",
+  "login_subtitle":        "登录以继续使用",
+  "login_company":         "公司",
+  "login_company_ph":      "-- 请选择 --",
+  "login_username":        "用户名",
+  "login_password":        "密码",
+  "login_btn":             "登录",
+  "login_or":              "或使用以下方式登录",
+  "login_ms_btn":          "使用 Microsoft 登录",
+  "login_ok":              "确定",
+  "login_err_no_company":  "请选择工作公司",
+  "login_err_no_cred":     "请输入用户名和密码",
+  "login_err_ms_fail":     "无法通过 Microsoft 登录",
+  "login_err_otp":         "系统需要 OTP 验证",
+  "login_err_locked":      "输错超过 {limit} 次将被锁定",
+  "login_err_title_error": "错误",
+  "login_err_title_info":  "提示",
+  "login_err_title_otp":   "需要 OTP",
+  "login_err_title_admin": "联系管理员",
+  "login_err_title_full":  "会话已满",
+  "login_err_title_fail":  "登录失败"
 }

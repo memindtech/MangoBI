@@ -103,11 +103,12 @@ function onChartClick(params: { name: string; value: any; seriesName: string; da
     emit('cell-click', { rowData: row, colField: x, cellValue: xVal })
     return
   }
-  // all category charts: params.name = xField label
+  // all category charts: params.name = xField label (normalized whitespace)
   if (!x || !params.name) return
-  const row = props.rows.find(r => String(r[x] ?? '') === params.name)
+  const norm = (v: unknown) => String(v ?? '').trim().replaceAll(/\s+/g, ' ')
+  const row = props.rows.find(r => norm(r[x]) === params.name)
   if (!row) return
-  emit('cell-click', { rowData: row, colField: x, cellValue: params.name })
+  emit('cell-click', { rowData: row, colField: x, cellValue: norm(row[x]) })
 }
 
 function onColumnResized(event: any) {
@@ -135,8 +136,12 @@ const activeFilterCount = computed(() => {
 
 const kpiValue = computed(() => {
   if (!yField.value || !props.rows.length) return '—'
-  const vals = props.rows.map(r => Number(r[yField.value]) || 0)
-  return vals.reduce((a, b) => a + b, 0).toLocaleString()
+  const vals  = props.rows.map(r => Number(r[yField.value]) || 0)
+  const total = vals.reduce((a, b) => a + b, 0)
+  const fmt   = datasetFmt.value
+  const excluded = fmt.excludeDecimalCols?.includes(yField.value) ?? false
+  if (!excluded && (fmt.comma || fmt.decimals !== undefined)) return formatNumericValue(total, fmt)
+  return total.toLocaleString()
 })
 
 // ── ECharts option ────────────────────────────────────────────────────────────
@@ -149,26 +154,57 @@ const chartOption = computed(() => {
   const t     = props.widget.type
   const yList = props.widget.fields.yFields?.length ? props.widget.fields.yFields : [yField.value]
 
-  // Group by xField, sum yField(s) — prevents duplicate x-values showing as separate bars
-  const grouped = groupChartData(props.rows, xField.value, [yField.value, ...yList])
+  // Deduplicate yFields before passing to groupChartData (non-stacked charts set both yField and yFields=[yField])
+  const yFieldsForGroup = [...new Set([yField.value, ...yList].filter(Boolean))]
+
+  // Group by xField, aggregate yField(s) — prevents duplicate x-values showing as separate bars
+  const grouped = groupChartData(props.rows, xField.value, yFieldsForGroup, props.widget.fields.aggregation ?? 'sum')
   const labels  = grouped.labels
   const values  = grouped.series(yField.value)
 
+  // ── Format config ──────────────────────────────────────────────────────────
+  const fmt      = datasetFmt.value
+  const cols     = datasetCols.value
+  const fs       = props.widget.fontSize ?? 11
+  const fsSmall  = Math.max(8, fs - 1)
+
+  const xColType = cols.find(c => c.name === xField.value)?.type
+  const labelOf  = (f: string) => cols.find(c => c.name === f)?.label ?? f
+  const yLabel   = labelOf(yField.value)
+  // Format x-axis label (date → apply datePattern)
+  const fmtX = (val: string): string =>
+    (xColType === 'date' && fmt.datePattern)
+      ? formatDateValue(val, fmt.datePattern, fmt.dateEra ?? 'CE')
+      : val
+  // Format y value respecting excludeDecimalCols
+  const fmtY = (val: any, field: string): string => {
+    if (val === null || val === undefined) return ''
+    const excluded = fmt.excludeDecimalCols?.includes(field) ?? false
+    if (!excluded && (fmt.comma || fmt.decimals !== undefined)) return formatNumericValue(val, fmt)
+    return String(val)
+  }
+
+  // ── Axis / tooltip base ────────────────────────────────────────────────────
   const tc     = isDark.value ? '#94a3b8' : '#64748b'
   const sc     = isDark.value ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)'
   const rotate = props.widget.xAxisRotate ?? 0
   const ab = {
     axisLine:  { lineStyle: { color: sc } },
     axisTick:  { show: false },
-    axisLabel: { fontSize: 10, color: tc },
+    axisLabel: { fontSize: fsSmall, color: tc },
     splitLine: { lineStyle: { color: sc } },
   }
-  // x-axis with rotation applied
+  // x-axis: rotation + date formatter
   const abX = {
     ...ab,
-    axisLabel: { ...ab.axisLabel, rotate },
+    axisLabel: { ...ab.axisLabel, rotate, formatter: fmtX },
   }
-  const tip  = { trigger: 'axis' as const, textStyle: { fontSize: 11 }, confine: true }
+  // y-axis: numeric formatter for single-series charts
+  const abYNum = {
+    ...ab,
+    axisLabel: { ...ab.axisLabel, formatter: (v: any) => fmtY(v, yField.value) },
+  }
+  const tip  = { trigger: 'axis' as const, textStyle: { fontSize: fsSmall }, confine: true }
   // add bottom padding when labels are rotated so they don't get clipped
   const bottomPad = rotate === 0 ? 28 : Math.min(80, Math.abs(rotate))
   const grid = { top: 20, right: 8, bottom: bottomPad, left: 8, containLabel: true }
@@ -180,16 +216,26 @@ const chartOption = computed(() => {
   }
 
   if (t === 'bar') return {
-    color: COLORS, grid, tooltip: tip,
+    color: COLORS, grid,
+    tooltip: { ...tip, formatter: (params: any) => {
+      const p = Array.isArray(params) ? params[0] : params
+      return `${fmtX(p.name)}<br/>${p.marker}${yLabel}: ${fmtY(p.value, yField.value)}`
+    }},
     xAxis: { type: 'category', data: labels, ...abX },
-    yAxis: { type: 'value', ...ab },
+    yAxis: { type: 'value', ...abYNum },
     series: [{ type: 'bar', data: values, barMaxWidth: 48, itemStyle: { borderRadius: [3, 3, 0, 0] } }],
   }
 
   if (t === 'stackedBar') return {
     color: COLORS, grid,
-    tooltip: { ...tip, axisPointer: { type: 'shadow' } },
-    legend: { top: 0, textStyle: { fontSize: 10, color: tc } },
+    tooltip: { ...tip, axisPointer: { type: 'shadow' },
+      formatter: (params: any) => {
+        const items = Array.isArray(params) ? params : [params]
+        const xLabel = fmtX(items[0]?.name ?? '')
+        return [xLabel, ...items.map((p: any) => `${p.marker}${labelOf(p.seriesName)}: ${p.value}%`)].join('<br/>')
+      },
+    },
+    legend: { top: 0, textStyle: { fontSize: fsSmall, color: tc }, formatter: (name: string) => labelOf(name) },
     xAxis: { type: 'category', data: labels, ...abX },
     yAxis: { type: 'value', max: 100, ...ab, axisLabel: { ...ab.axisLabel, formatter: '{value}%' } },
     series: yList.map((f, i) => {
@@ -208,11 +254,18 @@ const chartOption = computed(() => {
 
   if (t === 'stackedHBar') return {
     color: COLORS, grid: { ...grid, left: 64 },
-    tooltip: { ...tip, axisPointer: { type: 'shadow' } },
-    legend: { top: 0, textStyle: { fontSize: 10, color: tc } },
-    xAxis: { type: 'value', ...ab },
+    tooltip: { ...tip, axisPointer: { type: 'shadow' },
+      formatter: (params: any) => {
+        const items = Array.isArray(params) ? params : [params]
+        const xLabel = fmtX(items[0]?.name ?? '')
+        return [xLabel, ...items.map((p: any) => `${p.marker}${labelOf(p.seriesName)}: ${fmtY(p.value, p.seriesName)}`)].join('<br/>')
+      },
+    },
+    legend: { top: 0, textStyle: { fontSize: fsSmall, color: tc }, formatter: (name: string) => labelOf(name) },
+    xAxis: { type: 'value', ...ab,
+      axisLabel: { ...ab.axisLabel, formatter: (v: any) => fmtY(v, yField.value) } },
     yAxis: { type: 'category', data: labels, ...ab,
-      axisLabel: { ...ab.axisLabel, width: 60, overflow: 'truncate' } },
+      axisLabel: { ...ab.axisLabel, width: 60, overflow: 'truncate', formatter: fmtX } },
     series: yList.map((f, i) => ({
       type: 'bar', stack: 'total', name: f,
       itemStyle: { color: COLORS[i % COLORS.length] },
@@ -222,10 +275,17 @@ const chartOption = computed(() => {
 
   if (t === 'stackedLine') return {
     color: COLORS, grid,
-    tooltip: tip,
-    legend: { top: 0, textStyle: { fontSize: 10, color: tc } },
+    tooltip: { ...tip,
+      formatter: (params: any) => {
+        const items = Array.isArray(params) ? params : [params]
+        const xLabel = fmtX(items[0]?.name ?? '')
+        return [xLabel, ...items.map((p: any) => `${p.marker}${labelOf(p.seriesName)}: ${fmtY(p.value, p.seriesName)}`)].join('<br/>')
+      },
+    },
+    legend: { top: 0, textStyle: { fontSize: fsSmall, color: tc }, formatter: (name: string) => labelOf(name) },
     xAxis: { type: 'category', data: labels, boundaryGap: false, ...abX },
-    yAxis: { type: 'value', ...ab },
+    yAxis: { type: 'value', ...ab,
+      axisLabel: { ...ab.axisLabel, formatter: (v: any) => fmtY(v, yField.value) } },
     series: yList.map((f, i) => ({
       type: 'line', stack: 'total', name: f, smooth: true, symbol: 'none',
       lineStyle: { width: 1.5 }, areaStyle: { opacity: 0.35 },
@@ -235,42 +295,49 @@ const chartOption = computed(() => {
   }
 
   if (t === 'line') return {
-    color: COLORS, grid, tooltip: tip,
+    color: COLORS, grid,
+    tooltip: { ...tip, formatter: (params: any) => {
+      const p = Array.isArray(params) ? params[0] : params
+      return `${fmtX(p.name)}<br/>${p.marker}${yLabel}: ${fmtY(p.value, yField.value)}`
+    }},
     xAxis: { type: 'category', data: labels, boundaryGap: false, ...abX },
-    yAxis: { type: 'value', ...ab },
+    yAxis: { type: 'value', ...abYNum },
     series: [{ type: 'line', data: values, smooth: true,
       symbol: 'circle', symbolSize: 5, lineStyle: { width: 2 }, areaStyle: { opacity: 0.12 } }],
   }
 
   if (t === 'pie') return {
     color: COLORS,
-    tooltip: { trigger: 'item' as const, formatter: '{b}: {c} ({d}%)', textStyle: { fontSize: 11 }, confine: true },
+    tooltip: { trigger: 'item' as const, confine: true, textStyle: { fontSize: fsSmall },
+      formatter: (p: any) => `${p.name}: ${fmtY(p.value, yField.value)} (${p.percent}%)` },
     series: [{
       type: 'pie', radius: ['32%', '66%'], center: ['50%', '50%'],
       data: labels.map((name, i) => ({ name, value: values[i] })),
-      label: { fontSize: 10, color: tc }, labelLine: { lineStyle: { color: tc } },
+      label: { fontSize: fsSmall, color: tc }, labelLine: { lineStyle: { color: tc } },
       itemStyle: { borderWidth: 2, borderColor: isDark.value ? '#1e1e2e' : '#fff' },
     }],
   }
 
   if (t === 'halfDoughnut') return {
     color: COLORS,
-    tooltip: { trigger: 'item' as const, formatter: '{b}: {c} ({d}%)', textStyle: { fontSize: 11 }, confine: true },
+    tooltip: { trigger: 'item' as const, confine: true, textStyle: { fontSize: fsSmall },
+      formatter: (p: any) => `${p.name}: ${fmtY(p.value, yField.value)} (${p.percent}%)` },
     series: [{
       type: 'pie', radius: ['40%', '72%'], center: ['50%', '72%'],
       startAngle: 180, endAngle: 360,
       data: labels.map((name, i) => ({ name, value: values[i] })),
-      label: { fontSize: 10, color: tc },
+      label: { fontSize: fsSmall, color: tc },
       itemStyle: { borderWidth: 2, borderColor: isDark.value ? '#1e1e2e' : '#fff' },
     }],
   }
 
   if (t === 'scatter') return {
     color: COLORS, grid,
-    tooltip: { trigger: 'item' as const, confine: true,
-      formatter: (p: any) => `${p.value[0]}, ${p.value[1]}`, textStyle: { fontSize: 11 } },
-    xAxis: { type: 'value', ...ab },
-    yAxis: { type: 'value', ...ab },
+    tooltip: { trigger: 'item' as const, confine: true, textStyle: { fontSize: fsSmall },
+      formatter: (p: any) => `${fmtX(String(p.value[0]))}, ${fmtY(p.value[1], yField.value)}` },
+    xAxis: { type: 'value', ...ab,
+      axisLabel: { ...ab.axisLabel, formatter: (v: any) => fmtY(v, xField.value) } },
+    yAxis: { type: 'value', ...abYNum },
     series: [{
       type: 'scatter', symbolSize: 7, itemStyle: { color: COLORS[0], opacity: 0.8 },
       data: props.rows.map(r => [Number(r[xField.value] ?? 0), Number(r[yField.value] ?? 0)]),
@@ -286,7 +353,7 @@ const chartOption = computed(() => {
       if (!groups.get(parent)!.includes(child)) groups.get(parent)!.push(child)
     }
     return {
-      tooltip: { trigger: 'item' as const, textStyle: { fontSize: 11 }, confine: true },
+      tooltip: { trigger: 'item' as const, textStyle: { fontSize: fsSmall }, confine: true },
       series: [{
         type: 'tree', edgeShape: 'polyline',
         data: [{ name: 'Root', children: Array.from(groups.entries()).map(([name, children]) => ({
@@ -294,8 +361,8 @@ const chartOption = computed(() => {
         })) }],
         top: '4%', left: '12%', bottom: '4%', right: '20%',
         symbolSize: 6, orient: 'LR',
-        label:  { position: 'left',  fontSize: 10, color: tc },
-        leaves: { label: { position: 'right', fontSize: 10, color: tc } },
+        label:  { position: 'left',  fontSize: fsSmall, color: tc },
+        leaves: { label: { position: 'right', fontSize: fsSmall, color: tc } },
         lineStyle: { color: sc, width: 1.5 },
         itemStyle: { color: COLORS[0], borderColor: COLORS[0] },
         expandAndCollapse: true, animationDuration: 200,
@@ -383,7 +450,7 @@ function onResizeCorner(e: MouseEvent) {
 <template>
   <div
     class="absolute select-none"
-    :style="{ left: `${widget.x}px`, top: `${widget.y}px`, width: `${widget.w}px`, height: `${widget.h}px` }"
+    :style="{ left: `${widget.x}px`, top: `${widget.y}px`, width: `${widget.w}px`, height: `${widget.h}px`, '--rw-font-size': `${widget.fontSize ?? 11}px`, '--rw-header-font-size': `${(widget.fontSize ?? 11) - 1}px` }"
     @mousedown.stop="emit('select')"
     @click.stop
   >
@@ -457,8 +524,8 @@ function onResizeCorner(e: MouseEvent) {
             :columnDefs="tableColDefs"
             :defaultColDef="tableDefaultColDef"
             :quickFilterText="tableQuickFilter"
-            :rowHeight="26"
-            :headerHeight="30"
+            :rowHeight="Math.max(26, (widget.fontSize ?? 11) + 15)"
+            :headerHeight="Math.max(30, (widget.fontSize ?? 11) + 19)"
             :suppressMovableColumns="true"
             :suppressCellFocus="true"
             :enableCellTextSelection="!isCellClickable"
@@ -501,10 +568,10 @@ function onResizeCorner(e: MouseEvent) {
   border: none !important;
 }
 .ag-report-table .ag-header-cell-text {
-  font-size: 10px;
+  font-size: var(--rw-header-font-size, 10px);
   font-weight: 600;
 }
 .ag-report-table .ag-cell {
-  font-size: 11px;
+  font-size: var(--rw-font-size, 11px);
 }
 </style>

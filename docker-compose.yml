@@ -1,0 +1,12 @@
+services:
+  mangobi-frontend:
+    build:
+      context: .
+    image: mangobi-frontend:latest
+    container_name: mangobi-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NUXT_PUBLIC_API_BASE=http://your-api-server/service/
+      - NUXT_PUBLIC_PLANNING_BASE=http://your-planning-server:8310/api/v1/

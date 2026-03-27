@@ -29,10 +29,11 @@ interface Dataset {
 }
 interface Widget {
   id: string; type: string; title: string; datasetId: string
-  fields: { xField?: string; yField?: string; yFields?: string[]; columns?: string[]; ecOptionJson?: string }
+  fields: { xField?: string; yField?: string; yFields?: string[]; columns?: string[]; ecOptionJson?: string; groupByField?: string; aggregation?: string }
   filters?: { logic: 'and' | 'or'; conditions: FilterCondition[] }
   columnWidths?: Record<string, number>
   xAxisRotate?: number
+  fontSize?: number
   cellClickMode?: 'none' | 'modal'
   x: number; y: number; w: number; h: number
 }
@@ -40,13 +41,28 @@ interface Widget {
 // ── State ─────────────────────────────────────────────────────────────────────
 const loading    = ref(true)
 const error      = ref('')
+const expired    = ref(false)
+const expiresAt  = ref<Date | null>(null)
 const reportName = ref('')
 const datasets   = ref<Dataset[]>([])
 const widgets    = ref<Widget[]>([])
 
 onMounted(async () => {
+  // ── ตรวจสอบ link expiry ─────────────────────────────────────────────────
+  const expParam = route.query.exp
+  if (expParam) {
+    const expSec = Number(expParam)
+    const expDate = new Date(expSec * 1000)
+    expiresAt.value = expDate
+    if (Date.now() > expSec * 1000) {
+      expired.value = true
+      loading.value = false
+      return
+    }
+  }
+
   try {
-    const row = await biApi.loadReport(route.params.id as string)
+    const row = await biApi.loadPublicReport(route.params.id as string)
     if (!row) { error.value = 'Report not found'; return }
     reportName.value = row.name ?? ''
     const payload = JSON.parse(row.widgetsJson ?? '{}')
@@ -68,12 +84,55 @@ function labelOf(dsId: string, col: string) {
 function colsOf(dsId: string) {
   const ds = datasets.value.find(d => d.id === dsId)
   if (!ds?.rows.length) return []
-  const first = ds.rows[0]
+  const first   = ds.rows[0]
+  const samples = ds.rows.slice(0, 20)
   return Object.keys(first).map(name => {
-    const meta = ds.columnLabels?.[name]
+    const meta     = ds.columnLabels?.[name]
+    const fallback = meta
+      ? first[name]
+      : (samples.find(r => r[name] !== null && r[name] !== undefined)?.[name] ?? first[name])
     return { name, label: meta?.label || name,
-      type: isDateMeta(meta, first[name]) ? 'date' : metaToColType(meta, first[name]) }
+      type: isDateMeta(meta, fallback) ? 'date' : metaToColType(meta, fallback) }
   })
+}
+
+function applyGroupBy(rows: any[], w: Widget): any[] {
+  const { groupByField, aggregation = 'sum' } = w.fields
+  if (!groupByField) return rows
+
+  const cols       = colsOf(w.datasetId)
+  const numCols    = cols.filter(c => c.type === 'number').map(c => c.name)
+  const nonNumCols = cols.filter(c => c.type !== 'number').map(c => c.name)
+
+  const groups = new Map<string, any[]>()
+  for (const row of rows) {
+    const key = String(row[groupByField] ?? '').trim().replace(/\s+/g, ' ')
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key)!.push(row)
+  }
+
+  return [...groups.entries()].map(([key, groupRows]) => {
+    const result: any = { [groupByField]: key }
+    for (const col of nonNumCols) {
+      if (col !== groupByField) result[col] = groupRows[0]?.[col] ?? ''
+    }
+    for (const col of numCols) {
+      const vals = groupRows.map(r => Number(r[col] ?? 0)).filter(v => !isNaN(v))
+      switch (aggregation) {
+        case 'sum':   result[col] = vals.reduce((a, b) => a + b, 0); break
+        case 'avg':   result[col] = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0; break
+        case 'count': result[col] = groupRows.length; break
+        case 'min':   result[col] = vals.length ? Math.min(...vals) : 0; break
+        case 'max':   result[col] = vals.length ? Math.max(...vals) : 0; break
+      }
+    }
+    return result
+  })
+}
+
+// rows after filter + groupBy — used for charts and tables
+function groupedRows(w: Widget): any[] {
+  return applyGroupBy(filteredRows(w), w)
 }
 
 // ── Filter ────────────────────────────────────────────────────────────────────
@@ -127,44 +186,47 @@ function filteredRows(w: Widget): any[] {
 // ── Chart option ──────────────────────────────────────────────────────────────
 const COLORS = ['#6366f1','#f97316','#10b981','#3b82f6','#a855f7','#ef4444','#f59e0b','#06b6d4']
 
-function makeAxisBase(tc: string, sc: string) {
+function makeAxisBase(tc: string, sc: string, fs = 10) {
   return {
     axisLine:  { lineStyle: { color: sc } },
     axisTick:  { show: false },
-    axisLabel: { fontSize: 10, color: tc },
+    axisLabel: { fontSize: fs, color: tc },
     splitLine: { lineStyle: { color: sc } },
   }
 }
 
-function makePieSeries(labels: string[], values: number[], tc: string, radius: string[], center: string[], extra = {}) {
+function makePieSeries(labels: string[], values: number[], tc: string, radius: string[], center: string[], extra = {}, fs = 10) {
   return {
     type: 'pie', radius, center,
     data: labels.map((n, i) => ({ name: n, value: values[i] })),
-    label: { fontSize: 10, color: tc },
+    label: { fontSize: fs, color: tc },
     itemStyle: { borderWidth: 2, borderColor: isDark.value ? '#1e1e2e' : '#fff' },
     ...extra,
   }
 }
 
 function chartOption(w: Widget) {
-  const rows   = filteredRows(w)
+  const rows   = groupedRows(w)
   const t      = w.type
   const xField = w.fields.xField ?? ''
   const yField = w.fields.yField ?? ''
   const yList  = w.fields.yFields?.length ? w.fields.yFields : [yField]
-  const grouped = groupChartData(rows, xField, [yField, ...yList])
+  const yFieldsForGroup = [...new Set([yField, ...yList].filter(Boolean))]
+  const grouped = groupChartData(rows, xField, yFieldsForGroup, (w.fields as any).aggregation ?? 'sum')
   const labels  = grouped.labels
   const values  = grouped.series(yField)
   const tc      = isDark.value ? '#94a3b8' : '#64748b'
   const sc      = isDark.value ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)'
   const rotate  = w.xAxisRotate ?? 0
-  const ab      = makeAxisBase(tc, sc)
+  const fs      = w.fontSize ?? 11
+  const fsSmall = Math.max(8, fs - 1)
+  const ab      = makeAxisBase(tc, sc, fsSmall)
   const abX     = { ...ab, axisLabel: { ...ab.axisLabel, rotate } }
-  const tip     = { trigger: 'axis' as const, textStyle: { fontSize: 11 }, confine: true }
+  const tip     = { trigger: 'axis' as const, textStyle: { fontSize: fsSmall }, confine: true }
   const bottomPad = rotate === 0 ? 28 : Math.min(80, Math.abs(rotate))
   const grid    = { top: 20, right: 8, bottom: bottomPad, left: 8, containLabel: true }
-  const legend  = { top: 0, textStyle: { fontSize: 10, color: tc } }
-  const itemTip = { trigger: 'item' as const, formatter: '{b}: {c} ({d}%)', textStyle: { fontSize: 11 }, confine: true }
+  const legend  = { top: 0, textStyle: { fontSize: fsSmall, color: tc } }
+  const itemTip = { trigger: 'item' as const, formatter: '{b}: {c} ({d}%)', textStyle: { fontSize: fsSmall }, confine: true }
 
   if (t === 'ecOption') { try { return JSON.parse(w.fields.ecOptionJson?.trim() ?? '') } catch { return {} } }
   if (t === 'bar')  return { color: COLORS, grid, tooltip: tip,
@@ -176,10 +238,10 @@ function chartOption(w: Widget) {
       lineStyle: { width: 2 }, areaStyle: { opacity: 0.12 } }] }
   if (t === 'pie')         return { color: COLORS, tooltip: itemTip,
     series: [makePieSeries(labels, values, tc, ['32%','66%'], ['50%','50%'],
-      { labelLine: { lineStyle: { color: tc } } })] }
+      { labelLine: { lineStyle: { color: tc } } }, fsSmall)] }
   if (t === 'halfDoughnut') return { color: COLORS, tooltip: itemTip,
     series: [makePieSeries(labels, values, tc, ['40%','72%'], ['50%','72%'],
-      { startAngle: 180, endAngle: 360 })] }
+      { startAngle: 180, endAngle: 360 }, fsSmall)] }
   if (t === 'stackedBar') {
     const totals = labels.map((_: any, li: number) =>
       yList.reduce((s: number, yf: string) => s + (grouped.series(yf)[li] ?? 0), 0))
@@ -203,7 +265,7 @@ function chartOption(w: Widget) {
       data: grouped.series(f) })) }
   if (t === 'scatter') return { color: COLORS, grid,
     tooltip: { trigger: 'item' as const, confine: true,
-      formatter: (p: any) => `${p.value[0]}, ${p.value[1]}`, textStyle: { fontSize: 11 } },
+      formatter: (p: any) => `${p.value[0]}, ${p.value[1]}`, textStyle: { fontSize: fsSmall } },
     xAxis: { type: 'value', ...ab }, yAxis: { type: 'value', ...ab },
     series: [{ type: 'scatter', symbolSize: 7, itemStyle: { color: COLORS[0], opacity: 0.8 },
       data: rows.map(r => [Number(r[xField] ?? 0), Number(r[yField] ?? 0)]) }] }
@@ -245,14 +307,19 @@ function tableColDefs(w: Widget): ColDef[] {
 function kpiValue(w: Widget): string {
   const yf = w.fields.yField
   if (!yf) return '—'
-  const rows = filteredRows(w)
+  const rows = groupedRows(w)
   if (!rows.length) return '—'
-  return rows.map(r => Number(r[yf]) || 0).reduce((a, b) => a + b, 0).toLocaleString()
+  const total    = rows.map(r => Number(r[yf]) || 0).reduce((a, b) => a + b, 0)
+  const fmt      = fmtOf(w.datasetId)
+  const excluded = fmt.excludeDecimalCols?.includes(yf) ?? false
+  if (!excluded && (fmt.comma || fmt.decimals !== undefined)) return formatNumericValue(total, fmt)
+  return total.toLocaleString()
 }
 
 // ── Click modal ───────────────────────────────────────────────────────────────
 interface ClickCtx {
   datasetId: string; rowData: any; colField: string; cellValue: any; widgetRows: any[]
+  fontSize?: number
 }
 const clickCtx  = ref<ClickCtx | null>(null)
 const clickTab  = ref<'detail' | 'related'>('detail')
@@ -341,10 +408,9 @@ function formatCell(dsId: string, key: string, raw: any): string {
   const isDate  = colMeta?.type === 'date' || (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}/.test(raw))
   const isNum   = colMeta?.type === 'number' || typeof raw === 'number'
   const isExcluded = fmt.excludeDecimalCols?.includes(key) ?? false
-  const colFmt  = isExcluded ? { ...fmt, decimals: undefined } : fmt
   if (raw === null || raw === undefined) return '—'
   if (isDate && fmt.datePattern) return formatDateValue(raw, fmt.datePattern, fmt.dateEra ?? 'CE')
-  if (isNum && (colFmt.comma || colFmt.decimals !== undefined)) return formatNumericValue(raw, colFmt)
+  if (isNum && !isExcluded && (fmt.comma || fmt.decimals !== undefined)) return formatNumericValue(raw, fmt)
   return String(raw)
 }
 
@@ -363,8 +429,20 @@ const clickEntries = computed(() => {
 const relatedRows = computed(() => {
   if (!clickCtx.value) return []
   const { colField, cellValue, widgetRows } = clickCtx.value
-  const strVal = String(cellValue ?? '')
-  return widgetRows.filter(r => String(r[colField] ?? '') === strVal)
+  const norm   = (v: unknown) => String(v ?? '').trim().replaceAll(/\s+/g, ' ')
+  const strVal = norm(cellValue)
+  return widgetRows.filter(r => norm(r[colField]) === strVal)
+})
+
+const relatedSearch = ref('')
+watch(clickCtx, v => { if (v) relatedSearch.value = '' })
+
+const filteredRelatedRows = computed(() => {
+  const q = relatedSearch.value.trim().toLowerCase()
+  if (!q) return relatedRows.value
+  return relatedRows.value.filter(r =>
+    Object.values(r).some(v => String(v ?? '').toLowerCase().includes(q)),
+  )
 })
 
 const relatedColDefs = computed<ColDef[]>(() => {
@@ -380,7 +458,7 @@ const relatedColDefs = computed<ColDef[]>(() => {
     return {
       field: col, headerName: labelOf(datasetId, col),
       sortable: true, resizable: true, filter: false, minWidth: 60,
-      cellStyle: isNum ? { textAlign: 'right', fontFamily: 'monospace' } : {},
+      cellStyle: isNum ? { textAlign: 'right' as const, fontFamily: 'monospace' } : undefined,
       valueFormatter: (p: any) => {
         if (p.value === null || p.value === undefined) return '—'
         const raw = p.value
@@ -394,32 +472,36 @@ const relatedColDefs = computed<ColDef[]>(() => {
   })
 })
 
-function openModal(dsId: string, rowData: any, colField: string, cellValue: any, widgetRows: any[]) {
-  clickCtx.value = { datasetId: dsId, rowData, colField, cellValue, widgetRows }
+function openModal(dsId: string, rowData: any, colField: string, cellValue: any, widgetRows: any[], fontSize?: number) {
+  clickCtx.value = { datasetId: dsId, rowData, colField, cellValue, widgetRows, fontSize }
 }
+
+const modalFontSize = computed(() => clickCtx.value?.fontSize ?? 11)
 
 // table cell click — only when cellClickMode === 'modal'
 function onCellClicked(w: Widget, e: any) {
   if (w.cellClickMode !== 'modal') return
   if (!e?.data) return
-  openModal(w.datasetId, e.data, e.colDef?.field ?? '', e.value, filteredRows(w))
+  openModal(w.datasetId, e.data, e.colDef?.field ?? '', e.value, filteredRows(w), w.fontSize)
 }
 
 // chart click — always opens modal (mirrors ReportWidget.vue — no cellClickMode gate for charts)
 function onChartClick(w: Widget, params: { name: string; value: any; seriesName: string; dataIndex: number }) {
-  const x    = w.fields.xField ?? ''
-  const rows = filteredRows(w)
+  const x       = w.fields.xField ?? ''
+  const gRows   = groupedRows(w)   // grouped — for finding the clicked row
+  const rawRows = filteredRows(w)  // raw — for related rows detail in modal
   if (w.type === 'scatter') {
     const xVal = Array.isArray(params.value) ? params.value[0] : params.value
-    const row  = rows.find(r => Number(r[x]) === Number(xVal))
+    const row  = gRows.find(r => Number(r[x]) === Number(xVal))
     if (!row || !x) return
-    openModal(w.datasetId, row, x, xVal, rows)
+    openModal(w.datasetId, row, x, xVal, rawRows, w.fontSize)
     return
   }
   if (!x || !params.name) return
-  const row = rows.find(r => String(r[x] ?? '') === params.name)
+  const norm = (v: unknown) => String(v ?? '').trim().replaceAll(/\s+/g, ' ')
+  const row = gRows.find(r => norm(r[x]) === params.name)
   if (!row) return
-  openModal(w.datasetId, row, x, params.name, rows)
+  openModal(w.datasetId, row, x, norm(row[x]), rawRows, w.fontSize)
 }
 
 function onRelatedFirstData(e: any) { e.api.autoSizeAllColumns() }
@@ -435,12 +517,38 @@ function onRelatedFirstData(e: any) { e.api.autoSizeAllColumns() }
       <span class="text-[11px] text-muted-foreground">
         {{ widgets.length }} visual{{ widgets.length !== 1 ? 's' : '' }}
       </span>
+      <span v-if="expiresAt && !expired"
+        class="text-[11px] text-amber-600 dark:text-amber-400 ml-2"
+        :title="`ลิ้งค์หมดอายุ: ${expiresAt.toLocaleString('th-TH')}`"
+      >
+        หมดอายุ {{ expiresAt.toLocaleDateString('th-TH') }}
+      </span>
     </header>
 
     <!-- Loading -->
     <div v-if="loading" class="flex-1 flex items-center justify-center gap-2 text-muted-foreground">
       <Loader2 class="size-5 animate-spin" />
       <span class="text-sm">Loading…</span>
+    </div>
+
+    <!-- Link Expired -->
+    <div v-else-if="expired" class="flex-1 flex items-center justify-center p-8">
+      <div class="text-center space-y-4 max-w-sm">
+        <div class="mx-auto flex size-16 items-center justify-center rounded-full bg-amber-100 dark:bg-amber-950/40">
+          <svg class="size-8 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+            <path stroke-linecap="round" stroke-linejoin="round"
+              d="M12 6v6l4 2m6-2a10 10 0 11-20 0 10 10 0 0120 0z" />
+          </svg>
+        </div>
+        <div>
+          <p class="text-lg font-bold text-foreground">ลิ้งค์หมดอายุแล้ว</p>
+          <p class="text-sm text-muted-foreground mt-1">
+            ลิ้งค์นี้หมดอายุเมื่อ
+            {{ expiresAt ? expiresAt.toLocaleString('th-TH') : '' }}
+          </p>
+        </div>
+        <p class="text-xs text-muted-foreground">กรุณาติดต่อผู้ส่งรายงานเพื่อขอลิ้งค์ใหม่</p>
+      </div>
     </div>
 
     <!-- Error -->
@@ -470,7 +578,7 @@ function onRelatedFirstData(e: any) { e.api.autoSizeAllColumns() }
           <div class="flex items-center gap-2 px-3 py-2 border-b shrink-0 bg-muted/30">
             <span class="text-xs font-semibold truncate flex-1">{{ w.title || w.type }}</span>
             <span class="text-[10px] text-muted-foreground">
-              {{ filteredRows(w).length.toLocaleString() }}r
+              {{ groupedRows(w).length.toLocaleString() }}r
             </span>
           </div>
 
@@ -478,7 +586,7 @@ function onRelatedFirstData(e: any) { e.api.autoSizeAllColumns() }
           <div class="flex-1 min-h-0 overflow-hidden p-2">
 
             <div
-              v-if="!filteredRows(w).length && w.type !== 'ecOption'"
+              v-if="!groupedRows(w).length && w.type !== 'ecOption'"
               class="h-full flex items-center justify-center text-[11px] text-muted-foreground
                      border border-dashed rounded-lg"
             >No data</div>
@@ -492,13 +600,15 @@ function onRelatedFirstData(e: any) { e.api.autoSizeAllColumns() }
             />
 
             <!-- Table -->
-            <div v-else-if="w.type === 'table'" class="h-full flex flex-col">
+            <div v-else-if="w.type === 'table'" class="h-full flex flex-col"
+              :style="{ '--vw-fs': (w.fontSize ?? 11) + 'px', '--vw-fsh': Math.max(8, (w.fontSize ?? 11) - 1) + 'px' }"
+            >
               <AgGridVue
-                :class="[themeClass, 'flex-1 min-h-0 w-full']"
-                :rowData="filteredRows(w)"
+                :class="[themeClass, 'ag-view-table flex-1 min-h-0 w-full']"
+                :rowData="groupedRows(w)"
                 :columnDefs="tableColDefs(w)"
-                :rowHeight="26"
-                :headerHeight="30"
+                :rowHeight="Math.max(26, (w.fontSize ?? 11) + 15)"
+                :headerHeight="Math.max(30, (w.fontSize ?? 11) + 19)"
                 :suppressMovableColumns="true"
                 :suppressCellFocus="true"
                 :enableCellTextSelection="w.cellClickMode !== 'modal'"
@@ -589,29 +699,50 @@ function onRelatedFirstData(e: any) { e.api.autoSizeAllColumns() }
                     ? 'border-indigo-400 bg-indigo-50 dark:bg-indigo-950/30'
                     : 'border-border bg-muted/20'"
                 >
-                  <p class="text-[10px] text-muted-foreground truncate">{{ entry.label }}</p>
-                  <p class="text-xs font-semibold break-all">{{ entry.value }}</p>
+                  <p class="text-muted-foreground truncate" :style="{ fontSize: Math.max(9, modalFontSize - 2) + 'px' }">{{ entry.label }}</p>
+                  <p class="font-semibold break-all" :style="{ fontSize: modalFontSize + 'px' }">{{ entry.value }}</p>
                 </div>
               </div>
             </div>
 
             <!-- Tab: Related Rows -->
             <div v-else-if="clickTab === 'related'" class="flex-1 min-h-0 flex flex-col">
+              <!-- Search bar -->
+              <div class="px-4 py-2 border-b shrink-0 flex items-center gap-2">
+                <input
+                  v-model="relatedSearch"
+                  placeholder="Search..."
+                  class="flex-1 text-xs border rounded-lg px-2.5 py-1.5 bg-background
+                         focus:outline-none focus:ring-1 focus:ring-indigo-400
+                         placeholder:text-muted-foreground/40"
+                />
+                <span class="text-[10px] text-muted-foreground shrink-0">
+                  {{ filteredRelatedRows.length }}/{{ relatedRows.length }}
+                </span>
+              </div>
               <div
                 v-if="!relatedRows.length"
                 class="flex-1 flex items-center justify-center text-sm text-muted-foreground"
               >No related rows found</div>
-              <AgGridVue
-                v-else-if="showRelated"
-                :class="[themeClass, 'flex-1 min-h-0 w-full']"
-                :rowData="relatedRows"
-                :columnDefs="relatedColDefs"
-                :rowHeight="28"
-                :headerHeight="32"
-                :suppressMovableColumns="true"
-                :suppressCellFocus="true"
-                @first-data-rendered="onRelatedFirstData"
-              />
+              <div
+                v-else-if="!filteredRelatedRows.length"
+                class="flex-1 flex items-center justify-center text-sm text-muted-foreground"
+              >No results match "{{ relatedSearch }}"</div>
+              <div v-else-if="showRelated"
+                class="flex-1 min-h-0"
+                :style="{ '--mf': modalFontSize + 'px', '--mf-h': Math.max(9, modalFontSize - 1) + 'px' }"
+              >
+                <AgGridVue
+                  :class="[themeClass, 'ag-modal-table h-full w-full']"
+                  :rowData="filteredRelatedRows"
+                  :columnDefs="relatedColDefs"
+                  :rowHeight="Math.max(28, modalFontSize + 17)"
+                  :headerHeight="Math.max(32, modalFontSize + 21)"
+                  :suppressMovableColumns="true"
+                  :suppressCellFocus="true"
+                  @first-data-rendered="onRelatedFirstData"
+                />
+              </div>
             </div>
 
             <!-- Resize handles -->
@@ -635,4 +766,20 @@ function onRelatedFirstData(e: any) { e.api.autoSizeAllColumns() }
 <style>
 .fade-enter-active, .fade-leave-active { transition: opacity .15s }
 .fade-enter-from, .fade-leave-to { opacity: 0 }
+
+.ag-view-table .ag-header-cell-text {
+  font-size: var(--vw-fsh, 10px);
+  font-weight: 600;
+}
+.ag-view-table .ag-cell {
+  font-size: var(--vw-fs, 11px);
+}
+
+.ag-modal-table .ag-header-cell-text {
+  font-size: var(--mf-h, 10px);
+  font-weight: 600;
+}
+.ag-modal-table .ag-cell {
+  font-size: var(--mf, 11px);
+}
 </style>
