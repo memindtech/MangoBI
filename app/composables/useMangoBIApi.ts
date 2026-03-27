@@ -69,8 +69,37 @@ export function useMangoBIApi() {
     return res?.data?.deleted === true
   }
 
+  // ── SQL Builder ───────────────────────────────────────────────────────────
+
+  async function listSQLBuilders(): Promise<BIListItem[]> {
+    const res: any = await $xt.getServer(`${BASE}/GetSQLBuilders`)
+    return res?.data ?? []
+  }
+
+  async function loadSQLBuilder(id: string): Promise<any> {
+    const res: any = await $xt.getServer(`${BASE}/GetSQLBuilder?id=${id}`)
+    return res?.data ?? null
+  }
+
+  async function saveSQLBuilder(payload: {
+    id?:       string
+    name:      string
+    nodesJson: string
+    edgesJson: string
+    sqlText:   string
+  }): Promise<string | null> {
+    const res: any = await $xt.postServerJson(`${BASE}/SaveSQLBuilder`, payload)
+    return res?.data?.id ?? res?.id ?? null
+  }
+
+  async function deleteSQLBuilder(id: string): Promise<boolean> {
+    const res: any = await $xt.postServerJson(`${BASE}/DeleteSQLBuilder?id=${id}`, {})
+    return res?.data?.deleted === true
+  }
+
   return {
     listReports, loadReport, saveReport, deleteReport,
     listDataModels, loadDataModel, saveDataModel, deleteDataModel,
+    listSQLBuilders, loadSQLBuilder, saveSQLBuilder, deleteSQLBuilder,
   }
 }
