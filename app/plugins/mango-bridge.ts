@@ -19,7 +19,7 @@ function makeFetcher(baseURL: string, getToken: () => string, onUnauthorized?: (
       options.headers = { ...(options.headers as Record<string, string>), ...extra }
     },
     async onResponseError({ response }) {
-      if (response.status === 401 && onUnauthorized) {
+      if ((response.status === 401 || response.status === 403) && onUnauthorized) {
         onUnauthorized()
       }
       throw response._data
