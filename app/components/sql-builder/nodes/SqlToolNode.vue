@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { Handle, Position } from '@vue-flow/core'
+import { Handle, Position, useVueFlow } from '@vue-flow/core'
 import {
   Layers, Calculator, Database, SortAsc, GitMerge, Filter as FilterIcon,
-  Settings2, X, ArrowUpDown,
+  Settings2, X,
 } from 'lucide-vue-next'
 import { useSqlBuilderStore } from '~/stores/sql-builder'
 import { useToolNodes } from '~/composables/sql-builder/useToolNodes'
@@ -15,6 +15,9 @@ const props = defineProps<{
 
 const store    = useSqlBuilderStore()
 const toolNodes = useToolNodes()
+const { updateNodeInternals } = useVueFlow()
+
+onMounted(() => nextTick(() => updateNodeInternals([props.id])))
 
 const TOOL_ICONS: Record<string, any> = {
   cte:   Layers,

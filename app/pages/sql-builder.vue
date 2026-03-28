@@ -1,5 +1,11 @@
 <script setup lang="ts">
 import { useVueFlow } from '@vue-flow/core'
+import { useSqlBuilderStore } from '~/stores/sql-builder'
+import { useErpData } from '~/composables/sql-builder/useErpData'
+import { useDragDrop } from '~/composables/sql-builder/useDragDrop'
+import { useHistory } from '~/composables/sql-builder/useHistory'
+import { useKeyboardShortcuts } from '~/composables/sql-builder/useKeyboardShortcuts'
+import { useSqlGenerator } from '~/composables/sql-builder/useSqlGenerator'
 
 definePageMeta({ layout: 'workspace', auth: true })
 useHead({ title: 'SQL Builder | MangoBI' })
@@ -10,7 +16,7 @@ const dragDrop = useDragDrop()
 const history  = useHistory()
 const shortcuts = useKeyboardShortcuts()
 const { generateSQL } = useSqlGenerator()
-const { getViewport, fitView, updateNodeData: vfUpdateNodeData, findNode } = useVueFlow('sql-builder')
+const { getViewport, updateNodeData: vfUpdateNodeData, findNode } = useVueFlow('sql-builder')
 
 onMounted(async () => {
   history.initHistory()
@@ -38,7 +44,6 @@ function syncNodeToVueFlow(nodeId: string) {
 watch(() => store.modalNodeId, (val, oldVal) => {
   if (!val && oldVal) {
     syncNodeToVueFlow(oldVal)
-    nextTick(() => fitView({ nodes: [oldVal], padding: 0.4, duration: 400 }))
   }
 })
 

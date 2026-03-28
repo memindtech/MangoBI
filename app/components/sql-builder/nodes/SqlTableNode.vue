@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { Handle, Position } from '@vue-flow/core'
+import { Handle, Position, useVueFlow } from '@vue-flow/core'
 import { Database, X, Filter, ChevronDown, ChevronUp, Key, SlidersHorizontal, Network } from 'lucide-vue-next'
 import type { VisibleCol } from '~/types/sql-builder'
-import { getColTypeBadge, getColTypeBadgeSolid } from '~/types/sql-builder'
+import { getColTypeBadgeSolid } from '~/types/sql-builder'
 import { useSqlBuilderStore } from '~/stores/sql-builder'
 import { useErpData } from '~/composables/sql-builder/useErpData'
 import { useDragDrop } from '~/composables/sql-builder/useDragDrop'
@@ -16,6 +16,10 @@ const props = defineProps<{
 const store    = useSqlBuilderStore()
 const erpData  = useErpData()
 const dragDrop = useDragDrop()
+const { updateNodeInternals } = useVueFlow()
+
+// Re-measure handle positions after this node is fully rendered
+onMounted(() => nextTick(() => updateNodeInternals([props.id])))
 
 const expanding = ref(false)
 

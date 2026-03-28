@@ -5,7 +5,7 @@
  *   isOpen=false → compact summary card (children hidden)
  */
 import { computed } from 'vue'
-import { Handle, Position } from '@vue-flow/core'
+import { Handle, Position, useVueFlow } from '@vue-flow/core'
 import { NodeResizer } from '@vue-flow/node-resizer'
 import { Layers, Settings2, X, ChevronDown, ChevronRight } from 'lucide-vue-next'
 import { useSqlBuilderStore } from '~/stores/sql-builder'
@@ -17,6 +17,9 @@ const props = defineProps<{
 }>()
 
 const store = useSqlBuilderStore()
+const { updateNodeInternals } = useVueFlow()
+
+onMounted(() => nextTick(() => updateNodeInternals([props.id])))
 
 const cteName      = computed(() => (props.data.name as string) || 'my_cte')
 const isOpen       = computed(() => !!props.data.isOpen)

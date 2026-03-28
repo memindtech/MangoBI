@@ -7,7 +7,7 @@
  *   2. Addspec_Table_Read   → actual DB column types (merged into columns)
  *   3. Auto-create related nodes (grid layout) + edges with mappings
  */
-import { MarkerType } from '@vue-flow/core'
+import { MarkerType, useVueFlow } from '@vue-flow/core'
 import {
   TOOL_NODE_DEFAULTS, getEdgeStyle,
   OBJECT_TYPE_LABELS, USE_TYPE_LABELS,
@@ -22,6 +22,7 @@ const USE_TYPE_PRIORITY = ['H', 'D', 'M', 'O', 'V', 'U']
 export function useDragDrop() {
   const store   = useSqlBuilderStore()
   const erpData = useErpData()
+  const { screenToFlowCoordinate } = useVueFlow('sql-builder')
 
   // ── Drag start from left panel ──────────────────────────────────────────
   function onDragStart(e: DragEvent, obj: any) {
@@ -36,9 +37,7 @@ export function useDragDrop() {
 
     const obj: any = JSON.parse(raw)
     const id = store.nextNodeId('node')
-    const bounds = (e.currentTarget as HTMLElement).getBoundingClientRect()
-    const x = Math.max(0, e.clientX - bounds.left - 110)
-    const y = Math.max(0, e.clientY - bounds.top  - 40)
+    const { x, y } = screenToFlowCoordinate({ x: e.clientX - 110, y: e.clientY - 40 })
 
     // Create placeholder node immediately (shows loading state)
     store.addNode({

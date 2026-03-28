@@ -1,5 +1,31 @@
 <script setup lang="ts">
-import { Share2, LayoutDashboard, Send, Code2, ArrowRight } from 'lucide-vue-next'
+import { Share2, LayoutDashboard, Send, Code2, ArrowRight, DatabaseZap, CheckCircle2, XCircle, Loader2 } from 'lucide-vue-next'
+import { useMangoBIApi } from '~/composables/useMangoBIApi'
+
+const api       = useMangoBIApi()
+const authStore = useAuthStore()
+const isITMango = computed(() => authStore.auth?.userid?.toUpperCase() === 'ITMANGO')
+
+const updating   = ref(false)
+const updateMsgs = ref<string[]>([])
+const updateErr  = ref('')
+const updateDone = ref(false)
+
+async function runUpdateStructure() {
+  updating.value   = true
+  updateErr.value  = ''
+  updateMsgs.value = []
+  updateDone.value = false
+  try {
+    const res = await api.updateStructure()
+    updateMsgs.value = res?.messages ?? []
+    updateDone.value = true
+  } catch (e: any) {
+    updateErr.value = e?.message ?? 'เกิดข้อผิดพลาด'
+  } finally {
+    updating.value = false
+  }
+}
 
 definePageMeta({
   auth: true,
@@ -82,6 +108,43 @@ const features = [
           <ArrowRight class="size-3 transition-transform group-hover:translate-x-1" />
         </div>
       </button>
+    </div>
+
+    <!-- System / Admin (ITMANGO only) -->
+    <div v-if="isITMango" class="w-full max-w-4xl border-t pt-6">
+      <p class="text-[11px] font-semibold text-muted-foreground uppercase tracking-widest mb-3">System</p>
+      <div class="flex items-start gap-4 flex-wrap">
+
+        <!-- Update Structure button -->
+        <div class="flex flex-col gap-2">
+          <button
+            @click="runUpdateStructure"
+            :disabled="updating"
+            class="flex items-center gap-2 text-xs px-4 py-2 rounded-lg border border-amber-500/40 bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 transition-colors font-semibold disabled:opacity-50"
+          >
+            <Loader2 v-if="updating" class="size-3.5 animate-spin" />
+            <DatabaseZap v-else class="size-3.5" />
+            Update Database Structure
+          </button>
+
+          <!-- Result -->
+          <div v-if="updateDone || updateErr" class="text-xs rounded-lg border px-3 py-2 max-w-sm"
+            :class="updateErr ? 'border-destructive/30 bg-destructive/5 text-destructive' : 'border-emerald-500/30 bg-emerald-500/5'">
+            <div v-if="updateErr" class="flex items-center gap-1.5">
+              <XCircle class="size-3.5 shrink-0" /> {{ updateErr }}
+            </div>
+            <template v-else>
+              <div class="flex items-center gap-1.5 font-semibold text-emerald-600 mb-1">
+                <CheckCircle2 class="size-3.5 shrink-0" /> สำเร็จ
+              </div>
+              <div v-for="(msg, i) in updateMsgs" :key="i" class="text-muted-foreground leading-relaxed">
+                {{ msg }}
+              </div>
+            </template>
+          </div>
+        </div>
+
+      </div>
     </div>
   </div>
 </template>
