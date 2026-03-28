@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
  * SQL Builder — SQL Output Panel
- * Displays generated SQL with copy functionality
+ * Displays generated SQL with copy/resize functionality
  */
 import { Code2, ChevronDown, ChevronRight, Copy } from 'lucide-vue-next'
 import { useSqlBuilderStore } from '~/stores/sql-builder'
@@ -9,15 +9,52 @@ import { useSqlGenerator } from '~/composables/sql-builder/useSqlGenerator'
 
 const store = useSqlBuilderStore()
 const { copySQL } = useSqlGenerator()
+
+const HEADER_H = 36
+const MIN_H    = 80
+const MAX_H    = 600
+
+const panelHeight = ref(180)
+const isResizing  = ref(false)
+
+function startResize(e: MouseEvent) {
+  isResizing.value = true
+  const startY = e.clientY
+  const startH = panelHeight.value
+
+  function onMove(ev: MouseEvent) {
+    const delta = startY - ev.clientY
+    panelHeight.value = Math.min(MAX_H, Math.max(MIN_H, startH + delta))
+  }
+  function onUp() {
+    isResizing.value = false
+    globalThis.removeEventListener('mousemove', onMove)
+    globalThis.removeEventListener('mouseup', onUp)
+  }
+  globalThis.addEventListener('mousemove', onMove)
+  globalThis.addEventListener('mouseup', onUp)
+}
 </script>
 
 <template>
-  <div class="border-t bg-background shrink-0" :style="{ height: store.sqlPanelOpen ? '180px' : '36px' }">
+  <div
+    class="border-t bg-background shrink-0 relative"
+    :style="{ height: store.sqlPanelOpen ? `${panelHeight}px` : `${HEADER_H}px` }"
+  >
+    <!-- Resize handle -->
+    <div
+      v-if="store.sqlPanelOpen"
+      class="absolute top-0 left-0 right-0 h-1 cursor-row-resize hover:bg-sky-500/40 transition-colors"
+      :class="{ 'bg-sky-500/40': isResizing }"
+      @mousedown.prevent="startResize"
+    />
+
     <!-- Panel header -->
     <div class="flex items-center gap-2 px-3 h-9 border-b">
       <Code2 class="size-3.5 text-sky-500" />
       <span class="text-xs font-semibold">Generated SQL</span>
-      <button @click="store.sqlPanelOpen = !store.sqlPanelOpen" class="ml-auto text-muted-foreground hover:text-foreground">
+      <button @click="store.sqlPanelOpen = !store.sqlPanelOpen"
+        class="ml-auto text-muted-foreground hover:text-foreground">
         <component :is="store.sqlPanelOpen ? ChevronDown : ChevronRight" class="size-3.5" />
       </button>
       <button v-if="store.generatedSQL" @click="copySQL"
@@ -27,7 +64,11 @@ const { copySQL } = useSqlGenerator()
     </div>
 
     <!-- SQL content -->
-    <div v-if="store.sqlPanelOpen" class="h-[calc(100%-36px)] overflow-auto">
+    <div
+      v-if="store.sqlPanelOpen"
+      class="overflow-auto"
+      :style="{ height: `${panelHeight - HEADER_H}px` }"
+    >
       <pre v-if="store.generatedSQL"
         class="px-4 py-3 text-xs font-mono whitespace-pre-wrap leading-relaxed">{{ store.generatedSQL }}</pre>
       <div v-else class="flex items-center justify-center h-full text-xs text-muted-foreground">

@@ -114,10 +114,18 @@ export function useMangoBIApi() {
     return res?.data?.deleted === true
   }
 
+  // ── System ────────────────────────────────────────────────────────────────
+
+  async function updateStructure(): Promise<{ messages: string[] } | null> {
+    const res: any = await $xt.postServerJson(`${BASE}/UpdateStructure`, {})
+    return res?.data ?? null
+  }
+
   return {
     loadPublicReport,
     listReports, loadReport, saveReport, deleteReport,
     listDataModels, loadDataModel, saveDataModel, deleteDataModel,
     listSQLBuilders, loadSQLBuilder, saveSQLBuilder, deleteSQLBuilder,
+    updateStructure,
   }
 }
