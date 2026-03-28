@@ -8,5 +8,5 @@ services:
       - "3000:3000"
     environment:
       - NUXT_PUBLIC_API_BASE=https://demotokbud.mangoanywhere.com/production.service/
-      - NUXT_PUBLIC_PLANNING_BASE=http://planning-service:8080/api/v1/
+      - NUXT_PUBLIC_PLANNING_BASE=http://localhost:8080/api/v1/
     restart: unless-stopped
