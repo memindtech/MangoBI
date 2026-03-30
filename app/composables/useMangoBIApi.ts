@@ -6,6 +6,17 @@
 const BASE        = 'Planning/MangoBI'
 const BASE_PUBLIC = 'Planning/Public'
 
+// Module-level cache — shared across all composable instances within the same session.
+// Stores fetched report/datamodel/sqlbuilder data keyed by id.
+// In-flight map deduplicates concurrent requests for the same id.
+const _reportCache   = new Map<string, any>()
+const _reportFlight  = new Map<string, Promise<any>>()
+
+function invalidateReport(id: string): void {
+  _reportCache.delete(id)
+  _reportFlight.delete(id)
+}
+
 export interface BIListItem {
   id:        string
   name:      string
@@ -40,9 +51,26 @@ export function useMangoBIApi() {
     return res?.data ?? []
   }
 
-  async function loadReport(id: string): Promise<any> {
-    const res: any = await $xt.getServer(`${BASE}/GetReport?id=${id}`)
-    return res?.data ?? null
+  async function loadReport(id: string, bustCache = false): Promise<any> {
+    if (!bustCache && _reportCache.has(id)) return _reportCache.get(id)
+    // Deduplicate concurrent fetches for the same id
+    if (!bustCache && _reportFlight.has(id)) return _reportFlight.get(id)
+    const promise = $xt.getServer(`${BASE}/GetReport?id=${id}`)
+      .then((res: any) => {
+        const data = res?.data ?? null
+        if (data) _reportCache.set(id, data)
+        _reportFlight.delete(id)
+        return data
+      })
+      .catch((err: any) => { _reportFlight.delete(id); throw err })
+    _reportFlight.set(id, promise)
+    return promise
+  }
+
+  /** Call on hover to warm the cache before the user clicks. */
+  function prefetchReport(id: string): void {
+    if (_reportCache.has(id) || _reportFlight.has(id)) return
+    loadReport(id).catch(() => {})
   }
 
   async function saveReport(payload: {
@@ -51,11 +79,14 @@ export function useMangoBIApi() {
     widgetsJson: string
   }): Promise<string | null> {
     const res: any = await $xt.postServerJson(`${BASE}/SaveReport`, payload)
-    return res?.data?.id ?? res?.id ?? null
+    const savedId  = res?.data?.id ?? res?.id ?? null
+    if (savedId) invalidateReport(savedId)
+    return savedId
   }
 
   async function deleteReport(id: string): Promise<boolean> {
     const res: any = await $xt.postServerJson(`${BASE}/DeleteReport?id=${id}`, {})
+    if (res?.data?.deleted === true) invalidateReport(id)
     return res?.data?.deleted === true
   }
 
@@ -124,6 +155,7 @@ export function useMangoBIApi() {
   return {
     loadPublicReport,
     listReports, loadReport, saveReport, deleteReport,
+    prefetchReport, invalidateReport,
     listDataModels, loadDataModel, saveDataModel, deleteDataModel,
     listSQLBuilders, loadSQLBuilder, saveSQLBuilder, deleteSQLBuilder,
     updateStructure,
