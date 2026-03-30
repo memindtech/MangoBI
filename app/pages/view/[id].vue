@@ -8,7 +8,7 @@ import { formatDateValue, formatNumericValue } from '~/utils/formatValue'
 import type { NumericFormat } from '~/utils/formatValue'
 import { useMangoBIApi } from '~/composables/useMangoBIApi'
 import type { FilterCondition, FilterOperator } from '~/stores/report'
-import { MousePointer2, X, LayoutDashboard, Loader2 } from 'lucide-vue-next'
+import { MousePointer2, X, LayoutDashboard, Loader2, Sun, Moon, Filter, Plus, Trash2 } from 'lucide-vue-next'
 import { metaToColType, isDateMeta } from '~/utils/columnMapping'
 
 ModuleRegistry.registerModules([ClientSideRowModelModule, CommunityFeaturesModule])
@@ -19,6 +19,11 @@ const route     = useRoute()
 const biApi     = useMangoBIApi()
 const colorMode = useColorMode()
 const isDark    = computed(() => colorMode.value === 'dark')
+
+// ── Theme toggle ──────────────────────────────────────────────────────────────
+function toggleTheme() {
+  colorMode.preference = isDark.value ? 'light' : 'dark'
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface Dataset {
@@ -132,7 +137,7 @@ function applyGroupBy(rows: any[], w: Widget): any[] {
 
 // rows after filter + groupBy — used for charts and tables
 function groupedRows(w: Widget): any[] {
-  return applyGroupBy(filteredRows(w), w)
+  return applyGroupBy(viewFilteredRows(w), w)
 }
 
 // ── Filter ────────────────────────────────────────────────────────────────────
@@ -181,6 +186,127 @@ function filteredRows(w: Widget): any[] {
       ? valid.every(c => matchCondition(r, c))
       : valid.some(c => matchCondition(r, c)),
   )
+}
+
+// ── View-time filters ─────────────────────────────────────────────────────────
+interface ViewFilter { column: string; operator: FilterOperator; value: string; values?: string[] }
+
+const showFilterPanel = ref(false)
+const viewFilters = ref<Record<string, ViewFilter[]>>({})
+
+const VIEW_FILTER_OPS: { value: FilterOperator; label: string }[] = [
+  { value: 'contains',    label: 'contains' },
+  { value: 'notContains', label: 'not contains' },
+  { value: 'eq',          label: '= equals' },
+  { value: 'neq',         label: '≠ not equals' },
+  { value: 'gt',          label: '> greater' },
+  { value: 'gte',         label: '>= greater eq' },
+  { value: 'lt',          label: '< less' },
+  { value: 'lte',         label: '<= less eq' },
+  { value: 'in',          label: 'in list' },
+  { value: 'notIn',       label: 'not in list' },
+  { value: 'blank',       label: 'is blank' },
+  { value: 'notBlank',    label: 'not blank' },
+]
+
+const filterableDatasets = computed(() => {
+  const seen = new Set<string>()
+  return widgets.value
+    .filter(w => { if (seen.has(w.datasetId)) return false; seen.add(w.datasetId); return true })
+    .map(w => datasets.value.find(d => d.id === w.datasetId))
+    .filter(Boolean) as Dataset[]
+})
+
+const activeViewFilterCount = computed(() =>
+  Object.values(viewFilters.value).flat()
+    .filter(f => f.column && (
+      ['blank', 'notBlank'].includes(f.operator) ||
+      (['in', 'notIn'].includes(f.operator) ? (f.values?.length ?? 0) > 0 : f.value !== '')
+    )).length,
+)
+
+const viewPickerSearch = reactive<Record<string, string>>({})
+
+function uniqueViewValuesFor(dsId: string, colName: string): string[] {
+  if (!colName) return []
+  const rows = datasets.value.find(d => d.id === dsId)?.rows ?? []
+  const seen = new Set<string>()
+  for (const row of rows) seen.add(String(row[colName] ?? ''))
+  return [...seen].sort((a, b) => a.localeCompare(b, 'th'))
+}
+
+function filteredPickerViewValues(key: string, dsId: string, colName: string): string[] {
+  const q = (viewPickerSearch[key] ?? '').trim().toLowerCase()
+  const vals = uniqueViewValuesFor(dsId, colName)
+  return q ? vals.filter(v => v.toLowerCase().includes(q)) : vals
+}
+
+function toggleViewPickerValue(f: ViewFilter, val: string) {
+  const cur = f.values ?? []
+  f.values = cur.includes(val) ? cur.filter(v => v !== val) : [...cur, val]
+}
+
+function addViewFilter(dsId: string) {
+  const cur = viewFilters.value[dsId] ?? []
+  viewFilters.value = { ...viewFilters.value, [dsId]: [...cur, { column: '', operator: 'contains' as FilterOperator, value: '' }] }
+}
+
+function removeViewFilter(dsId: string, idx: number) {
+  viewFilters.value = { ...viewFilters.value, [dsId]: (viewFilters.value[dsId] ?? []).filter((_, i) => i !== idx) }
+}
+
+function clearAllViewFilters() { viewFilters.value = {} }
+
+// Returns 'date' | 'number' | 'string' for the selected column in a view filter
+function viewFilterColType(dsId: string, colName: string): 'date' | 'number' | 'string' {
+  if (!colName) return 'string'
+  return colsOf(dsId).find(c => c.name === colName)?.type as any ?? 'string'
+}
+
+function todayIso() {
+  return new Date().toISOString().slice(0, 10)   // YYYY-MM-DD
+}
+
+function setTodayFilter(f: ViewFilter) {
+  f.value = todayIso()
+}
+
+// Normalize ISO datetime → YYYY-MM-DD for date-type comparisons
+function normDate(raw: any): string {
+  const s = String(raw ?? '')
+  return s.length >= 10 ? s.slice(0, 10) : s
+}
+
+function viewFilteredRows(w: Widget): any[] {
+  const rows = filteredRows(w)
+  const dsFilters = (viewFilters.value[w.datasetId] ?? [])
+    .filter(f => f.column && (
+      ['blank', 'notBlank'].includes(f.operator) ||
+      (['in', 'notIn'].includes(f.operator) ? (f.values?.length ?? 0) > 0 : f.value !== '')
+    ))
+  if (!dsFilters.length) return rows
+
+  return rows.filter(r => dsFilters.every(f => {
+    if (f.operator === 'in')    return (f.values ?? []).includes(String(r[f.column] ?? ''))
+    if (f.operator === 'notIn') return !(f.values ?? []).includes(String(r[f.column] ?? ''))
+    const colType = viewFilterColType(w.datasetId, f.column)
+    if (colType === 'date') {
+      const cell = normDate(r[f.column])
+      const op   = f.operator
+      const v    = f.value
+      if (op === 'blank')    return cell === ''
+      if (op === 'notBlank') return cell !== ''
+      if (op === 'eq')       return cell === v
+      if (op === 'neq')      return cell !== v
+      if (op === 'gt')       return cell > v
+      if (op === 'gte')      return cell >= v
+      if (op === 'lt')       return cell < v
+      if (op === 'lte')      return cell <= v
+      if (op === 'contains') return cell.includes(v)
+      return cell === v
+    }
+    return matchCondition(r, { column: f.column, operator: f.operator, value: f.value, values: [] })
+  }))
 }
 
 // ── Chart option ──────────────────────────────────────────────────────────────
@@ -299,6 +425,11 @@ function tableColDefs(w: Widget): ColDef[] {
         if (isNum && !isExcluded && (fmt.comma || fmt.decimals !== undefined)) return formatNumericValue(p.value, fmt)
         return String(p.value)
       },
+      // bind click at column level — more reliable than Vue @cell-clicked event in AG Grid 32
+      onCellClicked: clickable ? (e: any) => {
+        if (!e.data) return
+        openModal(w.datasetId, e.data, col, e.data[col], viewFilteredRows(w), w.fontSize)
+      } : undefined,
     }
   })
 }
@@ -478,18 +609,11 @@ function openModal(dsId: string, rowData: any, colField: string, cellValue: any,
 
 const modalFontSize = computed(() => clickCtx.value?.fontSize ?? 11)
 
-// table cell click — only when cellClickMode === 'modal'
-function onCellClicked(w: Widget, e: any) {
-  if (w.cellClickMode !== 'modal') return
-  if (!e?.data) return
-  openModal(w.datasetId, e.data, e.colDef?.field ?? '', e.value, filteredRows(w), w.fontSize)
-}
-
 // chart click — always opens modal (mirrors ReportWidget.vue — no cellClickMode gate for charts)
 function onChartClick(w: Widget, params: { name: string; value: any; seriesName: string; dataIndex: number }) {
   const x       = w.fields.xField ?? ''
   const gRows   = groupedRows(w)   // grouped — for finding the clicked row
-  const rawRows = filteredRows(w)  // raw — for related rows detail in modal
+  const rawRows = viewFilteredRows(w)  // raw — for related rows detail in modal
   if (w.type === 'scatter') {
     const xVal = Array.isArray(params.value) ? params.value[0] : params.value
     const row  = gRows.find(r => Number(r[x]) === Number(xVal))
@@ -523,6 +647,30 @@ function onRelatedFirstData(e: any) { e.api.autoSizeAllColumns() }
       >
         หมดอายุ {{ expiresAt.toLocaleDateString('th-TH') }}
       </span>
+
+      <!-- Filter toggle -->
+      <button
+        @click="showFilterPanel = !showFilterPanel"
+        class="relative p-1.5 rounded-lg hover:bg-muted transition-colors"
+        :title="showFilterPanel ? 'Close filters' : 'View filters'"
+      >
+        <Filter class="size-4" :class="activeViewFilterCount > 0 ? 'text-indigo-500' : 'text-muted-foreground'" />
+        <span
+          v-if="activeViewFilterCount > 0"
+          class="absolute -top-0.5 -right-0.5 size-3.5 bg-indigo-500 text-white text-[9px] font-bold
+                 flex items-center justify-center rounded-full leading-none"
+        >{{ activeViewFilterCount }}</span>
+      </button>
+
+      <!-- Theme toggle -->
+      <button
+        @click="toggleTheme"
+        class="p-1.5 rounded-lg hover:bg-muted transition-colors text-muted-foreground"
+        :title="isDark ? 'Switch to Light mode' : 'Switch to Dark mode'"
+      >
+        <Sun v-if="isDark" class="size-4" />
+        <Moon v-else class="size-4" />
+      </button>
     </header>
 
     <!-- Loading -->
@@ -612,7 +760,6 @@ function onRelatedFirstData(e: any) { e.api.autoSizeAllColumns() }
                 :suppressMovableColumns="true"
                 :suppressCellFocus="true"
                 :enableCellTextSelection="w.cellClickMode !== 'modal'"
-                @cell-clicked="(e: any) => onCellClicked(w, e)"
                 @wheel.stop
               />
             </div>
@@ -629,6 +776,181 @@ function onRelatedFirstData(e: any) { e.api.autoSizeAllColumns() }
         </div>
       </div>
     </div>
+
+    <!-- Filter Panel -->
+    <Teleport to="body">
+      <Transition name="slide-right">
+        <div
+          v-if="showFilterPanel"
+          class="fixed right-0 top-0 bottom-0 z-40 w-80 bg-background border-l shadow-2xl flex flex-col"
+        >
+          <!-- Panel header -->
+          <div class="flex items-center gap-2 px-4 py-3 border-b shrink-0">
+            <Filter class="size-4 text-indigo-500" />
+            <span class="text-sm font-semibold flex-1">View Filters</span>
+            <span v-if="activeViewFilterCount > 0"
+              class="text-[10px] bg-indigo-100 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-300
+                     px-1.5 py-0.5 rounded-full font-semibold"
+            >{{ activeViewFilterCount }} active</span>
+            <button @click="showFilterPanel = false" class="text-muted-foreground hover:text-foreground p-0.5">
+              <X class="size-4" />
+            </button>
+          </div>
+
+          <!-- Per-dataset filters -->
+          <div class="flex-1 overflow-y-auto p-3 space-y-5">
+            <div v-if="!filterableDatasets.length" class="text-xs text-muted-foreground text-center pt-8">
+              No datasets loaded
+            </div>
+            <div v-for="ds in filterableDatasets" :key="ds.id" class="space-y-2">
+              <div class="flex items-center gap-1.5">
+                <span class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide flex-1 truncate">
+                  {{ ds.name }}
+                </span>
+                <button
+                  @click="addViewFilter(ds.id)"
+                  class="flex items-center gap-0.5 text-[10px] text-indigo-500 hover:text-indigo-600 font-semibold"
+                >
+                  <Plus class="size-3" />Add
+                </button>
+              </div>
+
+              <div
+                v-for="(f, i) in viewFilters[ds.id] ?? []"
+                :key="i"
+                class="rounded-lg border bg-muted/20 p-2 space-y-1.5"
+              >
+                <!-- Column select -->
+                <select
+                  v-model="f.column"
+                  class="w-full text-[11px] border rounded-md px-2 py-1 bg-background
+                         focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                >
+                  <option value="">— column —</option>
+                  <option v-for="col in colsOf(ds.id)" :key="col.name" :value="col.name">
+                    {{ col.label }}
+                  </option>
+                </select>
+
+                <!-- Operator + delete -->
+                <div class="flex gap-1">
+                  <select
+                    v-model="f.operator"
+                    class="flex-1 text-[11px] border rounded-md px-2 py-1 bg-background
+                           focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                  >
+                    <option v-for="op in VIEW_FILTER_OPS" :key="op.value" :value="op.value">
+                      {{ op.label }}
+                    </option>
+                  </select>
+                  <button
+                    @click="removeViewFilter(ds.id, i)"
+                    class="p-1 text-muted-foreground hover:text-destructive rounded"
+                  >
+                    <Trash2 class="size-3.5" />
+                  </button>
+                </div>
+
+                <!-- Value input — in/notIn picker, date picker, or text -->
+                <template v-if="!['blank','notBlank'].includes(f.operator)">
+
+                  <!-- in / notIn: checkbox value picker -->
+                  <template v-if="f.operator === 'in' || f.operator === 'notIn'">
+                    <div class="flex items-center justify-between text-[10px] mb-1">
+                      <span :class="(f.values ?? []).length ? 'text-indigo-500 font-semibold' : 'text-muted-foreground'">
+                        {{ (f.values ?? []).length ? `${f.values!.length} selected` : 'none selected' }}
+                      </span>
+                      <button
+                        v-if="(f.values ?? []).length"
+                        @click.stop="f.values = []"
+                        class="text-muted-foreground hover:text-destructive transition-colors"
+                      >clear</button>
+                    </div>
+                    <input
+                      v-model="viewPickerSearch[`${ds.id}_${i}`]"
+                      placeholder="search values..."
+                      class="w-full text-[10px] border rounded-md px-1.5 py-1 bg-background mb-1
+                             focus:outline-none focus:ring-1 focus:ring-indigo-400
+                             placeholder:text-muted-foreground/40"
+                    />
+                    <div class="max-h-36 overflow-y-auto border rounded-md divide-y">
+                      <label
+                        v-for="val in filteredPickerViewValues(`${ds.id}_${i}`, ds.id, f.column)"
+                        :key="val"
+                        class="flex items-center gap-2 px-2 py-1 cursor-pointer hover:bg-muted/40 transition-colors"
+                      >
+                        <input
+                          type="checkbox"
+                          :checked="(f.values ?? []).includes(val)"
+                          @change="toggleViewPickerValue(f, val)"
+                          class="accent-indigo-500 shrink-0"
+                        />
+                        <span class="text-[10px] truncate font-mono" :title="val">{{ val }}</span>
+                      </label>
+                      <div
+                        v-if="!filteredPickerViewValues(`${ds.id}_${i}`, ds.id, f.column).length"
+                        class="text-[10px] text-center text-muted-foreground py-2"
+                      >No values found</div>
+                    </div>
+                  </template>
+
+                  <!-- Date picker -->
+                  <div
+                    v-else-if="viewFilterColType(ds.id, f.column) === 'date'"
+                    class="flex gap-1 items-center"
+                  >
+                    <input
+                      v-model="f.value"
+                      type="date"
+                      class="flex-1 text-[11px] border rounded-md px-2 py-1 bg-background
+                             focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                    />
+                    <button
+                      @click="setTodayFilter(f)"
+                      class="shrink-0 text-[10px] font-semibold px-2 py-1 rounded-md
+                             bg-indigo-50 dark:bg-indigo-950/40
+                             text-indigo-600 dark:text-indigo-300
+                             hover:bg-indigo-100 dark:hover:bg-indigo-900/50
+                             border border-indigo-200 dark:border-indigo-800
+                             transition-colors"
+                      title="Set today"
+                    >Today</button>
+                  </div>
+
+                  <!-- Text input (default) -->
+                  <input
+                    v-else
+                    v-model="f.value"
+                    placeholder="value..."
+                    class="w-full text-[11px] border rounded-md px-2 py-1 bg-background
+                           focus:outline-none focus:ring-1 focus:ring-indigo-400
+                           placeholder:text-muted-foreground/40"
+                  />
+                </template>
+              </div>
+
+              <p v-if="!(viewFilters[ds.id] ?? []).length" class="text-[10px] text-muted-foreground/60 text-center py-1">
+                No filters — click Add
+              </p>
+            </div>
+          </div>
+
+          <!-- Footer -->
+          <div class="border-t px-4 py-3 shrink-0 flex items-center justify-between">
+            <span class="text-[11px] text-muted-foreground">
+              {{ activeViewFilterCount }} filter{{ activeViewFilterCount !== 1 ? 's' : '' }} active
+            </span>
+            <button
+              v-if="activeViewFilterCount > 0"
+              @click="clearAllViewFilters"
+              class="text-[11px] text-destructive hover:underline font-semibold"
+            >
+              Clear all
+            </button>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
 
     <!-- Click modal -->
     <Teleport to="body">
@@ -766,6 +1088,9 @@ function onRelatedFirstData(e: any) { e.api.autoSizeAllColumns() }
 <style>
 .fade-enter-active, .fade-leave-active { transition: opacity .15s }
 .fade-enter-from, .fade-leave-to { opacity: 0 }
+
+.slide-right-enter-active, .slide-right-leave-active { transition: transform .2s ease, opacity .2s ease }
+.slide-right-enter-from, .slide-right-leave-to { transform: translateX(100%); opacity: 0 }
 
 .ag-view-table .ag-header-cell-text {
   font-size: var(--vw-fsh, 10px);
