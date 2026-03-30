@@ -7,6 +7,7 @@ import {
   X, Plus, Layers, Calculator, Database, SortAsc, GitMerge, Filter,
   ChevronDown, Key, Search, Sparkles, Calendar,
 } from 'lucide-vue-next'
+import { MarkerType } from '@vue-flow/core'
 import { AGG_FUNCS, getColTypeBadge } from '~/types/sql-builder'
 import type { VisibleCol } from '~/types/sql-builder'
 import { useSqlBuilderStore } from '~/stores/sql-builder'
@@ -331,17 +332,38 @@ function toggleUnionSource(srcId: string) {
   const exists  = store.edges.some((e: any) => e.id === edgeId)
   if (exists) {
     store.edges = store.edges.filter((e: any) => e.id !== edgeId)
-  } else {
-    store.edges = [...store.edges, {
-      id:        edgeId,
-      source:    srcId,
-      target:    store.modalNodeId!,
-      type:      'sqlEdge',
-      animated:  false,
-      style:     { stroke: 'hsl(var(--muted-foreground) / 0.4)', strokeWidth: 1.5, strokeDasharray: '5 4' },
-      data:      { joinType: 'LEFT JOIN', mappings: [], isTool: true },
-    } as any]
+    return
   }
+
+  // Determine source category for distinct coloring
+  const srcNode = store.nodes.find((n: any) => n.id === srcId)
+  const srcCat  = srcNode?.type === 'cteFrame'
+    ? 'cte'
+    : srcNode?.type === 'sqlTable'
+      ? 'table'
+      : (srcNode?.data?.nodeType as string | undefined) ?? 'other'
+
+  const UNION_SRC_COLORS: Record<string, string> = {
+    cte:   '#a78bfa',  // violet — CTE Frame
+    union: '#eab308',  // yellow — Union node
+    table: '#38bdf8',  // sky    — standalone table
+    where: '#f87171',  // rose   — where node
+    group: '#fb923c',  // orange — group-by node
+    calc:  '#2dd4bf',  // teal   — calc node
+    other: '#94a3b8',  // slate  — fallback
+  }
+  const stroke = UNION_SRC_COLORS[srcCat] ?? UNION_SRC_COLORS.other
+
+  store.edges = [...store.edges, {
+    id:        edgeId,
+    source:    srcId,
+    target:    store.modalNodeId!,
+    type:      'sqlEdge',
+    animated:  true,
+    style:     { stroke, strokeWidth: 2, strokeDasharray: '6 4' },
+    markerEnd: { type: MarkerType.ArrowClosed, color: stroke, width: 16, height: 16 },
+    data:      { isTool: true, unionSrc: true, srcCat },
+  } as any]
 }
 
 function isUnionSourceConnected(srcId: string): boolean {
@@ -432,28 +454,43 @@ function collectVisibleCols(rootId: string): VisibleCol[] {
   const seen    = new Set<string>()
   const visited = new Set<string>()
 
+  function addTableCols(node: any) {
+    const visible = node.data.visibleCols as VisibleCol[] | undefined
+    const details = node.data.details as any[] | undefined
+    const src: VisibleCol[] = visible?.length
+      ? visible
+      : (details ?? []).map((c: any) => ({
+          name:   c.column_name,
+          type:   c.column_type || c.data_type,
+          remark: c.remark ?? '',
+          isPk:   c.data_pk === 'Y',
+          alias:  '',
+        }))
+    for (const col of src) {
+      if (!seen.has(col.name)) { seen.add(col.name); cols.push(col) }
+    }
+  }
+
   function walk(id: string) {
     if (visited.has(id)) return
     visited.add(id)
     const node = store.nodes.find((n: any) => n.id === id)
     if (!node) return
     if (node.type === 'sqlTable') {
-      const visible = node.data.visibleCols as VisibleCol[] | undefined
-      const details = node.data.details as any[] | undefined
-      const src: VisibleCol[] = visible?.length
-        ? visible
-        : (details ?? []).map((c: any) => ({
-            name:   c.column_name,
-            type:   c.column_type || c.data_type,
-            remark: c.remark ?? '',
-            isPk:   c.data_pk === 'Y',
-            alias:  '',
-          }))
-      for (const col of src) {
-        if (!seen.has(col.name)) { seen.add(col.name); cols.push(col) }
+      addTableCols(node)
+    } else if (node.type === 'cteFrame') {
+      // bounds-based child detection — no edges connect frame to its tables
+      for (const child of getCteFrameChildren(node)) {
+        if (!visited.has(child.id as string)) {
+          visited.add(child.id as string)
+          addTableCols(child)
+        }
       }
     } else {
-      store.edges.filter((e: any) => e.target === id).forEach((e: any) => walk(e.source as string))
+      // toolNode / union — recurse into each upstream source
+      store.edges
+        .filter((e: any) => e.target === id)
+        .forEach((e: any) => walk(e.source as string))
     }
   }
 

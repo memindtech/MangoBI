@@ -90,9 +90,24 @@ export function useSqlGenerator() {
     const nodeOutput = new Map<string, string>()
 
     const ctes: { name: string; sql: string }[] = []
+    const usedNames = new Set<string>()   // guard against duplicate CTE names
     let cteIdx    = 0
     let sortOrder = ''
     let lastCTE   = ''
+
+    // ── Unique name helper ───────────────────────────────────────────────
+    function uniqueName(base: string): string {
+      if (!usedNames.has(base)) { usedNames.add(base); return base }
+      let i = 2
+      while (usedNames.has(`${base}_${i}`)) i++
+      const name = `${base}_${i}`
+      usedNames.add(name)
+      return name
+    }
+
+    function nextCteIdx(): string {
+      return uniqueName(`_cte${++cteIdx}`)
+    }
 
     // ── Bounds helper: find sqlTable nodes inside a cteFrame ────────────
     function getFrameChildren(frame: Node): Node[] {
@@ -120,10 +135,11 @@ export function useSqlGenerator() {
           && childTables.some(c => c.id === e.source)
           && childTables.some(c => c.id === e.target)
       })
-      const frameName = (frame.data as any).name
+      const rawName  = (frame.data as any).name
         ? sanitizeCteName((frame.data as any).name)
         : `_cte${++cteIdx}`
-      const frameSql = buildCteFrameBlock(frame, childTables, childEdges)
+      const frameName = uniqueName(rawName)
+      const frameSql  = buildCteFrameBlock(frame, childTables, childEdges)
       ctes.push({ name: frameName, sql: frameSql })
       nodeOutput.set(frame.id, frameName)
       lastCTE = frameName
@@ -139,7 +155,7 @@ export function useSqlGenerator() {
           && standaloneTables.some(x => x.id === e.source)
           && standaloneTables.some(x => x.id === e.target)
       })
-      const baseName = '_src'
+      const baseName = uniqueName('_src')
       const baseSQL  = buildJoinBlock(standaloneTables, tableEdges)
       ctes.push({ name: baseName, sql: baseSQL })
       for (const tn of standaloneTables) nodeOutput.set(tn.id, baseName)
@@ -167,8 +183,8 @@ export function useSqlGenerator() {
       }
 
       const cteName = (nt === 'cte' || nt === 'union') && node.data.name
-        ? sanitizeCteName(node.data.name)
-        : `_cte${++cteIdx}`
+        ? uniqueName(sanitizeCteName(node.data.name))
+        : nextCteIdx()
 
       let cteSql = ''
       switch (nt) {

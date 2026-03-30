@@ -89,6 +89,38 @@ export const useSqlBuilderStore = defineStore('sql-builder', () => {
     const seen    = new Set<string>()
     const visited = new Set<string>()
 
+    // Collect visible cols from a sqlTable node
+    function collectTableCols(tbl: Node) {
+      const visibleCols = tbl.data.visibleCols as VisibleCol[] | undefined
+      const details     = tbl.data.details     as any[] | undefined
+      const colsToUse: VisibleCol[] = visibleCols?.length
+        ? visibleCols
+        : (details ?? []).map((c: any) => ({
+            name:   c.column_name,
+            type:   c.column_type || c.data_type,
+            remark: c.remark ?? '',
+            isPk:   c.data_pk === 'Y',
+            alias:  '',
+          }))
+      for (const col of colsToUse) {
+        if (!seen.has(col.name)) { seen.add(col.name); cols.push(col) }
+      }
+    }
+
+    // Bounds-based: find sqlTable nodes inside a cteFrame
+    function getCteChildren(frame: Node): Node[] {
+      const fw = parseFloat(String((frame.style as any)?.width  ?? '420'))
+      const fh = parseFloat(String((frame.style as any)?.height ?? '280'))
+      const fx = frame.position.x
+      const fy = frame.position.y
+      const NW = 112, NH = 80
+      return nodes.value.filter((n: Node) =>
+        n.type === 'sqlTable' &&
+        (n.position.x + NW) >= fx && (n.position.x + NW) <= fx + fw &&
+        (n.position.y + NH) >= fy && (n.position.y + NH) <= fy + fh
+      )
+    }
+
     function collect(nodeId: string) {
       if (visited.has(nodeId)) return
       visited.add(nodeId)
@@ -97,25 +129,17 @@ export const useSqlBuilderStore = defineStore('sql-builder', () => {
         const src = nodes.value.find((n: Node) => n.id === (edge as any).source)
         if (!src) continue
         if (src.type === 'sqlTable') {
-          // If visibleCols selected → use them; otherwise fall back to all details
-          const visibleCols = src.data.visibleCols as VisibleCol[] | undefined
-          const details     = src.data.details as any[] | undefined
-          const colsToUse: VisibleCol[] = visibleCols?.length
-            ? visibleCols
-            : (details ?? []).map((c: any) => ({
-                name:   c.column_name,
-                type:   c.column_type || c.data_type,
-                remark: c.remark ?? '',
-                isPk:   c.data_pk === 'Y',
-                alias:  '',
-              }))
-          for (const col of colsToUse) {
-            if (!seen.has(col.name)) {
-              seen.add(col.name)
-              cols.push(col)
+          collectTableCols(src)
+        } else if (src.type === 'cteFrame') {
+          // cteFrame children are bounds-based (no edges to children)
+          for (const child of getCteChildren(src)) {
+            if (!visited.has(child.id)) {
+              visited.add(child.id)
+              collectTableCols(child)
             }
           }
         } else {
+          // toolNode or union — recurse upstream
           collect(src.id)
         }
       }

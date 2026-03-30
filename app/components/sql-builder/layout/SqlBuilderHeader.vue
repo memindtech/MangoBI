@@ -35,7 +35,7 @@ function saveTemplate() {
 }
 
 function loadTemplate(id: string) {
-  store.loadTemplate(id)
+  addLocalToCanvas(id)
   showTemplateMenu.value = false
 }
 
@@ -87,15 +87,20 @@ async function doFinish() {
   }
 }
 
-// ── Load from cloud ───────────────────────────────────────────────────────
+// ── Load from cloud / templates ───────────────────────────────────────────
 const showLoadModal   = ref(false)
 const cloudItems      = ref<BIListItem[]>([])
 const loadingCloud    = ref(false)
 const deletingId      = ref<string | null>(null)
+const loadTab         = ref<'cloud' | 'local'>('cloud')
+const appendingId     = ref<string | null>(null)
+
+const localTemplates  = computed(() => store.listTemplates())
 
 async function openLoadModal() {
   showLoadModal.value = true
   loadingCloud.value  = true
+  loadTab.value       = 'cloud'
   try {
     cloudItems.value = await api.listSQLBuilders()
   } catch {
@@ -105,17 +110,63 @@ async function openLoadModal() {
   }
 }
 
-async function loadFromCloud(item: BIListItem) {
-  const data = await api.loadSQLBuilder(item.id)
-  if (!data) return
+/** Remap node IDs + edge refs, offset positions, then append to canvas */
+function appendNodesToCanvas(rawNodes: any[], rawEdges: any[]) {
+  const suffix = `-${Date.now()}`
+  const idMap  = new Map<string, string>()
+
+  // Compute Y offset to place below existing nodes
+  let dy = 0
+  if (store.nodes.length) {
+    const maxY = Math.max(...store.nodes.map((n: any) => (n.position?.y ?? 0) + 200))
+    dy = maxY + 80
+  }
+
+  const remappedNodes = rawNodes.map((n: any) => {
+    const newId = n.id + suffix
+    idMap.set(n.id, newId)
+    return {
+      ...n,
+      id: newId,
+      position: { x: n.position?.x ?? 0, y: (n.position?.y ?? 0) + dy },
+    }
+  })
+
+  const remappedEdges = rawEdges.map((e: any) => ({
+    ...e,
+    id:     e.id + suffix,
+    source: idMap.get(e.source) ?? (e.source + suffix),
+    target: idMap.get(e.target) ?? (e.target + suffix),
+  }))
+
+  store.nodes = [...store.nodes, ...remappedNodes]
+  store.edges = [...store.edges, ...remappedEdges]
+}
+
+async function addCloudToCanvas(item: BIListItem) {
+  appendingId.value = item.id
   try {
-    store.nodes = JSON.parse(data.nodesJson ?? '[]')
-    store.edges = JSON.parse(data.edgesJson ?? '[]')
-    store.generatedSQL = data.sqlText ?? ''
-    currentSavedId.value = item.id
-    finishName.value     = item.name
-  } catch {}
-  showLoadModal.value = false
+    const data = await api.loadSQLBuilder(item.id)
+    if (!data) return
+    const nodes = JSON.parse(data.nodesJson ?? '[]')
+    const edges = JSON.parse(data.edgesJson ?? '[]')
+    appendNodesToCanvas(nodes, edges)
+    // Set as current save target if canvas was empty before
+    if (!currentSavedId.value) {
+      currentSavedId.value = item.id
+      finishName.value     = item.name
+    }
+  } catch {
+    // ignore
+  } finally {
+    appendingId.value = null
+  }
+}
+
+function addLocalToCanvas(id: string) {
+  const tpl = store.listTemplates().find((t: any) => t.id === id)
+  if (!tpl) return
+  appendNodesToCanvas(tpl.nodes ?? [], tpl.edges ?? [])
 }
 
 async function deleteFromCloud(id: string) {
@@ -126,6 +177,12 @@ async function deleteFromCloud(id: string) {
   } finally {
     deletingId.value = null
   }
+}
+
+function nodeStats(nodes: any[]) {
+  const tables = nodes.filter((n: any) => n.type === 'sqlTable').length
+  const tools  = nodes.filter((n: any) => n.type === 'toolNode').length
+  return { tables, tools, total: nodes.length }
 }
 </script>
 
@@ -330,54 +387,123 @@ async function deleteFromCloud(id: string) {
     </Transition>
   </Teleport>
 
-  <!-- ── Load from Cloud Modal ─────────────────────────────────────────── -->
+  <!-- ── Load Modal (Cloud + Local templates) ──────────────────────────── -->
   <Teleport to="body">
     <Transition name="fade">
       <div v-if="showLoadModal"
         class="fixed inset-0 z-[200] flex items-center justify-center bg-black/50"
         @click.self="showLoadModal = false">
-        <div class="bg-background border rounded-2xl shadow-2xl w-full max-w-md p-6">
+        <div class="bg-background border rounded-2xl shadow-2xl w-full max-w-lg p-6">
+          <!-- Header -->
           <div class="flex items-center gap-2 mb-4">
             <CloudDownload class="size-5 text-sky-500" />
-            <h2 class="font-bold text-sm">โหลด SQL Builder</h2>
+            <h2 class="font-bold text-sm">เพิ่ม Template ลง Canvas</h2>
             <button @click="showLoadModal = false" class="ml-auto text-muted-foreground hover:text-foreground">
               <XIcon class="size-4" />
             </button>
           </div>
 
-          <!-- Loading -->
-          <div v-if="loadingCloud" class="flex items-center justify-center gap-2 py-8 text-muted-foreground text-xs">
-            <Loader2 class="size-4 animate-spin" />
-            กำลังโหลด…
-          </div>
-
-          <!-- Empty -->
-          <div v-else-if="!cloudItems.length" class="text-center py-8 text-xs text-muted-foreground/60 italic">
-            ยังไม่มีข้อมูลที่บันทึกไว้
-          </div>
-
-          <!-- List -->
-          <div v-else class="flex flex-col gap-1 max-h-80 overflow-y-auto -mx-1 px-1">
-            <div
-              v-for="item in cloudItems" :key="item.id"
-              class="flex items-center gap-2 px-3 py-2.5 rounded-xl hover:bg-accent transition-colors group"
+          <!-- Tabs -->
+          <div class="flex gap-1 mb-3 p-1 bg-muted/50 rounded-lg">
+            <button
+              @click="loadTab = 'cloud'"
+              :class="['flex-1 text-xs py-1 rounded-md font-medium transition-colors',
+                loadTab === 'cloud' ? 'bg-background shadow text-sky-600' : 'text-muted-foreground hover:text-foreground']"
             >
-              <button @click="loadFromCloud(item)" class="flex-1 text-left">
-                <p class="text-sm font-medium truncate">{{ item.name }}</p>
-                <p class="text-[10px] text-muted-foreground/60">
-                  {{ new Date(item.updatedAt ?? item.createdAt).toLocaleString('th-TH') }}
-                </p>
-              </button>
-              <button
-                @click.stop="deleteFromCloud(item.id)"
-                :disabled="deletingId === item.id"
-                class="size-7 flex items-center justify-center rounded-lg opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive text-muted-foreground transition-all disabled:opacity-50"
+              Cloud <span class="text-[10px] opacity-60">({{ cloudItems.length }})</span>
+            </button>
+            <button
+              @click="loadTab = 'local'"
+              :class="['flex-1 text-xs py-1 rounded-md font-medium transition-colors',
+                loadTab === 'local' ? 'bg-background shadow text-sky-600' : 'text-muted-foreground hover:text-foreground']"
+            >
+              Local <span class="text-[10px] opacity-60">({{ localTemplates.length }})</span>
+            </button>
+          </div>
+
+          <!-- ── Cloud tab ── -->
+          <div v-if="loadTab === 'cloud'">
+            <div v-if="loadingCloud" class="flex items-center justify-center gap-2 py-8 text-muted-foreground text-xs">
+              <Loader2 class="size-4 animate-spin" /> กำลังโหลด…
+            </div>
+            <div v-else-if="!cloudItems.length" class="text-center py-8 text-xs text-muted-foreground/60 italic">
+              ยังไม่มีข้อมูล Cloud ที่บันทึกไว้
+            </div>
+            <div v-else class="flex flex-col gap-1 max-h-80 overflow-y-auto -mx-1 px-1">
+              <div
+                v-for="item in cloudItems" :key="item.id"
+                class="flex items-center gap-2 px-3 py-2.5 rounded-xl hover:bg-accent transition-colors group"
               >
-                <Loader2 v-if="deletingId === item.id" class="size-3.5 animate-spin" />
-                <Trash2 v-else class="size-3.5" />
-              </button>
+                <div class="flex-1 min-w-0">
+                  <p class="text-sm font-medium truncate">{{ item.name }}</p>
+                  <p class="text-[10px] text-muted-foreground/60">
+                    {{ new Date(item.updatedAt ?? item.createdAt).toLocaleString('th-TH') }}
+                  </p>
+                </div>
+                <!-- Add to canvas button -->
+                <button
+                  @click.stop="addCloudToCanvas(item)"
+                  :disabled="appendingId === item.id"
+                  class="flex items-center gap-1 text-[10px] px-2.5 py-1 bg-sky-500 hover:bg-sky-600 text-white rounded-lg font-semibold transition-colors disabled:opacity-50 shrink-0"
+                  title="เพิ่มลง Canvas"
+                >
+                  <Loader2 v-if="appendingId === item.id" class="size-3 animate-spin" />
+                  <span v-else>+ Add</span>
+                </button>
+                <!-- Delete -->
+                <button
+                  @click.stop="deleteFromCloud(item.id)"
+                  :disabled="deletingId === item.id"
+                  class="size-7 flex items-center justify-center rounded-lg opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive text-muted-foreground transition-all disabled:opacity-50 shrink-0"
+                >
+                  <Loader2 v-if="deletingId === item.id" class="size-3.5 animate-spin" />
+                  <Trash2 v-else class="size-3.5" />
+                </button>
+              </div>
             </div>
           </div>
+
+          <!-- ── Local tab ── -->
+          <div v-else>
+            <div v-if="!localTemplates.length" class="text-center py-8 text-xs text-muted-foreground/60 italic">
+              ยังไม่มี Template ที่บันทึกไว้ในเครื่อง
+            </div>
+            <div v-else class="flex flex-col gap-1 max-h-80 overflow-y-auto -mx-1 px-1">
+              <div
+                v-for="tpl in localTemplates" :key="tpl.id"
+                class="flex items-center gap-2 px-3 py-2.5 rounded-xl hover:bg-accent transition-colors group"
+              >
+                <div class="flex-1 min-w-0">
+                  <p class="text-sm font-medium truncate">{{ tpl.name }}</p>
+                  <p class="text-[10px] text-muted-foreground/60">
+                    {{ nodeStats(tpl.nodes ?? []).tables }} tables ·
+                    {{ nodeStats(tpl.nodes ?? []).tools }} ops ·
+                    {{ new Date(tpl.createdAt).toLocaleDateString('th-TH') }}
+                  </p>
+                </div>
+                <!-- Add to canvas -->
+                <button
+                  @click.stop="addLocalToCanvas(tpl.id)"
+                  class="flex items-center gap-1 text-[10px] px-2.5 py-1 bg-sky-500 hover:bg-sky-600 text-white rounded-lg font-semibold transition-colors shrink-0"
+                  title="เพิ่มลง Canvas"
+                >
+                  + Add
+                </button>
+                <!-- Delete -->
+                <button
+                  @click.stop="deleteTemplate(tpl.id)"
+                  class="size-7 flex items-center justify-center rounded-lg opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive text-muted-foreground transition-all shrink-0"
+                >
+                  <Trash2 class="size-3.5" />
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Footer hint -->
+          <p class="text-[10px] text-muted-foreground/50 text-center mt-3">
+            กด "+ Add" เพื่อเพิ่ม template เข้า canvas (ไม่แทนที่ข้อมูลเดิม)
+          </p>
         </div>
       </div>
     </Transition>
