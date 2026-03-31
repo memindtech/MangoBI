@@ -5,8 +5,10 @@
  */
 import {
   Layers, Calculator, Database, SortAsc, GitMerge, Filter,
-  Play, Plus,
+  Play, Plus, Loader2,
 } from 'lucide-vue-next'
+
+const props = defineProps<{ columnsLoading?: boolean }>()
 
 const emit = defineEmits<{
   addTool: [toolId: string]
@@ -57,11 +59,13 @@ const tools = [
     <div class="p-3 border-t">
       <button
         @click="emit('generate')"
-        class="w-full flex flex-col items-center justify-center gap-1 py-3 rounded-xl bg-green-500 hover:bg-green-600 text-white transition-colors"
+        class="w-full flex flex-col items-center justify-center gap-1 py-3 rounded-xl text-white transition-colors"
+        :class="props.columnsLoading ? 'bg-green-500/70' : 'bg-green-500 hover:bg-green-600'"
       >
-        <Play class="size-4" />
-        <span class="text-xs font-bold">Finish</span>
-        <span class="text-[10px] opacity-80">Generate SQL</span>
+        <Loader2 v-if="props.columnsLoading" class="size-4 animate-spin" />
+        <Play v-else class="size-4" />
+        <span class="text-xs font-bold">{{ props.columnsLoading ? 'โหลดอยู่…' : 'Finish' }}</span>
+        <span class="text-[10px] opacity-80">{{ props.columnsLoading ? 'auto-generate เมื่อเสร็จ' : 'Generate SQL' }}</span>
       </button>
     </div>
   </aside>

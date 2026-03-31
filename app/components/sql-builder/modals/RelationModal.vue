@@ -17,18 +17,84 @@ const targetDetails = computed(() =>
   (targetNode.value?.data?.details ?? []) as Array<{ column_name: string; column_type: string; data_pk?: string; remark?: string }>
 )
 
-const joinType = ref<JoinType>('LEFT JOIN')
-const mappings = ref<EdgeMapping[]>([])
-let mappingIdSeq = 0
+const joinType      = ref<JoinType>('LEFT JOIN')
+const mappings      = ref<EdgeMapping[]>([])
+const autoPopulated = ref(false)   // true = mappings came from auto-detect (not user-saved)
+let mappingIdSeq    = 0
 
+// Loading state: true when either node's columns are still being fetched
+const isLoadingDetails = computed(() =>
+  sourceNode.value?.data?.columnsLoading !== false ||
+  targetNode.value?.data?.columnsLoading !== false
+)
+
+function buildAutoMappings(srcNode: any, tgtNode: any): EdgeMapping[] {
+  const srcDetails = (srcNode?.data?.details ?? []) as Array<{ column_name: string }>
+  const tgtDetails = (tgtNode?.data?.details ?? []) as Array<{ column_name: string }>
+  const srcNames   = srcDetails.length
+    ? srcDetails.map((c: any) => c.column_name)
+    : ((srcNode?.data?.visibleCols ?? []) as any[]).map((c: any) => c.name)
+  const tgtNames   = new Set(
+    tgtDetails.length
+      ? tgtDetails.map((c: any) => c.column_name)
+      : ((tgtNode?.data?.visibleCols ?? []) as any[]).map((c: any) => c.name)
+  )
+  let seq = 0
+  return srcNames
+    .filter((name: string) => tgtNames.has(name))
+    .map((name: string) => ({ _id: ++seq, source: name, target: name, operator: '=' }))
+}
+
+// When modal opens: load existing mappings or auto-detect if details ready
 watch(() => store.relationEdgeId, (id) => {
   if (!id) return
   const e = store.edges.find((e: any) => e.id === id) as any
   if (!e) return
   joinType.value = e.data?.joinType ?? 'LEFT JOIN'
-  mappings.value = JSON.parse(JSON.stringify(e.data?.mappings ?? []))
-  mappingIdSeq   = mappings.value.reduce((m: number, r: EdgeMapping) => Math.max(m, r._id), 0)
+
+  const existing: EdgeMapping[] = JSON.parse(JSON.stringify(e.data?.mappings ?? []))
+  if (existing.length) {
+    mappings.value  = existing
+    mappingIdSeq    = mappings.value.reduce((m: number, r: EdgeMapping) => Math.max(m, r._id), 0)
+    autoPopulated.value = false
+  } else {
+    mappingIdSeq = 0
+    mappings.value  = []
+    autoPopulated.value = false
+    // If details already loaded, auto-detect immediately
+    if (!isLoadingDetails.value) {
+      const srcNode = store.nodes.find((n: any) => n.id === e.source)
+      const tgtNode = store.nodes.find((n: any) => n.id === e.target)
+      const auto = buildAutoMappings(srcNode, tgtNode)
+      if (auto.length) {
+        mappingIdSeq = auto.length
+        mappings.value = auto
+        autoPopulated.value = true
+      }
+    }
+    // else: wait for details to finish loading (watched below)
+  }
 }, { immediate: true })
+
+// Watch for details finishing load → auto-populate if still empty
+watch(isLoadingDetails, (loading) => {
+  if (loading) return
+  if (!store.relationEdgeId) return
+  // Only auto-populate if user hasn't added/saved mappings yet
+  const e = store.edges.find((e: any) => e.id === store.relationEdgeId) as any
+  const savedMappings: EdgeMapping[] = e?.data?.mappings ?? []
+  if (savedMappings.length) return   // already has saved mappings, don't override
+  if (mappings.value.length && !autoPopulated.value) return  // user added manually
+
+  const srcNode = store.nodes.find((n: any) => n.id === e?.source)
+  const tgtNode = store.nodes.find((n: any) => n.id === e?.target)
+  const auto = buildAutoMappings(srcNode, tgtNode)
+  if (auto.length) {
+    mappingIdSeq = auto.length
+    mappings.value = auto
+    autoPopulated.value = true
+  }
+})
 
 // SVG dash preview per join type
 const JOIN_DASH: Record<JoinType, string> = {
@@ -234,6 +300,10 @@ function colDetail(details: typeof sourceDetails.value, colName: string) {
                     class="ml-1.5 px-1.5 py-0.5 rounded-full bg-sky-500/15 text-sky-500 text-[9px] font-bold">
                     {{ mappings.length }}
                   </span>
+                  <span v-if="autoPopulated && mappings.length"
+                    class="ml-1 px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-500 text-[8px] font-bold">
+                    auto
+                  </span>
                 </p>
                 <button @click="addMapping"
                   class="flex items-center gap-1 text-xs font-semibold text-sky-500 hover:text-sky-400 transition-colors">
@@ -241,9 +311,16 @@ function colDetail(details: typeof sourceDetails.value, colName: string) {
                 </button>
               </div>
 
-              <div v-if="!mappings.length"
+              <!-- Loading state: waiting for column details -->
+              <div v-if="isLoadingDetails && !mappings.length"
+                class="flex items-center justify-center gap-2 py-6 border border-dashed rounded-xl bg-muted/10">
+                <div class="size-3.5 rounded-full border-2 border-muted-foreground/20 border-t-sky-400 animate-spin" />
+                <span class="text-xs text-muted-foreground">กำลังโหลด columns เพื่อ auto-detect…</span>
+              </div>
+
+              <div v-else-if="!mappings.length"
                 class="text-xs text-muted-foreground/50 text-center py-5 border border-dashed rounded-xl bg-muted/10 italic">
-                ยังไม่มีเงื่อนไข ON<br/>
+                ไม่พบ column ที่ตรงกัน<br/>
                 <span class="text-[10px]">คลิก "+ เพิ่มเงื่อนไข" เพื่อระบุ column ที่ใช้ join</span>
               </div>
 

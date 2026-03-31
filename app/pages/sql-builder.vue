@@ -18,6 +18,18 @@ const shortcuts = useKeyboardShortcuts()
 const { generateSQL } = useSqlGenerator()
 const { getViewport, updateNodeData: vfUpdateNodeData, findNode } = useVueFlow('sql-builder')
 
+// True while any sqlTable node is still fetching column details
+const columnsLoading = computed(() =>
+  store.nodes.some((n: any) => n.type === 'sqlTable' && n.data?.columnsLoading !== false)
+)
+
+// When all columns finish loading, auto-regenerate if SQL panel is open
+watch(columnsLoading, (loading) => {
+  if (!loading && store.sqlPanelOpen) {
+    generateSQL()
+  }
+})
+
 onMounted(async () => {
   history.initHistory()
   shortcuts.install()
@@ -64,7 +76,7 @@ function onAddTool(toolId: string) {
     <div class="flex flex-1 overflow-hidden">
       <SqlBuilderLayoutSqlBuilderLeftPanel />
       <SqlBuilderLayoutSqlBuilderCanvas @drop="dragDrop.onDrop" />
-      <SqlBuilderLayoutSqlBuilderRightPanel @addTool="onAddTool" @generate="generateSQL" />
+      <SqlBuilderLayoutSqlBuilderRightPanel @addTool="onAddTool" @generate="generateSQL" :columns-loading="columnsLoading" />
     </div>
 
     <SqlBuilderModalsToolConfigModal />
