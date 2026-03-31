@@ -10,6 +10,7 @@ import { useMangoBIApi } from '~/composables/useMangoBIApi'
 import type { FilterCondition, FilterOperator } from '~/stores/report'
 import { MousePointer2, X, LayoutDashboard, Loader2, Sun, Moon, Filter, Plus, Trash2 } from 'lucide-vue-next'
 import { metaToColType, isDateMeta } from '~/utils/columnMapping'
+import { resolveDynamicValue, DATE_TOKEN_TODAY, DATE_TOKEN_YESTERDAY } from '~/utils/transformData'
 
 ModuleRegistry.registerModules([ClientSideRowModelModule, CommunityFeaturesModule])
 
@@ -73,6 +74,10 @@ onMounted(async () => {
     const payload = JSON.parse(row.widgetsJson ?? '{}')
     datasets.value  = payload.datasets ?? []
     widgets.value   = payload.widgets  ?? []
+    // Init view filters from defaults set by report sender
+    if (payload.defaultViewFilters && Object.keys(payload.defaultViewFilters).length) {
+      viewFilters.value = payload.defaultViewFilters
+    }
   } catch (e: any) {
     error.value = e?.message ?? 'Failed to load report'
   } finally {
@@ -268,8 +273,13 @@ function todayIso() {
 }
 
 function setTodayFilter(f: ViewFilter) {
-  f.value = todayIso()
+  f.value = DATE_TOKEN_TODAY
 }
+function setYesterdayFilter(f: ViewFilter) {
+  f.value = DATE_TOKEN_YESTERDAY
+}
+function isTokenValue(v: string) { return v === DATE_TOKEN_TODAY || v === DATE_TOKEN_YESTERDAY }
+function tokenLabel(v: string) { return v === DATE_TOKEN_TODAY ? 'Today' : 'Yesterday' }
 
 // Normalize ISO datetime → YYYY-MM-DD for date-type comparisons
 function normDate(raw: any): string {
@@ -289,11 +299,12 @@ function viewFilteredRows(w: Widget): any[] {
   return rows.filter(r => dsFilters.every(f => {
     if (f.operator === 'in')    return (f.values ?? []).includes(String(r[f.column] ?? ''))
     if (f.operator === 'notIn') return !(f.values ?? []).includes(String(r[f.column] ?? ''))
-    const colType = viewFilterColType(w.datasetId, f.column)
+    const colType  = viewFilterColType(w.datasetId, f.column)
+    const resolved = resolveDynamicValue(f.value)   // resolve __TODAY__ / __YESTERDAY__ at query time
     if (colType === 'date') {
       const cell = normDate(r[f.column])
+      const v    = normDate(resolved)
       const op   = f.operator
-      const v    = f.value
       if (op === 'blank')    return cell === ''
       if (op === 'notBlank') return cell !== ''
       if (op === 'eq')       return cell === v
@@ -305,7 +316,7 @@ function viewFilteredRows(w: Widget): any[] {
       if (op === 'contains') return cell.includes(v)
       return cell === v
     }
-    return matchCondition(r, { column: f.column, operator: f.operator, value: f.value, values: [] })
+    return matchCondition(r, { column: f.column, operator: f.operator, value: resolved, values: [] })
   }))
 }
 
@@ -897,24 +908,44 @@ function onRelatedFirstData(e: any) { e.api.autoSizeAllColumns() }
                   <!-- Date picker -->
                   <div
                     v-else-if="viewFilterColType(ds.id, f.column) === 'date'"
-                    class="flex gap-1 items-center"
+                    class="space-y-1"
                   >
+                    <!-- token badge when token is selected -->
+                    <div v-if="isTokenValue(f.value)" class="flex items-center gap-1">
+                      <span class="inline-flex items-center gap-1 bg-indigo-100 text-indigo-700
+                                   dark:bg-indigo-900/40 dark:text-indigo-300
+                                   text-[10px] font-semibold px-2 py-0.5 rounded-full border border-indigo-300">
+                        ⚡ {{ tokenLabel(f.value) }}
+                      </span>
+                      <button @click="f.value = ''" class="text-[10px] text-muted-foreground hover:text-foreground">
+                        ✕ แก้ไข
+                      </button>
+                    </div>
+                    <!-- date input when not a token -->
                     <input
+                      v-else
                       v-model="f.value"
                       type="date"
-                      class="flex-1 text-[11px] border rounded-md px-2 py-1 bg-background
+                      class="w-full text-[11px] border rounded-md px-2 py-1 bg-background
                              focus:outline-none focus:ring-1 focus:ring-indigo-400"
                     />
-                    <button
-                      @click="setTodayFilter(f)"
-                      class="shrink-0 text-[10px] font-semibold px-2 py-1 rounded-md
-                             bg-indigo-50 dark:bg-indigo-950/40
-                             text-indigo-600 dark:text-indigo-300
-                             hover:bg-indigo-100 dark:hover:bg-indigo-900/50
-                             border border-indigo-200 dark:border-indigo-800
-                             transition-colors"
-                      title="Set today"
-                    >Today</button>
+                    <!-- quick token buttons -->
+                    <div class="flex gap-1">
+                      <button
+                        @click="setTodayFilter(f)"
+                        :class="['flex-1 text-[10px] font-semibold px-2 py-1 rounded-md border transition-colors',
+                          f.value === DATE_TOKEN_TODAY
+                            ? 'bg-indigo-500 border-indigo-500 text-white'
+                            : 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-300 border-indigo-200 dark:border-indigo-800 hover:bg-indigo-100']"
+                      >⚡ Today</button>
+                      <button
+                        @click="setYesterdayFilter(f)"
+                        :class="['flex-1 text-[10px] font-semibold px-2 py-1 rounded-md border transition-colors',
+                          f.value === DATE_TOKEN_YESTERDAY
+                            ? 'bg-indigo-500 border-indigo-500 text-white'
+                            : 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-300 border-indigo-200 dark:border-indigo-800 hover:bg-indigo-100']"
+                      >⚡ Yesterday</button>
+                    </div>
                   </div>
 
                   <!-- Text input (default) -->

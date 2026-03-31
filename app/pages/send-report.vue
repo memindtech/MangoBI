@@ -3,9 +3,11 @@ import {
   Send, Mail, Plus, X, Pencil, Trash2, Search,
   Users, FileText, Clock, RefreshCw, CheckCircle2,
   MessageSquare, ToggleLeft, ToggleRight, ChevronDown,
-  Loader2, CalendarDays, SendHorizontal,
+  Loader2, CalendarDays, SendHorizontal, Filter, SlidersHorizontal,
 } from 'lucide-vue-next'
 import { useMangoBIApi, type BIListItem } from '~/composables/useMangoBIApi'
+import type { FilterOperator } from '~/stores/report'
+import { DATE_TOKEN_TODAY, DATE_TOKEN_YESTERDAY } from '~/utils/transformData'
 import {
   AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle,
   AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction,
@@ -201,6 +203,16 @@ async function doSave() {
   if (!canSave.value) return
   saving.value = true
   try {
+    // Persist defaultViewFilters back into the report's widgetsJson
+    if (form.value.reportId && reportDatasets.value.length) {
+      const row = await biApi.loadReport(form.value.reportId)
+      if (row) {
+        const payload = JSON.parse(row.widgetsJson ?? '{}')
+        payload.defaultViewFilters = defaultViewFilters.value
+        await biApi.saveReport({ id: form.value.reportId, name: row.name, widgetsJson: JSON.stringify(payload) })
+      }
+    }
+
     await $xt.postServerJson('Planning/MangoBISchedule/Save', {
       id:              form.value.id || undefined,
       reportId:        form.value.reportId,
@@ -274,6 +286,98 @@ async function openEmpModal() {
 function empInitial(emp: Employee): string {
   return (emp.empfullname_t ?? emp.userid ?? '?').charAt(0).toUpperCase()
 }
+
+// ── Default View Filters ──────────────────────────────────────────────────────
+interface DefaultViewFilter { column: string; operator: FilterOperator; value: string; values?: string[] }
+
+const DEFAULT_FILTER_OPS: { value: FilterOperator; label: string }[] = [
+  { value: 'contains',    label: 'contains' },
+  { value: 'notContains', label: 'not contains' },
+  { value: 'eq',          label: '= equals' },
+  { value: 'neq',         label: '≠ not equals' },
+  { value: 'gt',          label: '> greater' },
+  { value: 'gte',         label: '>= greater eq' },
+  { value: 'lt',          label: '< less' },
+  { value: 'lte',         label: '<= less eq' },
+  { value: 'in',          label: 'in list' },
+  { value: 'notIn',       label: 'not in list' },
+  { value: 'blank',       label: 'is blank' },
+  { value: 'notBlank',    label: 'not blank' },
+]
+
+// defaultViewFilters: per-dataset filter list, keyed by dsId
+const defaultViewFilters = ref<Record<string, DefaultViewFilter[]>>({})
+
+// Raw datasets loaded from selected report (for column/value picker)
+const reportDatasets = ref<{ id: string; name: string; rows: any[]; columnLabels?: Record<string, any> }[]>([])
+const loadingReport  = ref(false)
+
+watch(() => form.value.reportId, async (id) => {
+  defaultViewFilters.value = {}
+  reportDatasets.value     = []
+  if (!id) return
+  loadingReport.value = true
+  try {
+    const row = await biApi.loadReport(id)
+    if (!row) return
+    const payload = JSON.parse(row.widgetsJson ?? '{}')
+    reportDatasets.value      = payload.datasets ?? []
+    defaultViewFilters.value  = payload.defaultViewFilters ?? {}
+  } catch { /* ignore */ }
+  finally { loadingReport.value = false }
+})
+
+function dfColsOf(ds: typeof reportDatasets.value[0]) {
+  if (!ds.rows.length) return []
+  const first = ds.rows[0]
+  return Object.keys(first).map(name => {
+    const meta    = ds.columnLabels?.[name]
+    const sample  = first[name]
+    const isDate  = meta?.isDate || (typeof sample === 'string' && /^\d{4}-\d{2}-\d{2}/.test(sample))
+    const isNum   = meta?.type === 'number' || typeof sample === 'number'
+    return { name, label: meta?.label || name, type: isDate ? 'date' : isNum ? 'number' : 'string' }
+  })
+}
+
+function addDefaultFilter(dsId: string) {
+  const cur = defaultViewFilters.value[dsId] ?? []
+  defaultViewFilters.value = { ...defaultViewFilters.value, [dsId]: [...cur, { column: '', operator: 'contains' as FilterOperator, value: '' }] }
+}
+
+function removeDefaultFilter(dsId: string, idx: number) {
+  defaultViewFilters.value = { ...defaultViewFilters.value, [dsId]: (defaultViewFilters.value[dsId] ?? []).filter((_, i) => i !== idx) }
+}
+
+const dfPickerSearch = reactive<Record<string, string>>({})
+
+function dfUniqueValues(ds: typeof reportDatasets.value[0], colName: string): string[] {
+  if (!colName) return []
+  const seen = new Set<string>()
+  for (const row of ds.rows) seen.add(String(row[colName] ?? ''))
+  return [...seen].sort((a, b) => a.localeCompare(b, 'th'))
+}
+
+function dfFilteredPickerValues(key: string, ds: typeof reportDatasets.value[0], colName: string): string[] {
+  const q = (dfPickerSearch[key] ?? '').trim().toLowerCase()
+  const vals = dfUniqueValues(ds, colName)
+  return q ? vals.filter(v => v.toLowerCase().includes(q)) : vals
+}
+
+function toggleDfPickerValue(f: DefaultViewFilter, val: string) {
+  const cur = f.values ?? []
+  f.values = cur.includes(val) ? cur.filter(v => v !== val) : [...cur, val]
+}
+
+function dfIsToken(v: string) { return v === DATE_TOKEN_TODAY || v === DATE_TOKEN_YESTERDAY }
+function dfTokenLabel(v: string) { return v === DATE_TOKEN_TODAY ? 'Today' : 'Yesterday' }
+
+const activeDefaultFilterCount = computed(() =>
+  Object.values(defaultViewFilters.value).flat()
+    .filter(f => f.column && (
+      ['blank', 'notBlank'].includes(f.operator) ||
+      (['in', 'notIn'].includes(f.operator) ? (f.values?.length ?? 0) > 0 : f.value !== '')
+    )).length,
+)
 
 // ── Rich-text editor ──────────────────────────────────────────────────────────
 const editorRef = ref<HTMLElement | null>(null)
@@ -794,6 +898,169 @@ function intervalLabel(days: number): string {
               <p class="text-[10px] text-muted-foreground">
                 ใช้ปุ่ม <span class="font-semibold text-orange-500">{Link}</span> เพื่อแทรก placeholder สำหรับลิงก์รายงาน
               </p>
+            </div>
+
+            <!-- Default View Filters -->
+            <div class="flex flex-col gap-2">
+              <div class="flex items-center gap-1.5">
+                <SlidersHorizontal class="size-3 text-muted-foreground" />
+                <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                  Default Filters
+                </span>
+                <span v-if="activeDefaultFilterCount > 0"
+                  class="text-[10px] bg-emerald-100 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300
+                         px-1.5 py-0.5 rounded-full font-semibold"
+                >{{ activeDefaultFilterCount }} active</span>
+                <span v-if="loadingReport" class="ml-1">
+                  <Loader2 class="size-3 animate-spin text-muted-foreground" />
+                </span>
+              </div>
+              <p class="text-[10px] text-muted-foreground">
+                Filter เหล่านี้จะถูกตั้งไว้ล่วงหน้าเมื่อผู้รับเปิดลิ้งก์รายงาน — ผู้รับยังสามารถปรับ filter เองได้
+              </p>
+
+              <div v-if="!form.reportId" class="text-[10px] text-muted-foreground/60 text-center py-2 border border-dashed rounded-lg">
+                เลือก Report ก่อนเพื่อตั้ง Default Filters
+              </div>
+              <div v-else-if="loadingReport" class="text-[10px] text-muted-foreground text-center py-2">
+                กำลังโหลดข้อมูล...
+              </div>
+              <div v-else-if="!reportDatasets.length" class="text-[10px] text-muted-foreground/60 text-center py-2 border border-dashed rounded-lg">
+                Report นี้ยังไม่มี Dataset
+              </div>
+
+              <div v-else class="space-y-4">
+                <div v-for="ds in reportDatasets" :key="ds.id" class="rounded-xl border p-3 space-y-2 bg-muted/20">
+                  <!-- Dataset header -->
+                  <div class="flex items-center gap-1.5">
+                    <Filter class="size-3 text-emerald-500" />
+                    <span class="text-[10px] font-semibold truncate flex-1">{{ ds.name }}</span>
+                    <button
+                      @click="addDefaultFilter(ds.id)"
+                      class="flex items-center gap-0.5 text-[10px] text-emerald-600 hover:text-emerald-700 font-semibold"
+                    >
+                      <Plus class="size-3" />Add
+                    </button>
+                  </div>
+
+                  <!-- Filter rows -->
+                  <div
+                    v-for="(f, i) in defaultViewFilters[ds.id] ?? []"
+                    :key="i"
+                    class="rounded-lg border bg-background p-2 space-y-1.5"
+                  >
+                    <!-- Column select -->
+                    <select
+                      v-model="f.column"
+                      class="w-full text-[11px] border rounded-md px-2 py-1 bg-background
+                             focus:outline-none focus:ring-1 focus:ring-emerald-400"
+                    >
+                      <option value="">— column —</option>
+                      <option v-for="col in dfColsOf(ds)" :key="col.name" :value="col.name">
+                        {{ col.label }}
+                      </option>
+                    </select>
+
+                    <!-- Operator + delete -->
+                    <div class="flex gap-1">
+                      <select
+                        v-model="f.operator"
+                        class="flex-1 text-[11px] border rounded-md px-2 py-1 bg-background
+                               focus:outline-none focus:ring-1 focus:ring-emerald-400"
+                      >
+                        <option v-for="op in DEFAULT_FILTER_OPS" :key="op.value" :value="op.value">
+                          {{ op.label }}
+                        </option>
+                      </select>
+                      <button
+                        @click="removeDefaultFilter(ds.id, i)"
+                        class="p-1 text-muted-foreground hover:text-destructive rounded"
+                      >
+                        <Trash2 class="size-3.5" />
+                      </button>
+                    </div>
+
+                    <!-- Value input -->
+                    <template v-if="!['blank','notBlank'].includes(f.operator)">
+                      <!-- in / notIn picker -->
+                      <template v-if="f.operator === 'in' || f.operator === 'notIn'">
+                        <div class="flex items-center justify-between text-[10px] mb-1">
+                          <span :class="(f.values ?? []).length ? 'text-emerald-600 font-semibold' : 'text-muted-foreground'">
+                            {{ (f.values ?? []).length ? `${f.values!.length} selected` : 'none selected' }}
+                          </span>
+                          <button v-if="(f.values ?? []).length" @click.stop="f.values = []"
+                            class="text-muted-foreground hover:text-destructive transition-colors">clear</button>
+                        </div>
+                        <input
+                          v-model="dfPickerSearch[`${ds.id}_${i}`]"
+                          placeholder="search values..."
+                          class="w-full text-[10px] border rounded-md px-1.5 py-1 bg-background mb-1
+                                 focus:outline-none focus:ring-1 focus:ring-emerald-400
+                                 placeholder:text-muted-foreground/40"
+                        />
+                        <div class="max-h-32 overflow-y-auto border rounded-md divide-y">
+                          <label
+                            v-for="val in dfFilteredPickerValues(`${ds.id}_${i}`, ds, f.column)"
+                            :key="val"
+                            class="flex items-center gap-2 px-2 py-1 cursor-pointer hover:bg-muted/40 transition-colors"
+                          >
+                            <input type="checkbox" :checked="(f.values ?? []).includes(val)"
+                              @change="toggleDfPickerValue(f, val)" class="accent-emerald-500 shrink-0" />
+                            <span class="text-[10px] truncate font-mono" :title="val">{{ val }}</span>
+                          </label>
+                          <div v-if="!dfFilteredPickerValues(`${ds.id}_${i}`, ds, f.column).length"
+                            class="text-[10px] text-center text-muted-foreground py-2">No values found</div>
+                        </div>
+                      </template>
+
+                      <!-- Date picker -->
+                      <div v-else-if="dfColsOf(ds).find(c => c.name === f.column)?.type === 'date'"
+                        class="space-y-1">
+                        <!-- token badge -->
+                        <div v-if="dfIsToken(f.value)" class="flex items-center gap-1">
+                          <span class="inline-flex items-center gap-1 bg-emerald-100 text-emerald-700
+                                       dark:bg-emerald-900/40 dark:text-emerald-300
+                                       text-[10px] font-semibold px-2 py-0.5 rounded-full border border-emerald-300">
+                            ⚡ {{ dfTokenLabel(f.value) }}
+                          </span>
+                          <button @click="f.value = ''" class="text-[10px] text-muted-foreground hover:text-foreground">
+                            ✕ แก้ไข
+                          </button>
+                        </div>
+                        <input v-else v-model="f.value" type="date"
+                          class="w-full text-[11px] border rounded-md px-2 py-1 bg-background
+                                 focus:outline-none focus:ring-1 focus:ring-emerald-400" />
+                        <!-- quick token buttons -->
+                        <div class="flex gap-1">
+                          <button @click="f.value = DATE_TOKEN_TODAY"
+                            :class="['flex-1 text-[10px] font-semibold px-2 py-1 rounded-md border transition-colors',
+                              f.value === DATE_TOKEN_TODAY
+                                ? 'bg-emerald-500 border-emerald-500 text-white'
+                                : 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100']"
+                          >⚡ Today</button>
+                          <button @click="f.value = DATE_TOKEN_YESTERDAY"
+                            :class="['flex-1 text-[10px] font-semibold px-2 py-1 rounded-md border transition-colors',
+                              f.value === DATE_TOKEN_YESTERDAY
+                                ? 'bg-emerald-500 border-emerald-500 text-white'
+                                : 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100']"
+                          >⚡ Yesterday</button>
+                        </div>
+                      </div>
+
+                      <!-- Text input -->
+                      <input v-else v-model="f.value" placeholder="value..."
+                        class="w-full text-[11px] border rounded-md px-2 py-1 bg-background
+                               focus:outline-none focus:ring-1 focus:ring-emerald-400
+                               placeholder:text-muted-foreground/40" />
+                    </template>
+                  </div>
+
+                  <p v-if="!(defaultViewFilters[ds.id] ?? []).length"
+                    class="text-[10px] text-muted-foreground/60 text-center py-1">
+                    ไม่มี filter — กด Add เพื่อเพิ่ม
+                  </p>
+                </div>
+              </div>
             </div>
 
             <!-- Active toggle -->
