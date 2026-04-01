@@ -135,10 +135,23 @@ export function useDragDrop() {
         || rel.use_type_name
         || `${useTypeLabel}${relTable}`
 
-      const srcCol = rel.col_relation   ?? rel.source_column ?? rel.link_column  ?? rel.from_column ?? ''
-      const tgtCol = rel.col_relation2  ?? rel.target_column ?? rel.to_column    ?? ''
+      const srcColRaw = rel.col_relation  ?? rel.source_column ?? rel.link_column  ?? rel.from_column ?? ''
+      const tgtColRaw = rel.col_relation2 ?? rel.target_column ?? rel.to_column    ?? ''
 
-      relations.push({ rel, relTable, label, srcCol, tgtCol })
+      // col_relation may be comma-separated (e.g. "maincode,pono") — use first for display
+      const srcCols = String(srcColRaw).split(',').map((s: string) => s.trim()).filter(Boolean)
+      const tgtCols = String(tgtColRaw).split(',').map((s: string) => s.trim()).filter(Boolean)
+      const srcCol  = srcCols[0] ?? ''
+      const tgtCol  = tgtCols[0] ?? ''
+
+      // table_relation = which table this joins FROM
+      // If self-referencing (table_relation === relTable) or empty → joins from the H (primary) table
+      const tableRelation = (rel.table_relation && rel.table_relation !== relTable)
+        ? rel.table_relation as string
+        : primaryTableName
+      const joinType = rel.relation || 'LEFT JOIN'
+
+      relations.push({ rel, relTable, label, srcCol, tgtCol, srcCols, tgtCols, tableRelation, joinType })
     }
 
     if (!relations.length) return
@@ -163,15 +176,16 @@ export function useDragDrop() {
     const GAP_X = 320
     const GAP_Y = 240
 
+    // Pass 1: create all nodes first (so Pass 2 can find them by tableName)
+    const newNodeIds = new Map<string, string>() // tableName → nodeId
     for (let i = 0; i < selected.length; i++) {
-      const { rel, relTable, label, srcCol, tgtCol } = selected[i]!
-
-      // Skip if already on canvas
+      const { rel, relTable, label } = selected[i]!
       if (store.nodes.some((n: any) => n.data?.tableName === relTable)) continue
 
       const col   = i % COLS
       const row   = Math.floor(i / COLS)
       const relId = store.nextNodeId('node')
+      newNodeIds.set(relTable, relId)
 
       store.addNode({
         id: relId,
@@ -199,21 +213,45 @@ export function useDragDrop() {
       })
 
       loadColumnsForNode(relId, relTable)
+    }
 
-      const edgeId = `e-${primaryId}-${relId}`
+    // Pass 2: create edges with correct source node from tableRelation (already resolved)
+    for (let i = 0; i < selected.length; i++) {
+      const { relTable, srcCol, tgtCol, srcCols, tgtCols, tableRelation, joinType } = selected[i]!
+
+      // Find target node id (may be new or already on canvas)
+      const relId = newNodeIds.get(relTable)
+        ?? store.nodes.find((n: any) => n.data?.tableName === relTable)?.id
+      if (!relId) continue
+
+      // Resolve source node from pre-computed tableRelation
+      const srcNodeId = (tableRelation
+        ? (newNodeIds.get(tableRelation)
+          ?? store.nodes.find((n: any) => n.data?.tableName === tableRelation)?.id)
+        : null) ?? primaryId
+
+      const jt = joinType === 'INNER JOIN' ? 'INNER JOIN' : 'LEFT JOIN'
+      const edgeId = `e-${srcNodeId}-${relId}`
       if (!store.edges.some((ex: any) => ex.id === edgeId)) {
         store.edges = [...store.edges, {
           id: edgeId,
-          source: primaryId,
+          source: srcNodeId,
           target: relId,
           type: 'sqlEdge',
-          ...getEdgeStyle('LEFT JOIN'),
+          ...getEdgeStyle(jt as any),
           markerEnd: MarkerType.ArrowClosed,
           data: {
-            joinType: 'LEFT JOIN',
-            mappings: srcCol && tgtCol
-              ? [{ _id: 1, source: srcCol, target: tgtCol, operator: '=' }]
-              : [],
+            joinType: jt,
+            mappings: (() => {
+              const sCols = srcCols?.length ? srcCols : (srcCol ? [srcCol] : [])
+              const tCols = tgtCols?.length ? tgtCols : (tgtCol ? [tgtCol] : [])
+              const len = Math.min(sCols.length, tCols.length)
+              return len > 0
+                ? Array.from({ length: len }, (_, idx) => ({
+                    _id: idx + 1, source: sCols[idx]!, target: tCols[idx]!, operator: '=',
+                  }))
+                : []
+            })(),
           },
         } as any]
       }

@@ -20,7 +20,7 @@ const { getViewport, updateNodeData: vfUpdateNodeData, findNode } = useVueFlow('
 
 // True while any sqlTable node is still fetching column details
 const columnsLoading = computed(() =>
-  store.nodes.some((n: any) => n.type === 'sqlTable' && n.data?.columnsLoading !== false)
+  store.nodes.some((n: any) => n.type === 'sqlTable' && n.data?.columnsLoading === true)
 )
 
 // When all columns finish loading, auto-regenerate if SQL panel is open
