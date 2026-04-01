@@ -19,6 +19,9 @@ import { useErpData } from '~/composables/sql-builder/useErpData'
 // Priority order for primary table selection (H = Header first)
 const USE_TYPE_PRIORITY = ['H', 'D', 'M', 'O', 'V', 'U']
 
+// Only these use_types are included as related nodes
+const RELATED_USE_TYPES = new Set(['H', 'D', 'M'])
+
 export function useDragDrop() {
   const store   = useSqlBuilderStore()
   const erpData = useErpData()
@@ -124,6 +127,7 @@ export function useDragDrop() {
       const relTable = rel.table_name ?? rel.object_name ?? ''
       if (!relTable) continue
       if (relTable === primaryTableName) continue
+      if (rel.use_type && !RELATED_USE_TYPES.has(rel.use_type)) continue
 
       // Label priority: remark → use_type_name → [use_type] table_name
       const useTypeLabel = rel.use_type ? `[${rel.use_type}] ` : ''
