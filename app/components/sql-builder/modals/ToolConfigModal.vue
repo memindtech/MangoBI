@@ -7,6 +7,7 @@ import {
   X, Plus, Layers, Calculator, Database, SortAsc, GitMerge, Filter,
   ChevronDown, Key, Search, Sparkles, Calendar,
 } from 'lucide-vue-next'
+import { MarkerType } from '@vue-flow/core'
 import { AGG_FUNCS, getColTypeBadge } from '~/types/sql-builder'
 import type { VisibleCol } from '~/types/sql-builder'
 import { useSqlBuilderStore } from '~/stores/sql-builder'
@@ -141,17 +142,17 @@ const cteAvailableCols = computed((): VisibleCol[] => {
   const seen = new Set<string>()
   const cols: VisibleCol[] = []
   for (const node of cteChildTableNodes.value) {
-    const visible = node.data.visibleCols as VisibleCol[] | undefined
     const details = node.data.details as any[] | undefined
-    const src: VisibleCol[] = visible?.length
-      ? visible
-      : (details ?? []).map((c: any) => ({
+    const visible = node.data.visibleCols as VisibleCol[] | undefined
+    const src: VisibleCol[] = details?.length
+      ? details.map((c: any) => ({
           name:   c.column_name,
           type:   c.column_type || c.data_type,
           remark: c.remark ?? '',
           isPk:   c.data_pk === 'Y',
           alias:  '',
         }))
+      : (visible ?? [])
     for (const col of src) {
       if (!seen.has(col.name)) { seen.add(col.name); cols.push(col) }
     }
@@ -160,7 +161,8 @@ const cteAvailableCols = computed((): VisibleCol[] => {
 })
 
 // ── CTE: column search ────────────────────────────────────────────────────
-const cteColSearch = ref('')
+const cteColSearch     = ref('')
+const selectedCteGroup = ref<string | null>(null)
 
 // ── CTE: grouped cols by source table (for hierarchical picker) ───────────
 interface CteColGroup {
@@ -175,17 +177,20 @@ const cteGroupedCols = computed((): CteColGroup[] => {
   const visited = new Set<string>()
 
   function getTableCols(node: any): VisibleCol[] {
-    const visible = node.data.visibleCols as VisibleCol[] | undefined
+    // Always use full details list — so all columns are available to pick
     const details = node.data.details as any[] | undefined
-    return visible?.length
-      ? visible
-      : (details ?? []).map((c: any) => ({
-          name:   c.column_name,
-          type:   c.column_type || c.data_type,
-          remark: c.remark ?? '',
-          isPk:   c.data_pk === 'Y',
-          alias:  '',
-        }))
+    if (details?.length) {
+      return details.map((c: any) => ({
+        name:   c.column_name,
+        type:   c.column_type || c.data_type,
+        remark: c.remark ?? '',
+        isPk:   c.data_pk === 'Y',
+        alias:  '',
+      }))
+    }
+    // Fallback to visibleCols if details not loaded yet
+    const visible = node.data.visibleCols as VisibleCol[] | undefined
+    return visible ?? []
   }
 
   // Walk upstream from CTE modal node, group cols by sqlTable source
@@ -238,6 +243,26 @@ const cteFilteredGroups = computed((): CteColGroup[] => {
   return cteGroupedCols.value
     .map(g => ({ ...g, cols: g.cols.filter(c => c.name.toLowerCase().includes(q) || (c.remark ?? '').toLowerCase().includes(q)) }))
     .filter(g => g.cols.length)
+})
+
+// ── CTE: active group selection (after cteGroupedCols is declared) ────────
+watch(() => store.modalNodeId, () => { selectedCteGroup.value = null })
+watch(cteGroupedCols, (groups) => {
+  if (!selectedCteGroup.value && groups.length) {
+    selectedCteGroup.value = groups[0]!.sourceId
+  }
+}, { immediate: true })
+
+const activeCteGroup = computed(() =>
+  cteGroupedCols.value.find(g => g.sourceId === selectedCteGroup.value) ?? cteGroupedCols.value[0] ?? null
+)
+
+const filteredActiveCols = computed(() => {
+  const q = cteColSearch.value.toLowerCase().trim()
+  if (!activeCteGroup.value) return []
+  return q
+    ? activeCteGroup.value.cols.filter(c => c.name.toLowerCase().includes(q) || (c.remark ?? '').toLowerCase().includes(q))
+    : activeCteGroup.value.cols
 })
 
 // ── CTE: select / clear all cols from a specific group ───────────────────
@@ -331,17 +356,38 @@ function toggleUnionSource(srcId: string) {
   const exists  = store.edges.some((e: any) => e.id === edgeId)
   if (exists) {
     store.edges = store.edges.filter((e: any) => e.id !== edgeId)
-  } else {
-    store.edges = [...store.edges, {
-      id:        edgeId,
-      source:    srcId,
-      target:    store.modalNodeId!,
-      type:      'sqlEdge',
-      animated:  false,
-      style:     { stroke: 'hsl(var(--muted-foreground) / 0.4)', strokeWidth: 1.5, strokeDasharray: '5 4' },
-      data:      { joinType: 'LEFT JOIN', mappings: [], isTool: true },
-    } as any]
+    return
   }
+
+  // Determine source category for distinct coloring
+  const srcNode = store.nodes.find((n: any) => n.id === srcId)
+  const srcCat  = srcNode?.type === 'cteFrame'
+    ? 'cte'
+    : srcNode?.type === 'sqlTable'
+      ? 'table'
+      : (srcNode?.data?.nodeType as string | undefined) ?? 'other'
+
+  const UNION_SRC_COLORS: Record<string, string> = {
+    cte:   '#a78bfa',  // violet — CTE Frame
+    union: '#eab308',  // yellow — Union node
+    table: '#38bdf8',  // sky    — standalone table
+    where: '#f87171',  // rose   — where node
+    group: '#fb923c',  // orange — group-by node
+    calc:  '#2dd4bf',  // teal   — calc node
+    other: '#94a3b8',  // slate  — fallback
+  }
+  const stroke = UNION_SRC_COLORS[srcCat] ?? UNION_SRC_COLORS.other
+
+  store.edges = [...store.edges, {
+    id:        edgeId,
+    source:    srcId,
+    target:    store.modalNodeId!,
+    type:      'sqlEdge',
+    animated:  true,
+    style:     { stroke, strokeWidth: 2, strokeDasharray: '6 4' },
+    markerEnd: { type: MarkerType.ArrowClosed, color: stroke, width: 16, height: 16 },
+    data:      { isTool: true, unionSrc: true, srcCat },
+  } as any]
 }
 
 function isUnionSourceConnected(srcId: string): boolean {
@@ -432,28 +478,43 @@ function collectVisibleCols(rootId: string): VisibleCol[] {
   const seen    = new Set<string>()
   const visited = new Set<string>()
 
+  function addTableCols(node: any) {
+    const visible = node.data.visibleCols as VisibleCol[] | undefined
+    const details = node.data.details as any[] | undefined
+    const src: VisibleCol[] = visible?.length
+      ? visible
+      : (details ?? []).map((c: any) => ({
+          name:   c.column_name,
+          type:   c.column_type || c.data_type,
+          remark: c.remark ?? '',
+          isPk:   c.data_pk === 'Y',
+          alias:  '',
+        }))
+    for (const col of src) {
+      if (!seen.has(col.name)) { seen.add(col.name); cols.push(col) }
+    }
+  }
+
   function walk(id: string) {
     if (visited.has(id)) return
     visited.add(id)
     const node = store.nodes.find((n: any) => n.id === id)
     if (!node) return
     if (node.type === 'sqlTable') {
-      const visible = node.data.visibleCols as VisibleCol[] | undefined
-      const details = node.data.details as any[] | undefined
-      const src: VisibleCol[] = visible?.length
-        ? visible
-        : (details ?? []).map((c: any) => ({
-            name:   c.column_name,
-            type:   c.column_type || c.data_type,
-            remark: c.remark ?? '',
-            isPk:   c.data_pk === 'Y',
-            alias:  '',
-          }))
-      for (const col of src) {
-        if (!seen.has(col.name)) { seen.add(col.name); cols.push(col) }
+      addTableCols(node)
+    } else if (node.type === 'cteFrame') {
+      // bounds-based child detection — no edges connect frame to its tables
+      for (const child of getCteFrameChildren(node)) {
+        if (!visited.has(child.id as string)) {
+          visited.add(child.id as string)
+          addTableCols(child)
+        }
       }
     } else {
-      store.edges.filter((e: any) => e.target === id).forEach((e: any) => walk(e.source as string))
+      // toolNode / union — recurse into each upstream source
+      store.edges
+        .filter((e: any) => e.target === id)
+        .forEach((e: any) => walk(e.source as string))
     }
   }
 
@@ -1160,7 +1221,8 @@ const finishBtnStyle = computed(() => {
         :class="[
           'bg-background rounded-2xl border shadow-2xl flex flex-col overflow-hidden',
           nodeType === 'union' ? 'w-full max-w-[960px]' :
-          (nodeType === 'cte' || nodeType === 'group' || nodeType === 'sort' || nodeType === 'calc' || nodeType === 'where') ? 'w-full max-w-[640px]' : 'w-[440px]',
+          nodeType === 'cte' ? 'w-full max-w-[720px]' :
+          (nodeType === 'group' || nodeType === 'sort' || nodeType === 'calc' || nodeType === 'where') ? 'w-full max-w-[640px]' : 'w-[440px]',
         ]"
         style="max-height: 92vh"
         @click.stop
@@ -1200,7 +1262,7 @@ const finishBtnStyle = computed(() => {
         </datalist>
 
         <!-- Body -->
-        <div class="flex-1 overflow-y-auto p-5 flex flex-col gap-5">
+        <div :class="['flex-1 flex flex-col gap-5', nodeType === 'cte' ? 'overflow-hidden p-5' : 'overflow-y-auto p-5']">
 
           <!-- ── Named CTE ──────────────────────────────────────────── -->
           <template v-if="nodeType === 'cte'">
@@ -1218,90 +1280,138 @@ const finishBtnStyle = computed(() => {
               <p class="text-[10px] text-muted-foreground">ชื่อที่ใช้ใน WITH <span class="font-mono text-violet-400">{{ store.modalNode?.data?.name || 'my_cte' }}</span> AS (...)</p>
             </div>
 
-            <!-- Column picker — grouped by table -->
-            <div class="flex flex-col gap-2">
-              <!-- Header -->
-              <div class="flex items-center justify-between">
+            <!-- Column picker — 2-panel layout -->
+            <div class="flex flex-col gap-2 flex-1 min-h-0">
+              <!-- Header row -->
+              <div class="flex items-center justify-between shrink-0">
                 <label class="text-[11px] font-semibold text-violet-500 uppercase tracking-wide">
-                  SELECT Columns
-                  <span class="ml-1 text-[10px] font-normal text-muted-foreground normal-case">
-                    {{ (store.modalNode?.data?.selectedCols ?? []).length || 'ทั้งหมด (*)' }}
+                  SELECT COLUMNS
+                  <span class="ml-1.5 px-1.5 py-0.5 rounded-full bg-violet-500/15 text-violet-400 text-[9px] font-bold">
+                    {{ (store.modalNode?.data?.selectedCols ?? []).length || '*' }}
                   </span>
                 </label>
                 <div class="flex gap-1">
                   <button @click="tn.selectAllCteCols(cteAvailableCols.map(c => c.name))"
-                    class="text-[10px] px-2 py-0.5 rounded border border-violet-500/30 text-violet-400 hover:bg-violet-500/10 transition-colors">ทั้งหมด</button>
+                    class="text-[10px] px-2.5 py-1 rounded-lg border border-violet-500/30 text-violet-400 hover:bg-violet-500/10 transition-colors font-medium">ทั้งหมด</button>
                   <button @click="tn.clearCteCols()"
-                    class="text-[10px] px-2 py-0.5 rounded border border-border text-muted-foreground hover:bg-accent transition-colors">ล้าง</button>
+                    class="text-[10px] px-2.5 py-1 rounded-lg border border-border text-muted-foreground hover:bg-accent transition-colors">ล้าง</button>
                 </div>
               </div>
 
-              <!-- Search -->
-              <div class="relative">
-                <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground/50 pointer-events-none" />
-                <input
-                  v-model="cteColSearch"
-                  class="w-full h-7 pl-7 pr-3 rounded-lg border bg-background text-[11px] focus:outline-none focus:ring-1 focus:ring-violet-500/40"
-                  placeholder="ค้นหา column…"
-                />
-              </div>
-
-              <!-- No data at all -->
-              <p v-if="!cteGroupedCols.length" class="text-[10px] text-muted-foreground italic px-1">
+              <!-- No tables -->
+              <p v-if="!cteGroupedCols.length" class="text-[11px] text-muted-foreground italic px-1 py-4 text-center">
                 ยังไม่มี table อยู่ในกรอบ CTE — ลาก Table node เข้ากรอบก่อน
               </p>
 
-              <!-- Grouped sections -->
-              <div v-else class="flex flex-col gap-2 max-h-[360px] overflow-y-auto">
+              <!-- 2-panel: table list | column list -->
+              <div v-else class="flex gap-0 flex-1 min-h-0 rounded-xl border border-violet-500/20 overflow-hidden">
 
-                <div
-                  v-for="group in cteFilteredGroups" :key="group.sourceId"
-                  class="rounded-xl border border-violet-500/20 overflow-hidden"
-                >
-                  <!-- Group header: TABLE name + upstream context label -->
-                  <div class="flex items-center gap-2 px-3 py-1.5 bg-violet-500/8 border-b border-violet-500/15">
-                    <span class="text-[8px] font-bold px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-400 font-mono uppercase shrink-0">TABLE</span>
-                    <span class="font-mono text-[11px] font-semibold text-foreground/90 flex-1 truncate">{{ group.sourceLabel }}</span>
-                    <span v-if="group.cteLabel"
-                      class="text-[9px] px-1.5 py-0.5 rounded-md bg-violet-500/15 text-violet-400 font-mono border border-violet-500/20 shrink-0 max-w-[110px] truncate"
-                      :title="group.cteLabel">
-                      ↑ {{ group.cteLabel }}
+                <!-- LEFT: table tabs -->
+                <div class="w-44 shrink-0 flex flex-col border-r border-violet-500/15 bg-muted/20 overflow-y-auto">
+                  <button
+                    v-for="group in cteGroupedCols" :key="group.sourceId"
+                    @click="selectedCteGroup = group.sourceId"
+                    :class="[
+                      'flex flex-col items-start px-3 py-2.5 text-left transition-colors border-b border-border/20 last:border-b-0 gap-0.5',
+                      selectedCteGroup === group.sourceId
+                        ? 'bg-violet-500/15 border-l-2 border-l-violet-500'
+                        : 'hover:bg-accent/50 border-l-2 border-l-transparent',
+                    ]"
+                  >
+                    <span class="font-mono text-[10px] font-semibold truncate w-full"
+                      :class="selectedCteGroup === group.sourceId ? 'text-violet-300' : 'text-foreground/80'">
+                      {{ group.sourceLabel }}
                     </span>
-                    <button @click="selectAllFromCteGroup(group)"
-                      class="text-[9px] text-violet-400 hover:underline shrink-0">ทั้งหมด</button>
-                    <button @click="clearAllFromCteGroup(group)"
+                    <div class="flex items-center gap-1.5 w-full">
+                      <span class="text-[8px] text-muted-foreground/60">
+                        {{ group.cols.length }} cols
+                      </span>
+                      <span v-if="(store.modalNode?.data?.selectedCols ?? []).filter((s: string) => group.cols.some(c => c.name === s)).length"
+                        class="text-[8px] px-1 py-0 rounded bg-violet-500/20 text-violet-400 font-bold font-mono">
+                        ✓{{ (store.modalNode?.data?.selectedCols ?? []).filter((s: string) => group.cols.some(c => c.name === s)).length }}
+                      </span>
+                    </div>
+                  </button>
+                </div>
+
+                <!-- RIGHT: columns of selected table -->
+                <div class="flex-1 flex flex-col min-w-0 min-h-0">
+                  <!-- Table header bar -->
+                  <div v-if="activeCteGroup" class="flex items-center gap-2 px-3 py-2 bg-violet-500/8 border-b border-violet-500/15 shrink-0">
+                    <span class="text-[8px] font-bold px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-400 font-mono">TABLE</span>
+                    <span class="font-mono text-[11px] font-semibold text-foreground/90 flex-1 truncate">{{ activeCteGroup.sourceLabel }}</span>
+                    <button @click="selectAllFromCteGroup(activeCteGroup)"
+                      class="text-[9px] text-violet-400 hover:underline shrink-0 font-medium">ทั้งหมด</button>
+                    <button @click="clearAllFromCteGroup(activeCteGroup)"
                       class="text-[9px] text-muted-foreground hover:underline shrink-0">ล้าง</button>
                   </div>
 
-                  <!-- Columns as pills -->
-                  <div class="flex flex-wrap gap-1.5 p-2.5 bg-background/50">
+                  <!-- Search -->
+                  <div class="relative shrink-0 border-b border-border/30">
+                    <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground/40 pointer-events-none" />
+                    <input
+                      v-model="cteColSearch"
+                      class="w-full h-8 pl-7 pr-3 bg-transparent text-[11px] focus:outline-none"
+                      placeholder="ค้นหา column…"
+                    />
+                  </div>
+
+                  <!-- No columns -->
+                  <div v-if="!activeCteGroup?.cols.length" class="flex-1 flex items-center justify-center text-[10px] text-muted-foreground/50 italic">
+                    ไม่มีข้อมูล column
+                  </div>
+
+                  <!-- Column list -->
+                  <div v-else class="flex-1 overflow-y-auto">
+                    <p v-if="!filteredActiveCols.length && cteColSearch" class="text-[10px] text-muted-foreground/60 italic px-3 py-3">
+                      ไม่พบ "{{ cteColSearch }}"
+                    </p>
                     <button
-                      v-for="c in group.cols" :key="c.name"
+                      v-for="c in filteredActiveCols" :key="c.name"
                       @click="tn.toggleCteCol(c.name)"
                       :class="[
-                        'flex items-center gap-1 px-2 py-1 rounded-lg border text-[10px] font-mono transition-colors',
+                        'w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors border-b border-border/15 last:border-b-0',
                         (store.modalNode?.data?.selectedCols ?? []).includes(c.name)
-                          ? 'bg-violet-500/20 border-violet-500/50 text-violet-300'
-                          : 'bg-background border-border text-muted-foreground hover:border-violet-400/40 hover:text-violet-400',
+                          ? 'bg-violet-500/10 hover:bg-violet-500/15'
+                          : 'hover:bg-accent/40',
                       ]"
                     >
-                      <Key v-if="c.isPk" class="size-2.5 text-amber-400 shrink-0" />
-                      <span :class="['text-[8px] px-1 py-0 rounded font-bold shrink-0', getColTypeBadge(c.type).cls]">
+                      <!-- Checkbox -->
+                      <div :class="[
+                        'size-3.5 rounded border-2 flex items-center justify-center shrink-0 transition-colors',
+                        (store.modalNode?.data?.selectedCols ?? []).includes(c.name)
+                          ? 'bg-violet-500 border-violet-500'
+                          : 'border-border/60 bg-background',
+                      ]">
+                        <svg v-if="(store.modalNode?.data?.selectedCols ?? []).includes(c.name)"
+                          class="size-2 text-white" fill="none" viewBox="0 0 10 10">
+                          <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                        </svg>
+                      </div>
+                      <!-- PK icon -->
+                      <Key v-if="c.isPk" class="size-3 text-amber-400 shrink-0" />
+                      <!-- Type badge -->
+                      <span :class="['text-[8px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(c.type).cls]">
                         {{ getColTypeBadge(c.type).label }}
                       </span>
-                      {{ c.name }}
-                      <span v-if="c.remark" class="text-[8px] text-muted-foreground/50 truncate max-w-[60px]">{{ c.remark }}</span>
+                      <!-- Name -->
+                      <span :class="['font-mono text-[11px] flex-1 truncate', c.isPk ? 'text-amber-400 font-semibold' : '']">
+                        {{ c.name }}
+                      </span>
+                      <!-- Remark -->
+                      <span v-if="c.remark" class="text-[9px] text-muted-foreground/55 truncate max-w-[140px] shrink-0">
+                        {{ c.remark }}
+                      </span>
+                      <!-- Data type -->
+                      <span class="text-[9px] text-muted-foreground/35 font-mono shrink-0">{{ c.type }}</span>
                     </button>
                   </div>
                 </div>
 
-                <p v-if="!cteFilteredGroups.length && cteColSearch"
-                  class="text-[10px] text-muted-foreground/60 italic px-1">
-                  ไม่พบ column ที่ตรงกับ "{{ cteColSearch }}"
-                </p>
               </div>
 
-              <p v-if="!(store.modalNode?.data?.selectedCols ?? []).length" class="text-[10px] text-muted-foreground/60 italic">
+              <!-- Footer hint -->
+              <p v-if="!(store.modalNode?.data?.selectedCols ?? []).length" class="text-[10px] text-muted-foreground/50 italic shrink-0">
                 ไม่เลือก = SELECT * (ทุก columns)
               </p>
             </div>

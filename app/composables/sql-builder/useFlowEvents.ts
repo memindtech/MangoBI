@@ -28,8 +28,29 @@ export function useFlowEvents() {
     // Prevent duplicate edges
     if (store.edges.some((e: any) => e.id === id)) return
 
-    const edgeStyle = getEdgeStyle('LEFT JOIN')
-    const newEdge = {
+    const sourceNode = store.nodes.find((n: Node) => n.id === conn.source)
+    const targetNode = store.nodes.find((n: Node) => n.id === conn.target)
+
+    const isSrcTable  = sourceNode?.type === 'sqlTable'
+    const isTgtTable  = targetNode?.type === 'sqlTable'
+    const isTgtTool   = targetNode?.type === 'toolNode'
+    const isSrcFrame  = sourceNode?.type === 'cteFrame'
+    const isSrcTool   = sourceNode?.type === 'toolNode'
+
+    // Tool edge: cteFrame/toolNode → toolNode  OR  sqlTable → toolNode
+    const isToolEdge  = (isSrcFrame || isSrcTool || isSrcTable) && isTgtTool
+    // Table edge: sqlTable → sqlTable (needs JOIN modal)
+    const isTableEdge = isSrcTable && isTgtTable
+
+    const edgeStyle = isToolEdge
+      ? { animated: false, style: { stroke: 'hsl(var(--muted-foreground) / 0.4)', strokeWidth: 1.5, strokeDasharray: '5 4' } }
+      : getEdgeStyle('LEFT JOIN')
+
+    const edgeData = isToolEdge
+      ? { joinType: 'LEFT JOIN' as JoinType, mappings: [], isTool: true, unionSrc: true, srcCat: isSrcFrame ? 'cte' : isSrcTool ? 'other' : 'table' }
+      : { joinType: 'LEFT JOIN' as JoinType, mappings: [] }
+
+    const finalEdge = {
       id,
       source: conn.source!,
       target: conn.target!,
@@ -38,20 +59,19 @@ export function useFlowEvents() {
       type: 'sqlEdge',
       ...edgeStyle,
       markerEnd: MarkerType.ArrowClosed,
-      data: { joinType: 'LEFT JOIN' as JoinType, mappings: [] },
+      data: edgeData,
     }
-
-    store.edges = [...store.edges, newEdge as any]
+    store.edges = [...store.edges, finalEdge as any]
 
     // Propagate availableCols from source to target tool node
-    const sourceNode = store.nodes.find((n: Node) => n.id === conn.source)
-    const targetNode = store.nodes.find((n: Node) => n.id === conn.target)
-    if (sourceNode && targetNode?.type === 'toolNode') {
+    if (sourceNode && isTgtTool) {
       store.updateNodeData(conn.target!, { availableCols: getCols(sourceNode) })
     }
 
-    // Open relation modal for mapping configuration
-    store.relationEdgeId = id
+    // Open relation modal only for table-to-table edges
+    if (isTableEdge) {
+      store.relationEdgeId = id
+    }
   }
 
   // ── Edge click → open Relation modal (skip tool-connection edges) ─────

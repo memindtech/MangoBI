@@ -186,7 +186,7 @@ export function useErpData() {
 
   function filteredObjects(mod: string) {
     const q = store.search.toLowerCase().trim()
-    const objs = store.objects[mod] ?? []
+    const objs = (store.objects[mod] ?? []).filter((o: any) => o.object_type === 'T')
     return q ? objs.filter((o: any) => matchesQuery(o, q)) : objs
   }
 
