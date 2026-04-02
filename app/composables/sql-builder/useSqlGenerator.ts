@@ -291,46 +291,78 @@ export function useSqlGenerator() {
   function buildJoinBlock(tableNodes: Node[], edges: Edge[]): string {
     if (!tableNodes.length) return 'SELECT 1'
 
-    const primary  = tableNodes[0]!
+    // ── Fix 1: Smart primary selection ──────────────────────────────────
+    // Priority: isHeaderNode (H) → node with no incoming edges (root) → [0]
+    const nodeIds = new Set(tableNodes.map(n => n.id))
+    const hasIncoming = new Set(edges.filter(e => nodeIds.has(e.source) && nodeIds.has(e.target)).map(e => e.target))
+    const primary = tableNodes.find(n => n.data?.isHeaderNode)
+      ?? tableNodes.find(n => !hasIncoming.has(n.id))
+      ?? tableNodes[0]!
     const primaryT = tableName(primary)
     const primaryA = alias(primary)
 
-    // Determine which table IDs are actually in the FROM/JOIN chain
-    // (tables with no edge to anyone are excluded from SELECT to avoid unbound identifiers)
-    const joinedTableIds = new Set<string>([primary.id])
+    // ── Fix 2: Topological sort edges (BFS from primary) ────────────────
+    // Build adjacency: nodeId → outgoing edges
+    const adjEdges = new Map<string, Edge[]>()
+    for (const n of tableNodes) adjEdges.set(n.id, [])
     for (const e of edges) {
-      if (
-        tableNodes.some((n: Node) => n.id === e.source) &&
-        tableNodes.some((n: Node) => n.id === e.target)
-      ) {
-        joinedTableIds.add(e.source)
-        joinedTableIds.add(e.target)
+      if (nodeIds.has(e.source) && nodeIds.has(e.target)) {
+        adjEdges.get(e.source)?.push(e)
+      }
+    }
+    // BFS from primary to get edges in join-safe order
+    const sortedEdges: Edge[] = []
+    const visited = new Set<string>([primary.id])
+    const queue   = [primary.id]
+    while (queue.length) {
+      const cur = queue.shift()!
+      for (const e of (adjEdges.get(cur) ?? [])) {
+        sortedEdges.push(e)
+        if (!visited.has(e.target)) {
+          visited.add(e.target)
+          queue.push(e.target)
+        }
+      }
+    }
+    // Append any edges not reachable from primary (disconnected subgraph)
+    for (const e of edges) {
+      if (nodeIds.has(e.source) && nodeIds.has(e.target) && !sortedEdges.includes(e)) {
+        sortedEdges.push(e)
       }
     }
 
-    // SELECT columns — only from joined tables; alias 2nd+ duplicates with collision check
+    // ── Joined table IDs (for SELECT column filtering) ───────────────────
+    const joinedTableIds = new Set<string>([primary.id])
+    for (const e of sortedEdges) {
+      joinedTableIds.add(e.source)
+      joinedTableIds.add(e.target)
+    }
+
+    // ── SELECT columns (in topological node order) ───────────────────────
     const selectCols: string[] = []
     const usedOutputNames = new Set<string>()
 
-    for (const tn of tableNodes) {
-      if (!joinedTableIds.has(tn.id)) continue  // skip tables not in JOIN chain
+    // Order SELECT by BFS visit order (primary first, then its children)
+    const orderedNodes = [primary, ...sortedEdges
+      .map(e => tableNodes.find(n => n.id === e.target)!)
+      .filter((n, i, arr) => n && arr.indexOf(n) === i)  // deduplicate
+    ]
+    for (const tn of orderedNodes) {
+      if (!tn || !joinedTableIds.has(tn.id)) continue
       const tbl     = alias(tn)
       const visible = tn.data.visibleCols as VisibleCol[] | undefined
       if (visible?.length) {
         for (const col of visible) {
           if (col.alias) {
-            // User-defined alias — always use it
             selectCols.push(`  ${tbl}.${col.name} AS ${col.alias}`)
             usedOutputNames.add(col.alias)
           } else if (usedOutputNames.has(col.name)) {
-            // Duplicate col name — find a unique alias (handle alias collision too)
             let aliasName = `${tbl}_${col.name}`
             let idx = 2
             while (usedOutputNames.has(aliasName)) aliasName = `${tbl}_${col.name}_${idx++}`
             selectCols.push(`  ${tbl}.${col.name} AS ${aliasName}`)
             usedOutputNames.add(aliasName)
           } else {
-            // First occurrence: keep original name
             selectCols.push(`  ${tbl}.${col.name}`)
             usedOutputNames.add(col.name)
           }
@@ -341,10 +373,10 @@ export function useSqlGenerator() {
     }
 
     const useAlias = primaryA !== primaryT
-    let sql = `SELECT\n${selectCols.join(',\n')}\nFROM ${primaryT}${useAlias ? ` AS ${primaryA}` : ''} WITH (NOLOCK)`
+    let sql = `SELECT\n${selectCols.join(',\n')}\nFROM ${primaryT}${useAlias ? ` AS ${primaryA}` : ''}`
 
-    // JOINs
-    for (const e of edges) {
+    // ── JOINs in topological order ────────────────────────────────────────
+    for (const e of sortedEdges) {
       const srcNode = tableNodes.find((n: Node) => n.id === e.source)
       const tgtNode = tableNodes.find((n: Node) => n.id === e.target)
       if (!srcNode || !tgtNode) continue
@@ -378,7 +410,7 @@ export function useSqlGenerator() {
       }
 
       const aliasClause = tgtA !== tgtT ? ` AS ${tgtA}` : ''
-      sql += `\n  ${jt} ${tgtT}${aliasClause} WITH (NOLOCK) ON ${onClause}`
+      sql += `\n  ${jt} ${tgtT}${aliasClause} ON ${onClause}`
     }
 
     // WHERE from table filters (only joined tables)
