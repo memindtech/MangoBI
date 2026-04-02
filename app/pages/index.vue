@@ -11,6 +11,15 @@ useHead({ title: 'MangoBI — Home' })
 
 const features = [
   {
+    icon: Code2,
+    color: 'text-sky-500',
+    bg:    'bg-sky-500/10',
+    border:'border-sky-500/20',
+    title: 'SQL Builder',
+    desc:  'สร้าง SQL Query จาก Structure ของระบบ ERP แบบ Visual',
+    path:  '/sql-builder',
+  },
+  {
     icon: Share2,
     color: 'text-violet-500',
     bg:    'bg-violet-500/10',
@@ -36,15 +45,6 @@ const features = [
     title: 'Send Report',
     desc:  'ตั้งเวลาและส่ง Report ให้ผู้รับผ่าน LINE หรือ Email',
     path:  '/send-report',
-  },
-  {
-    icon: Code2,
-    color: 'text-sky-500',
-    bg:    'bg-sky-500/10',
-    border:'border-sky-500/20',
-    title: 'SQL Builder',
-    desc:  'สร้าง SQL Query จาก Structure ของระบบ ERP แบบ Visual',
-    path:  '/sql-builder',
   },
 ]
 </script>
