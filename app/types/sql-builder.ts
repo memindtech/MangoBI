@@ -158,8 +158,10 @@ export interface CteNodeData {
 }
 
 export interface CalcItem {
+  col:   string
+  op:    string
+  value: string
   alias: string
-  expr:  string
 }
 
 export interface CalcNodeData {

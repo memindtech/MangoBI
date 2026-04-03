@@ -302,9 +302,14 @@ function appendNodesToCanvas(rawNodes: any[], rawEdges: any[]): any[] {
   const remappedNodes = rawNodes.map((n: any) => {
     const newId = n.id + suffix
     idMap.set(n.id, newId)
+    // Ensure loaded nodes are never stuck in loading state
+    const data = n.type === 'sqlTable' && n.data?.columnsLoading
+      ? { ...n.data, columnsLoading: false }
+      : n.data
     return {
       ...n,
       id: newId,
+      data,
       position: { x: n.position?.x ?? 0, y: (n.position?.y ?? 0) + dy },
     }
   })
