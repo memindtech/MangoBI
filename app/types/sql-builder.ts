@@ -327,11 +327,15 @@ export function getFilterType(colType: string): 'int' | 'date' | 'boolean' | 'va
 // ── Group Create Modal ───────────────────────────────────────────────────────
 
 export interface GroupRelation {
-  rel:       any
-  relTable:  string
-  label:     string
-  srcCol:    string
-  tgtCol:    string
+  rel:           any
+  relTable:      string
+  label:         string
+  srcCol:        string
+  tgtCol:        string
+  srcCols?:      string[]   // all columns from col_relation (comma-separated)
+  tgtCols?:      string[]   // all columns from col_relation2 (comma-separated)
+  tableRelation?: string    // which table to join FROM (from table_relation field)
+  joinType?:     string     // INNER JOIN / LEFT JOIN etc.
 }
 
 export interface GroupModalData {

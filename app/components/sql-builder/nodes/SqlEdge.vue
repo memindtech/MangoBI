@@ -40,9 +40,13 @@ const joinType  = computed(() => (props.data?.joinType ?? 'LEFT JOIN') as JoinTy
 const color     = computed(() => JOIN_EDGE_COLORS[joinType.value] ?? '#888')
 
 // Show JOIN badge only for table-to-table edges
-const showJoinBadge   = computed(() => !!props.data?.joinType && !props.data?.isTool)
+const showJoinBadge  = computed(() => !!props.data?.joinType && !props.data?.isTool)
 // Show UNION source badge for union-source edges
-const showUnionBadge  = computed(() => !!props.data?.unionSrc)
+const showUnionBadge = computed(() => !!props.data?.unionSrc)
+
+// Mappings (for counting only — not displayed on edge)
+const mappings    = computed(() => (props.data?.mappings ?? []).filter((m: any) => m.source && m.target) as Array<{ source: string; target: string; operator?: string }>)
+const hasMappings = computed(() => mappings.value.length > 0)
 
 // Color + label per source category
 const UNION_SRC_META: Record<string, { color: string; label: string }> = {
@@ -79,9 +83,9 @@ function openEdit() {
         transform: `translate(-50%,-50%) translate(${labelX}px,${labelY}px)`,
         pointerEvents: 'all',
       }"
-      class="nodrag nopan flex items-center gap-1"
+      class="nodrag nopan flex flex-col items-center gap-0.5"
     >
-      <!-- JOIN type badge — table-to-table edges -->
+      <!-- JOIN type badge -->
       <button
         v-if="showJoinBadge"
         @click.stop="openEdit"
@@ -92,7 +96,8 @@ function openEdit() {
         {{ joinType.replace(' JOIN', '') }}
       </button>
 
-      <!-- Union source badge — CTE/Union/Table → Union node edges -->
+
+      <!-- Union source badge -->
       <span
         v-if="showUnionBadge"
         class="text-[8px] px-1.5 py-0.5 rounded-full font-bold font-mono leading-none shadow-sm pointer-events-none select-none"
@@ -105,7 +110,7 @@ function openEdit() {
       <button
         v-if="selected"
         @click.stop="deleteEdge"
-        class="size-5 flex items-center justify-center rounded-full bg-destructive text-white shadow-lg transition-all hover:scale-110 active:scale-95 animate-in fade-in zoom-in-75 duration-100"
+        class="size-5 flex items-center justify-center rounded-full bg-destructive text-white shadow-lg transition-all hover:scale-110 active:scale-95 animate-in fade-in zoom-in-75 duration-100 mt-0.5"
         title="ลบเส้นเชื่อม"
       >
         <Trash2 class="size-2.5" />

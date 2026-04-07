@@ -88,6 +88,8 @@ export function useSqlGenerator() {
 
     // Track which CTE name each node outputs
     const nodeOutput = new Map<string, string>()
+    // Track output column names per CTE name (for union intersection)
+    const cteOutputCols = new Map<string, string[]>()
 
     const ctes: { name: string; sql: string }[] = []
     const usedNames = new Set<string>()   // guard against duplicate CTE names
@@ -107,6 +109,41 @@ export function useSqlGenerator() {
 
     function nextCteIdx(): string {
       return uniqueName(`_cte${++cteIdx}`)
+    }
+
+    // ── Compute output column names for a set of table nodes ─────────────
+    function computeOutputCols(tNodes: Node[], tEdges: Edge[]): string[] {
+      const primary = tNodes[0]
+      if (!primary) return []
+      const joinedIds = new Set<string>([primary.id])
+      for (const e of tEdges) {
+        if (tNodes.some(n => n.id === e.source) && tNodes.some(n => n.id === e.target)) {
+          joinedIds.add(e.source); joinedIds.add(e.target)
+        }
+      }
+      const cols: string[] = []
+      const used = new Set<string>()
+      for (const tn of tNodes) {
+        if (!joinedIds.has(tn.id)) continue
+        const tbl     = alias(tn)
+        const visible = tn.data.visibleCols as VisibleCol[] | undefined
+        if (visible?.length) {
+          for (const col of visible) {
+            const outName = col.alias || col.name
+            if (col.alias) {
+              cols.push(col.alias); used.add(col.alias)
+            } else if (used.has(col.name)) {
+              let a = `${tbl}_${col.name}`; let i = 2
+              while (used.has(a)) a = `${tbl}_${col.name}_${i++}`
+              cols.push(a); used.add(a)
+            } else {
+              cols.push(col.name); used.add(col.name)
+            }
+          }
+        }
+        // wildcard → unknown cols, skip
+      }
+      return cols
     }
 
     // ── Bounds helper: find sqlTable nodes inside a cteFrame ────────────
@@ -143,6 +180,9 @@ export function useSqlGenerator() {
       ctes.push({ name: frameName, sql: frameSql })
       nodeOutput.set(frame.id, frameName)
       lastCTE = frameName
+      // Track output cols: selectedCols override takes priority
+      const frameSelected = ((frame.data as any).selectedCols ?? []) as string[]
+      cteOutputCols.set(frameName, frameSelected.length ? frameSelected : computeOutputCols(childTables, childEdges))
     }
 
     // ── Step 1b: table nodes NOT inside any cteFrame → _src ─────────────
@@ -160,6 +200,7 @@ export function useSqlGenerator() {
       ctes.push({ name: baseName, sql: baseSQL })
       for (const tn of standaloneTables) nodeOutput.set(tn.id, baseName)
       if (!lastCTE) lastCTE = baseName
+      cteOutputCols.set(baseName, computeOutputCols(standaloneTables, tableEdges))
     }
 
     // ── Step 2: each tool node → CTE ───────────────────────────────────
@@ -197,7 +238,7 @@ export function useSqlGenerator() {
             .map(id => nodeOutput.get(id))
             .filter((n): n is string => !!n)
           if (!allUpNames.length) allUpNames.push(lastCTE)
-          cteSql = buildUnionBlock(node, allUpNames)
+          cteSql = buildUnionBlock(node, allUpNames, cteOutputCols)
           break
         }
       }
@@ -206,6 +247,28 @@ export function useSqlGenerator() {
         ctes.push({ name: cteName, sql: cteSql })
         nodeOutput.set(node.id, cteName)
         lastCTE = cteName
+        // Track output cols for this CTE
+        if (nt === 'union') {
+          // union output = the cols actually used (intersection computed inside buildUnionBlock)
+          const unionSelected = (node.data.selectedCols ?? []).filter(Boolean) as string[]
+          if (unionSelected.length) {
+            cteOutputCols.set(cteName, unionSelected)
+          } else {
+            // compute intersection of upstreams
+            const upNames = upIds.map(id => nodeOutput.get(id)).filter((n): n is string => !!n)
+            const sets = upNames.map(n => cteOutputCols.get(n) ?? [])
+            const common = sets.length ? sets.reduce((a, b) => a.filter(c => b.includes(c))) : []
+            cteOutputCols.set(cteName, common)
+          }
+        } else if (nt === 'cte' || nt === 'where' || nt === 'calc') {
+          const sel = (node.data.selectedCols ?? []).filter(Boolean) as string[]
+          cteOutputCols.set(cteName, sel.length ? sel : (cteOutputCols.get(upName) ?? []))
+        } else if (nt === 'group') {
+          const grpCols = (node.data.groupCols ?? []).filter(Boolean) as string[]
+          const aggAliases = (node.data.aggs ?? []).filter((a: any) => a.col && a.func)
+            .map((a: any) => a.alias || `${a.func}_${a.col}`)
+          cteOutputCols.set(cteName, [...grpCols, ...aggAliases])
+        }
       }
     }
 
@@ -228,29 +291,57 @@ export function useSqlGenerator() {
   function buildJoinBlock(tableNodes: Node[], edges: Edge[]): string {
     if (!tableNodes.length) return 'SELECT 1'
 
-    // SELECT columns
+    const primary  = tableNodes[0]!
+    const primaryT = tableName(primary)
+    const primaryA = alias(primary)
+
+    // Determine which table IDs are actually in the FROM/JOIN chain
+    // (tables with no edge to anyone are excluded from SELECT to avoid unbound identifiers)
+    const joinedTableIds = new Set<string>([primary.id])
+    for (const e of edges) {
+      if (
+        tableNodes.some((n: Node) => n.id === e.source) &&
+        tableNodes.some((n: Node) => n.id === e.target)
+      ) {
+        joinedTableIds.add(e.source)
+        joinedTableIds.add(e.target)
+      }
+    }
+
+    // SELECT columns — only from joined tables; alias 2nd+ duplicates with collision check
     const selectCols: string[] = []
+    const usedOutputNames = new Set<string>()
+
     for (const tn of tableNodes) {
+      if (!joinedTableIds.has(tn.id)) continue  // skip tables not in JOIN chain
       const tbl     = alias(tn)
       const visible = tn.data.visibleCols as VisibleCol[] | undefined
       if (visible?.length) {
         for (const col of visible) {
-          const expr = col.alias
-            ? `${tbl}.${col.name} AS ${col.alias}`
-            : `${tbl}.${col.name}`
-          selectCols.push(`  ${expr}`)
+          if (col.alias) {
+            // User-defined alias — always use it
+            selectCols.push(`  ${tbl}.${col.name} AS ${col.alias}`)
+            usedOutputNames.add(col.alias)
+          } else if (usedOutputNames.has(col.name)) {
+            // Duplicate col name — find a unique alias (handle alias collision too)
+            let aliasName = `${tbl}_${col.name}`
+            let idx = 2
+            while (usedOutputNames.has(aliasName)) aliasName = `${tbl}_${col.name}_${idx++}`
+            selectCols.push(`  ${tbl}.${col.name} AS ${aliasName}`)
+            usedOutputNames.add(aliasName)
+          } else {
+            // First occurrence: keep original name
+            selectCols.push(`  ${tbl}.${col.name}`)
+            usedOutputNames.add(col.name)
+          }
         }
       } else {
         selectCols.push(`  ${tbl}.*`)
       }
     }
 
-    const primary  = tableNodes[0]!
-    const primaryT = tableName(primary)
-    const primaryA = alias(primary)
     const useAlias = primaryA !== primaryT
-
-    let sql = `SELECT\n${selectCols.join(',\n')}\nFROM ${primaryT}${useAlias ? ` AS ${primaryA}` : ''}`
+    let sql = `SELECT\n${selectCols.join(',\n')}\nFROM ${primaryT}${useAlias ? ` AS ${primaryA}` : ''} WITH (NOLOCK)`
 
     // JOINs
     for (const e of edges) {
@@ -263,19 +354,35 @@ export function useSqlGenerator() {
       const srcA = alias(srcNode)
       const jt   = e.data?.joinType ?? 'LEFT JOIN'
 
-      const mappings = e.data?.mappings
-      const onClause = mappings?.length
-        ? mappings.map((m: any) =>
-            `${tgtA}.${m.target} ${m.operator || '='} ${srcA}.${m.source}`
-          ).join(' AND ')
-        : `${tgtA}.id = ${srcA}.${tgtT}_id`
+      const userMappings = (e.data?.mappings ?? []).filter((m: any) => m.source && m.target)
+      let onClause: string
+      if (userMappings.length) {
+        onClause = userMappings.map((m: any) =>
+          `${tgtA}.${m.target} ${m.operator || '='} ${srcA}.${m.source}`
+        ).join(' AND ')
+      } else {
+        // Auto-detect from common column names (details first, fall back to visibleCols)
+        const srcDetails  = (srcNode.data.details ?? []) as any[]
+        const tgtDetails  = (tgtNode.data.details ?? []) as any[]
+        const srcColNames = srcDetails.length
+          ? srcDetails.map((c: any) => c.column_name)
+          : ((srcNode.data.visibleCols ?? []) as any[]).map((c: any) => c.name)
+        const tgtColNames = tgtDetails.length
+          ? tgtDetails.map((c: any) => c.column_name)
+          : ((tgtNode.data.visibleCols ?? []) as any[]).map((c: any) => c.name)
+        const tgtNames = new Set(tgtColNames)
+        const autoMaps = srcColNames.filter((name: string) => tgtNames.has(name))
+        onClause = autoMaps.length
+          ? autoMaps.map((name: string) => `${tgtA}.${name} = ${srcA}.${name}`).join(' AND ')
+          : `/* TODO: กำหนด JOIN mapping สำหรับ ${tgtT} */ 1=1`
+      }
 
       const aliasClause = tgtA !== tgtT ? ` AS ${tgtA}` : ''
-      sql += `\n  ${jt} ${tgtT}${aliasClause} ON ${onClause}`
+      sql += `\n  ${jt} ${tgtT}${aliasClause} WITH (NOLOCK) ON ${onClause}`
     }
 
-    // WHERE from table filters
-    const whereClauses = buildTableFilters(tableNodes)
+    // WHERE from table filters (only joined tables)
+    const whereClauses = buildTableFilters(tableNodes.filter(n => joinedTableIds.has(n.id)))
     if (whereClauses.length) sql += `\nWHERE ${whereClauses.join('\n  AND ')}`
 
     return sql
@@ -310,14 +417,35 @@ export function useSqlGenerator() {
   function buildCteFrameBlock(frame: Node, childTables: Node[], childEdges: Edge[]): string {
     if (!childTables.length) return 'SELECT 1 -- no tables in frame'
 
+    // Build column → table alias map for qualifying selected cols
+    function buildColTableMap(tables: Node[]): Map<string, string> {
+      const map = new Map<string, string>()
+      for (const tn of tables) {
+        const tbl     = alias(tn)
+        const details = (tn.data.details ?? []) as any[]
+        const visible = (tn.data.visibleCols ?? []) as any[]
+        const cols    = details.length
+          ? details.map((c: any) => c.column_name)
+          : visible.map((c: any) => c.name)
+        for (const col of cols) {
+          if (!map.has(col)) map.set(col, tbl)
+        }
+      }
+      return map
+    }
+
     // Build the JOIN part (reuse buildJoinBlock)
     let sql = buildJoinBlock(childTables, childEdges)
 
-    // Apply selectedCols override
+    // Apply selectedCols override — qualify each col with table prefix to avoid ambiguity
     const selectedCols = ((frame.data as any).selectedCols ?? []) as string[]
     if (selectedCols.length) {
-      // Replace SELECT * / SELECT cols with explicit cols
-      sql = sql.replace(/^SELECT\n[\s\S]*?\nFROM/, `SELECT\n${selectedCols.map(c => `  ${c}`).join(',\n')}\nFROM`)
+      const colTableMap = buildColTableMap(childTables)
+      const qualifiedCols = selectedCols.map(c => {
+        const tbl = colTableMap.get(c)
+        return tbl ? `  ${tbl}.${c}` : `  ${c}`
+      })
+      sql = sql.replace(/^SELECT\n[\s\S]*?\nFROM/, `SELECT\n${qualifiedCols.join(',\n')}\nFROM`)
     }
 
     // Append WHERE conditions
@@ -426,11 +554,22 @@ export function useSqlGenerator() {
   }
 
   // ── UNION CTE block ───────────────────────────────────────────────────
-  function buildUnionBlock(node: Node, upstreamNames: string[]): string {
+  function buildUnionBlock(node: Node, upstreamNames: string[], cteOutputCols?: Map<string, string[]>): string {
     const uType = node.data.unionType ?? 'UNION ALL'
     const selectedCols = (node.data.selectedCols ?? []).filter(Boolean) as string[]
-    const colSelect = selectedCols.length
-      ? `SELECT\n  ${selectedCols.join(',\n  ')}`
+
+    // Auto-intersect: find common columns across all upstreams when no user selection
+    let effectiveCols = selectedCols
+    if (!effectiveCols.length && cteOutputCols) {
+      const sets = upstreamNames.map(n => cteOutputCols.get(n) ?? [])
+      const allHaveCols = sets.every(s => s.length > 0)
+      if (allHaveCols) {
+        effectiveCols = sets.reduce((a, b) => a.filter(c => b.includes(c)))
+      }
+    }
+
+    const colSelect = effectiveCols.length
+      ? `SELECT\n  ${effectiveCols.join(',\n  ')}`
       : 'SELECT *'
     const parts = upstreamNames.map(name => `${colSelect}\nFROM ${name}`)
     if (parts.length === 0) return `SELECT * FROM ${upstreamNames[0] ?? '_src'}`

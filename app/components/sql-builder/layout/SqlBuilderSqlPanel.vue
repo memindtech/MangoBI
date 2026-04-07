@@ -8,7 +8,23 @@ import { useSqlBuilderStore } from '~/stores/sql-builder'
 import { useSqlGenerator } from '~/composables/sql-builder/useSqlGenerator'
 
 const store = useSqlBuilderStore()
-const { copySQL } = useSqlGenerator()
+const { generateSQL } = useSqlGenerator()
+
+/** Strip SQL comments and collapse blank lines left behind */
+function cleanSQL(sql: string): string {
+  return sql
+    .replace(/\/\*[\s\S]*?\*\//g, '')   // remove /* block comments */
+    .replace(/--[^\n]*/g, '')            // remove -- line comments
+    .replace(/[ \t]+\n/g, '\n')          // trim trailing whitespace per line
+    .replace(/\n{3,}/g, '\n\n')          // collapse 3+ blank lines → 2
+    .trim()
+}
+
+const displaySQL = computed(() => store.generatedSQL ? cleanSQL(store.generatedSQL) : '')
+
+function copySQL() {
+  if (displaySQL.value) navigator.clipboard.writeText(displaySQL.value)
+}
 
 const HEADER_H = 36
 const MIN_H    = 80
@@ -69,8 +85,8 @@ function startResize(e: MouseEvent) {
       class="overflow-auto"
       :style="{ height: `${panelHeight - HEADER_H}px` }"
     >
-      <pre v-if="store.generatedSQL"
-        class="px-4 py-3 text-xs font-mono whitespace-pre-wrap leading-relaxed">{{ store.generatedSQL }}</pre>
+      <pre v-if="displaySQL"
+        class="px-4 py-3 text-xs font-mono whitespace-pre-wrap leading-relaxed">{{ displaySQL }}</pre>
       <div v-else class="flex items-center justify-center h-full text-xs text-muted-foreground">
         กด "Generate SQL" เพื่อสร้าง Query
       </div>
