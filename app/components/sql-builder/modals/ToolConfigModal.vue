@@ -429,11 +429,22 @@ const unionColCoverage = computed(() => {
   return { map, total }
 })
 
+// ── Union: total unique cols selected across all sources (selectedColsMap) ──
+const unionSelectedCount = computed((): number => {
+  const colsMap = (store.modalNode?.data?.selectedColsMap ?? {}) as Record<string, string[]>
+  const all = [...new Set(Object.values(colsMap).flat().filter(Boolean))]
+  return all.length
+})
+
 // ── Union: selected cols that are missing from ≥1 source ─────────────────
 const unionColWarnings = computed((): Set<string> => {
   const { map, total } = unionColCoverage.value
   if (!total) return new Set()
-  const sel = (store.modalNode?.data?.selectedCols ?? []) as string[]
+  // Check both per-source selections and global selectedCols
+  const colsMap = (store.modalNode?.data?.selectedColsMap ?? {}) as Record<string, string[]>
+  const perSrc  = [...new Set(Object.values(colsMap).flat().filter(Boolean))]
+  const global  = (store.modalNode?.data?.selectedCols ?? []) as string[]
+  const sel = perSrc.length ? perSrc : global
   return new Set(sel.filter(c => (map.get(c) ?? 0) < total))
 })
 
@@ -445,7 +456,8 @@ const unionCommonCols = computed((): string[] => {
 })
 
 function selectUnionCommonCols() {
-  tn.selectAllUnionCols(unionCommonCols.value)
+  const sourceIds = unionSources.value.map(s => s.id)
+  tn.selectAllUnionSourcesWithCols(sourceIds, unionCommonCols.value)
 }
 
 // ── Union column source: upstream if connected, else all canvas cols ──────
@@ -559,28 +571,23 @@ const unionFilteredGroups = computed((): UnionColGroup[] => {
     .filter(g => g.cols.length)
 })
 
-// ── Union: select / clear all cols from a specific group ─────────────────
-function selectAllFromUnionGroup(group: UnionColGroup) {
-  const current = new Set((store.modalNode?.data?.selectedCols ?? []) as string[])
-  group.cols.forEach(c => current.add(c.name))
-  tn.setModalData({ selectedCols: [...current] })
-}
-function clearAllFromUnionGroup(group: UnionColGroup) {
-  const toRemove = new Set(group.cols.map(c => c.name))
-  const current  = ((store.modalNode?.data?.selectedCols ?? []) as string[]).filter(n => !toRemove.has(n))
-  tn.setModalData({ selectedCols: current })
-}
-
-// ── Union SQL preview (dynamic, all sources + WHERE) ──────────────────────
+// ── Union SQL preview (dynamic, per-source cols + WHERE) ─────────────────
 const unionSqlPreview = computed(() => {
-  const uType = store.modalNode?.data?.unionType ?? 'UNION ALL'
-  const cols   = (store.modalNode?.data?.selectedCols ?? []) as string[]
-  const conds  = ((store.modalNode?.data?.conditions ?? []) as any[]).filter(c => c.column && c.operator)
-  const sel    = cols.length ? `SELECT\n  ${cols.join(',\n  ')}` : 'SELECT *'
-  const names  = unionSources.value.length
-    ? unionSources.value.map(s => s.label)
-    : ['source1', 'source2']
-  const unionPart = names.map(n => `${sel}\nFROM ${n}`).join(`\n${uType}\n`)
+  const uType   = store.modalNode?.data?.unionType ?? 'UNION ALL'
+  const colsMap = (store.modalNode?.data?.selectedColsMap ?? {}) as Record<string, string[]>
+  const global  = (store.modalNode?.data?.selectedCols ?? []) as string[]
+  const conds   = ((store.modalNode?.data?.conditions ?? []) as any[]).filter(c => c.column && c.operator)
+  const sources = unionSources.value.length
+    ? unionSources.value
+    : [{ id: '', label: 'source1' }, { id: '', label: 'source2' }]
+
+  const parts = sources.map(s => {
+    const srcCols = s.id ? (colsMap[s.id] ?? []).filter(Boolean) : []
+    const cols    = srcCols.length ? srcCols : global.filter(Boolean)
+    const sel     = cols.length ? `SELECT\n  ${cols.join(',\n  ')}` : 'SELECT *'
+    return `${sel}\nFROM ${s.label}`
+  })
+  const unionPart = parts.join(`\n${uType}\n`)
   if (!conds.length) return unionPart
   const wherePart = conds.map((c: any) => `${c.column} ${c.operator}${!['IS NULL','IS NOT NULL'].includes(c.operator) ? ` '${c.value}'` : ''}`).join('\n  AND ')
   return `SELECT * FROM (\n  ${unionPart.replace(/\n/g, '\n  ')}\n) _u\nWHERE ${wherePart}`
@@ -2221,7 +2228,7 @@ const finishBtnStyle = computed(() => {
                 </div>
                 <div class="flex items-center gap-2">
                   <span class="text-[10px] font-semibold text-yellow-600 bg-yellow-500/10 px-2 py-0.5 rounded-full">
-                    {{ (store.modalNode.data.selectedCols ?? []).length || '*' }}
+                    {{ unionSelectedCount || '*' }}
                   </span>
                   <button
                     @click="selectUnionCommonCols()"
@@ -2235,10 +2242,10 @@ const finishBtnStyle = computed(() => {
                     ]"
                   >Auto Match</button>
                   <span class="text-muted-foreground text-[10px]">|</span>
-                  <button @click="tn.selectAllUnionCols(unionAvailableCols.map((c: any) => c.name))"
+                  <button @click="tn.selectAllUnionSourcesWithCols(unionGroupedCols.map(g => g.sourceId), unionAvailableCols.map((c: any) => c.name))"
                     class="text-[10px] text-yellow-600 hover:underline font-semibold">ทั้งหมด</button>
                   <span class="text-muted-foreground text-[10px]">/</span>
-                  <button @click="tn.clearUnionCols()"
+                  <button @click="unionGroupedCols.forEach(g => tn.clearUnionSourceCols(g.sourceId))"
                     class="text-[10px] text-muted-foreground hover:underline">SELECT *</button>
                 </div>
               </div>
@@ -2277,7 +2284,6 @@ const finishBtnStyle = computed(() => {
                 >
                   <!-- Group header -->
                   <div class="flex items-center gap-2 px-3 py-2 bg-yellow-500/8 border-b border-yellow-500/15">
-                    <!-- tag badge -->
                     <span :class="[
                       'text-[8px] font-bold px-1.5 py-0.5 rounded font-mono uppercase shrink-0',
                       group.tag === 'TABLE'  ? 'bg-sky-500/20 text-sky-400' :
@@ -2287,56 +2293,49 @@ const finishBtnStyle = computed(() => {
                       group.tag === 'CALC'   ? 'bg-teal-500/20 text-teal-400' :
                                                'bg-muted text-muted-foreground'
                     ]">{{ group.tag }}</span>
-
-                    <!-- source label -->
                     <span class="font-mono text-[11px] font-semibold text-foreground/90 flex-1 truncate">
                       {{ group.label }}
                     </span>
-
-                    <!-- table pills -->
                     <div class="flex flex-wrap gap-1 max-w-[120px]">
                       <span
                         v-for="tbl in group.tables" :key="tbl"
                         class="text-[8px] px-1 py-0 rounded bg-sky-500/10 text-sky-400 font-mono border border-sky-500/15 truncate max-w-[80px]"
                       >{{ tbl }}</span>
                     </div>
-
-                    <!-- select / clear group -->
                     <div class="flex items-center gap-1.5 shrink-0 ml-1">
                       <button
-                        @click="selectAllFromUnionGroup(group)"
+                        @click="tn.selectAllUnionSourceCols(group.sourceId, group.cols.map(c => c.name))"
                         class="text-[9px] font-semibold text-yellow-600 hover:underline">ทั้งหมด</button>
                       <span class="text-muted-foreground text-[9px]">/</span>
                       <button
-                        @click="clearAllFromUnionGroup(group)"
+                        @click="tn.clearUnionSourceCols(group.sourceId)"
                         class="text-[9px] text-muted-foreground hover:underline">ล้าง</button>
                     </div>
                   </div>
 
-                  <!-- Columns in this group -->
+                  <!-- Columns in this group — each independent per source -->
                   <div class="divide-y divide-border/30">
                     <label
                       v-for="col in group.cols" :key="col.name"
                       class="flex items-center gap-2.5 px-3 py-1.5 cursor-pointer select-none transition-colors hover:bg-yellow-500/5"
                       :class="[
-                        (store.modalNode.data.selectedCols ?? []).includes(col.name) ? 'bg-yellow-500/5' : '',
+                        tn.isUnionSourceColSelected(group.sourceId, col.name) ? 'bg-yellow-500/5' : '',
                         unionColWarnings.has(col.name) ? 'border-l-2 border-rose-500/50' : '',
                       ]"
                     >
-                      <!-- checkbox -->
                       <div :class="[
                         'size-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors',
-                        (store.modalNode.data.selectedCols ?? []).includes(col.name)
+                        tn.isUnionSourceColSelected(group.sourceId, col.name)
                           ? 'bg-yellow-500 border-yellow-500'
                           : 'border-border/60 bg-background',
                       ]">
-                        <svg v-if="(store.modalNode.data.selectedCols ?? []).includes(col.name)"
+                        <svg v-if="tn.isUnionSourceColSelected(group.sourceId, col.name)"
                           class="size-2.5 text-white" fill="none" viewBox="0 0 10 10">
                           <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
                         </svg>
                         <input type="checkbox" class="sr-only"
-                          :checked="(store.modalNode.data.selectedCols ?? []).includes(col.name)"
-                          @change="tn.toggleUnionCol(col.name)"
+                          :checked="tn.isUnionSourceColSelected(group.sourceId, col.name)"
+                          @change="tn.toggleUnionSourceCol(group.sourceId, col.name)"
                         />
                       </div>
 
@@ -2347,10 +2346,7 @@ const finishBtnStyle = computed(() => {
                       <span class="font-mono text-[11px] flex-1 truncate" :class="col.isPk ? 'text-amber-500 font-semibold' : ''">
                         {{ col.name }}
                       </span>
-
-                      <!-- warning icon -->
                       <span v-if="unionColWarnings.has(col.name)" class="text-[9px] text-rose-400 shrink-0 font-bold ml-0.5">⚠</span>
-
                       <span v-if="col.remark" class="text-[9px] text-muted-foreground/50 truncate max-w-[80px] ml-1">
                         {{ col.remark }}
                       </span>

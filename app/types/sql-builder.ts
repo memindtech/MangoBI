@@ -158,8 +158,10 @@ export interface CteNodeData {
 }
 
 export interface CalcItem {
+  col:   string
+  op:    string
+  value: string
   alias: string
-  expr:  string
 }
 
 export interface CalcNodeData {
@@ -204,12 +206,13 @@ export interface SortNodeData {
 }
 
 export interface UnionNodeData {
-  nodeType:     'union'
-  _toolId:      'union'
-  name:         string            // optional CTE name (empty = auto _cteN)
-  unionType:    'UNION' | 'UNION ALL'
-  selectedCols: string[]          // columns to SELECT from each source (empty = SELECT *)
-  conditions:   WhereCondition[]  // optional WHERE filter applied after UNION
+  nodeType:        'union'
+  _toolId:         'union'
+  name:            string                      // optional CTE name (empty = auto _cteN)
+  unionType:       'UNION' | 'UNION ALL'
+  selectedCols:    string[]                    // legacy / global fallback (empty = SELECT *)
+  selectedColsMap: Record<string, string[]>   // per-sourceId column selection
+  conditions:      WhereCondition[]           // optional WHERE filter applied after UNION
 }
 
 export interface WhereCondition {
@@ -254,7 +257,7 @@ export const TOOL_NODE_DEFAULTS: Record<ToolId, ToolNodeData> = {
   calc:  { nodeType: 'calc',  _toolId: 'calc',   items: [], filters: [] },
   group: { nodeType: 'group', _toolId: 'group',  groupCols: [], aggs: [], filters: [] },
   sort:  { nodeType: 'sort',  _toolId: 'sort',   items: [] },
-  union: { nodeType: 'union', _toolId: 'union',  name: '', unionType: 'UNION ALL', selectedCols: [], conditions: [] },
+  union: { nodeType: 'union', _toolId: 'union',  name: '', unionType: 'UNION ALL', selectedCols: [], selectedColsMap: {}, conditions: [] },
   where: { nodeType: 'where', _toolId: 'where',  conditions: [] },
 }
 

@@ -24,8 +24,8 @@ let mappingIdSeq    = 0
 
 // Loading state: true when either node's columns are still being fetched
 const isLoadingDetails = computed(() =>
-  sourceNode.value?.data?.columnsLoading !== false ||
-  targetNode.value?.data?.columnsLoading !== false
+  sourceNode.value?.data?.columnsLoading === true ||
+  targetNode.value?.data?.columnsLoading === true
 )
 
 function buildAutoMappings(srcNode: any, tgtNode: any): EdgeMapping[] {

@@ -112,24 +112,52 @@ export function useSqlGenerator() {
     }
 
     // ── Compute output column names for a set of table nodes ─────────────
+    // Must mirror buildJoinBlock's primary selection + BFS order exactly so that
+    // auto-aliased duplicate column names (e.g. tbl_id) match the actual SELECT output.
     function computeOutputCols(tNodes: Node[], tEdges: Edge[]): string[] {
-      const primary = tNodes[0]
-      if (!primary) return []
-      const joinedIds = new Set<string>([primary.id])
+      if (!tNodes.length) return []
+
+      // Same smart primary selection as buildJoinBlock
+      const nodeIds = new Set(tNodes.map(n => n.id))
+      const hasIncoming = new Set(
+        tEdges.filter(e => nodeIds.has(e.source) && nodeIds.has(e.target)).map(e => e.target)
+      )
+      const primary = tNodes.find(n => n.data?.isHeaderNode)
+        ?? tNodes.find(n => !hasIncoming.has(n.id))
+        ?? tNodes[0]!
+
+      // BFS from primary → same orderedNodes as buildJoinBlock
+      const adjMap = new Map<string, string[]>()
+      for (const n of tNodes) adjMap.set(n.id, [])
       for (const e of tEdges) {
-        if (tNodes.some(n => n.id === e.source) && tNodes.some(n => n.id === e.target)) {
-          joinedIds.add(e.source); joinedIds.add(e.target)
+        if (nodeIds.has(e.source) && nodeIds.has(e.target))
+          adjMap.get(e.source)?.push(e.target)
+      }
+      const visited = new Set<string>([primary.id])
+      const queue   = [primary.id]
+      const orderedNodes: Node[] = [primary]
+      while (queue.length) {
+        const cur = queue.shift()!
+        for (const tgtId of (adjMap.get(cur) ?? [])) {
+          if (!visited.has(tgtId)) {
+            visited.add(tgtId)
+            queue.push(tgtId)
+            const n = tNodes.find(n => n.id === tgtId)
+            if (n) orderedNodes.push(n)
+          }
         }
       }
+      for (const n of tNodes) {
+        if (!visited.has(n.id)) orderedNodes.push(n)  // disconnected nodes last
+      }
+
       const cols: string[] = []
       const used = new Set<string>()
-      for (const tn of tNodes) {
-        if (!joinedIds.has(tn.id)) continue
+      for (const tn of orderedNodes) {
         const tbl     = alias(tn)
         const visible = tn.data.visibleCols as VisibleCol[] | undefined
         if (visible?.length) {
           for (const col of visible) {
-            const outName = col.alias || col.name
             if (col.alias) {
               cols.push(col.alias); used.add(col.alias)
             } else if (used.has(col.name)) {
@@ -185,7 +213,9 @@ export function useSqlGenerator() {
       cteOutputCols.set(frameName, frameSelected.length ? frameSelected : computeOutputCols(childTables, childEdges))
     }
 
-    // ── Step 1b: table nodes NOT inside any cteFrame → _src ─────────────
+    // ── Step 1b: table nodes NOT inside any cteFrame → one _src per connected component ──
+    // Tables connected by JOIN edges share one CTE; isolated tables (e.g. separate UNION inputs)
+    // each get their own _src CTE so that UNION can reference distinct upstreams.
     const standaloneTables = tableNodes.filter((n: Node) => !framedTableIds.has(n.id))
     if (standaloneTables.length) {
       const tableEdges = edges.filter(e => {
@@ -195,12 +225,46 @@ export function useSqlGenerator() {
           && standaloneTables.some(x => x.id === e.source)
           && standaloneTables.some(x => x.id === e.target)
       })
-      const baseName = uniqueName('_src')
-      const baseSQL  = buildJoinBlock(standaloneTables, tableEdges)
-      ctes.push({ name: baseName, sql: baseSQL })
-      for (const tn of standaloneTables) nodeOutput.set(tn.id, baseName)
-      if (!lastCTE) lastCTE = baseName
-      cteOutputCols.set(baseName, computeOutputCols(standaloneTables, tableEdges))
+
+      // Build undirected adjacency for component detection
+      const adjComp = new Map<string, Set<string>>()
+      for (const n of standaloneTables) adjComp.set(n.id, new Set())
+      for (const e of tableEdges) {
+        adjComp.get(e.source)?.add(e.target)
+        adjComp.get(e.target)?.add(e.source)
+      }
+
+      // BFS to find each connected component
+      const assigned = new Set<string>()
+      const components: Node[][] = []
+      for (const n of standaloneTables) {
+        if (assigned.has(n.id)) continue
+        const comp: Node[] = []
+        const q = [n.id]
+        assigned.add(n.id)
+        while (q.length) {
+          const cur = q.shift()!
+          const curNode = standaloneTables.find(x => x.id === cur)
+          if (curNode) comp.push(curNode)
+          for (const nb of (adjComp.get(cur) ?? [])) {
+            if (!assigned.has(nb)) { assigned.add(nb); q.push(nb) }
+          }
+        }
+        components.push(comp)
+      }
+
+      // Create one _src CTE per component (_src, _src_2, _src_3, …)
+      for (const comp of components) {
+        const compEdges = tableEdges.filter(e =>
+          comp.some(n => n.id === e.source) && comp.some(n => n.id === e.target)
+        )
+        const baseName = uniqueName('_src')
+        const baseSQL  = buildJoinBlock(comp, compEdges)
+        ctes.push({ name: baseName, sql: baseSQL })
+        for (const tn of comp) nodeOutput.set(tn.id, baseName)
+        if (!lastCTE) lastCTE = baseName
+        cteOutputCols.set(baseName, computeOutputCols(comp, compEdges))
+      }
     }
 
     // ── Step 2: each tool node → CTE ───────────────────────────────────
@@ -234,11 +298,11 @@ export function useSqlGenerator() {
         case 'group':  cteSql = buildGroupBlock(node, upName);   break
         case 'calc':   cteSql = buildCalcBlock(node, upName);    break
         case 'union': {
-          const allUpNames = upIds
-            .map(id => nodeOutput.get(id))
-            .filter((n): n is string => !!n)
-          if (!allUpNames.length) allUpNames.push(lastCTE)
-          cteSql = buildUnionBlock(node, allUpNames, cteOutputCols)
+          const upPairs = upIds
+            .map(id => ({ id, name: nodeOutput.get(id) ?? '' }))
+            .filter(p => p.name)
+          if (!upPairs.length) upPairs.push({ id: '', name: lastCTE })
+          cteSql = buildUnionBlock(node, upPairs, cteOutputCols)
           break
         }
       }
@@ -249,12 +313,15 @@ export function useSqlGenerator() {
         lastCTE = cteName
         // Track output cols for this CTE
         if (nt === 'union') {
-          // union output = the cols actually used (intersection computed inside buildUnionBlock)
-          const unionSelected = (node.data.selectedCols ?? []).filter(Boolean) as string[]
-          if (unionSelected.length) {
-            cteOutputCols.set(cteName, unionSelected)
+          // union output = union of all per-source selections, or global, or intersection
+          const colsMap = (node.data.selectedColsMap ?? {}) as Record<string, string[]>
+          const perSourceCols = [...new Set(Object.values(colsMap).flat().filter(Boolean))]
+          const globalSel = (node.data.selectedCols ?? []).filter(Boolean) as string[]
+          if (perSourceCols.length) {
+            cteOutputCols.set(cteName, perSourceCols)
+          } else if (globalSel.length) {
+            cteOutputCols.set(cteName, globalSel)
           } else {
-            // compute intersection of upstreams
             const upNames = upIds.map(id => nodeOutput.get(id)).filter((n): n is string => !!n)
             const sets = upNames.map(n => cteOutputCols.get(n) ?? [])
             const common = sets.length ? sets.reduce((a, b) => a.filter(c => b.includes(c))) : []
@@ -291,46 +358,78 @@ export function useSqlGenerator() {
   function buildJoinBlock(tableNodes: Node[], edges: Edge[]): string {
     if (!tableNodes.length) return 'SELECT 1'
 
-    const primary  = tableNodes[0]!
+    // ── Fix 1: Smart primary selection ──────────────────────────────────
+    // Priority: isHeaderNode (H) → node with no incoming edges (root) → [0]
+    const nodeIds = new Set(tableNodes.map(n => n.id))
+    const hasIncoming = new Set(edges.filter(e => nodeIds.has(e.source) && nodeIds.has(e.target)).map(e => e.target))
+    const primary = tableNodes.find(n => n.data?.isHeaderNode)
+      ?? tableNodes.find(n => !hasIncoming.has(n.id))
+      ?? tableNodes[0]!
     const primaryT = tableName(primary)
     const primaryA = alias(primary)
 
-    // Determine which table IDs are actually in the FROM/JOIN chain
-    // (tables with no edge to anyone are excluded from SELECT to avoid unbound identifiers)
-    const joinedTableIds = new Set<string>([primary.id])
+    // ── Fix 2: Topological sort edges (BFS from primary) ────────────────
+    // Build adjacency: nodeId → outgoing edges
+    const adjEdges = new Map<string, Edge[]>()
+    for (const n of tableNodes) adjEdges.set(n.id, [])
     for (const e of edges) {
-      if (
-        tableNodes.some((n: Node) => n.id === e.source) &&
-        tableNodes.some((n: Node) => n.id === e.target)
-      ) {
-        joinedTableIds.add(e.source)
-        joinedTableIds.add(e.target)
+      if (nodeIds.has(e.source) && nodeIds.has(e.target)) {
+        adjEdges.get(e.source)?.push(e)
+      }
+    }
+    // BFS from primary to get edges in join-safe order
+    const sortedEdges: Edge[] = []
+    const visited = new Set<string>([primary.id])
+    const queue   = [primary.id]
+    while (queue.length) {
+      const cur = queue.shift()!
+      for (const e of (adjEdges.get(cur) ?? [])) {
+        sortedEdges.push(e)
+        if (!visited.has(e.target)) {
+          visited.add(e.target)
+          queue.push(e.target)
+        }
+      }
+    }
+    // Append any edges not reachable from primary (disconnected subgraph)
+    for (const e of edges) {
+      if (nodeIds.has(e.source) && nodeIds.has(e.target) && !sortedEdges.includes(e)) {
+        sortedEdges.push(e)
       }
     }
 
-    // SELECT columns — only from joined tables; alias 2nd+ duplicates with collision check
+    // ── Joined table IDs (for SELECT column filtering) ───────────────────
+    const joinedTableIds = new Set<string>([primary.id])
+    for (const e of sortedEdges) {
+      joinedTableIds.add(e.source)
+      joinedTableIds.add(e.target)
+    }
+
+    // ── SELECT columns (in topological node order) ───────────────────────
     const selectCols: string[] = []
     const usedOutputNames = new Set<string>()
 
-    for (const tn of tableNodes) {
-      if (!joinedTableIds.has(tn.id)) continue  // skip tables not in JOIN chain
+    // Order SELECT by BFS visit order (primary first, then its children)
+    const orderedNodes = [primary, ...sortedEdges
+      .map(e => tableNodes.find(n => n.id === e.target)!)
+      .filter((n, i, arr) => n && arr.indexOf(n) === i)  // deduplicate
+    ]
+    for (const tn of orderedNodes) {
+      if (!tn || !joinedTableIds.has(tn.id)) continue
       const tbl     = alias(tn)
       const visible = tn.data.visibleCols as VisibleCol[] | undefined
       if (visible?.length) {
         for (const col of visible) {
           if (col.alias) {
-            // User-defined alias — always use it
             selectCols.push(`  ${tbl}.${col.name} AS ${col.alias}`)
             usedOutputNames.add(col.alias)
           } else if (usedOutputNames.has(col.name)) {
-            // Duplicate col name — find a unique alias (handle alias collision too)
             let aliasName = `${tbl}_${col.name}`
             let idx = 2
             while (usedOutputNames.has(aliasName)) aliasName = `${tbl}_${col.name}_${idx++}`
             selectCols.push(`  ${tbl}.${col.name} AS ${aliasName}`)
             usedOutputNames.add(aliasName)
           } else {
-            // First occurrence: keep original name
             selectCols.push(`  ${tbl}.${col.name}`)
             usedOutputNames.add(col.name)
           }
@@ -341,10 +440,10 @@ export function useSqlGenerator() {
     }
 
     const useAlias = primaryA !== primaryT
-    let sql = `SELECT\n${selectCols.join(',\n')}\nFROM ${primaryT}${useAlias ? ` AS ${primaryA}` : ''} WITH (NOLOCK)`
+    let sql = `SELECT\n${selectCols.join(',\n')}\nFROM ${primaryT}${useAlias ? ` AS ${primaryA}` : ''}`
 
-    // JOINs
-    for (const e of edges) {
+    // ── JOINs in topological order ────────────────────────────────────────
+    for (const e of sortedEdges) {
       const srcNode = tableNodes.find((n: Node) => n.id === e.source)
       const tgtNode = tableNodes.find((n: Node) => n.id === e.target)
       if (!srcNode || !tgtNode) continue
@@ -378,7 +477,11 @@ export function useSqlGenerator() {
       }
 
       const aliasClause = tgtA !== tgtT ? ` AS ${tgtA}` : ''
-      sql += `\n  ${jt} ${tgtT}${aliasClause} WITH (NOLOCK) ON ${onClause}`
+      if (jt === 'CROSS JOIN') {
+        sql += `\n  CROSS JOIN ${tgtT}${aliasClause}`
+      } else {
+        sql += `\n  ${jt} ${tgtT}${aliasClause} ON ${onClause}`
+      }
     }
 
     // WHERE from table filters (only joined tables)
@@ -403,9 +506,9 @@ export function useSqlGenerator() {
       const whereClauses = conditions.map((c: any) => {
         if (c.operator === 'IS NULL')     return `${c.column} IS NULL`
         if (c.operator === 'IS NOT NULL') return `${c.column} IS NOT NULL`
-        if (c.operator === 'LIKE')        return `${c.column} LIKE N'${c.value}'`
+        if (c.operator === 'LIKE')        return `${c.column} LIKE N'${escapeSQL(c.value)}'`
         if (c.operator === 'IN')          return `${c.column} IN (${c.value})`
-        return `${c.column} ${c.operator} '${c.value}'`
+        return `${c.column} ${c.operator} '${escapeSQL(c.value)}'`
       })
       sql += `\nWHERE ${whereClauses.join('\n  AND ')}`
     }
@@ -415,7 +518,7 @@ export function useSqlGenerator() {
 
   // ── CTE Frame block: JOIN from child tables + optional col/filter ────
   function buildCteFrameBlock(frame: Node, childTables: Node[], childEdges: Edge[]): string {
-    if (!childTables.length) return 'SELECT 1 -- no tables in frame'
+    if (!childTables.length) return 'SELECT NULL AS _empty_frame -- ไม่มี Table ในกรอบ CTE นี้'
 
     // Build column → table alias map for qualifying selected cols
     function buildColTableMap(tables: Node[]): Map<string, string> {
@@ -454,9 +557,9 @@ export function useSqlGenerator() {
       const whereClauses = conditions.map((c: any) => {
         if (c.operator === 'IS NULL')     return `${c.column} IS NULL`
         if (c.operator === 'IS NOT NULL') return `${c.column} IS NOT NULL`
-        if (c.operator === 'LIKE')        return `${c.column} LIKE N'${c.value}'`
+        if (c.operator === 'LIKE')        return `${c.column} LIKE N'${escapeSQL(c.value)}'`
         if (c.operator === 'IN')          return `${c.column} IN (${c.value})`
-        return `${c.column} ${c.operator} '${c.value}'`
+        return `${c.column} ${c.operator} '${escapeSQL(c.value)}'`
       })
       // Append or merge WHERE
       if (sql.includes('\nWHERE ')) {
@@ -473,11 +576,13 @@ export function useSqlGenerator() {
   function buildWhereBlock(node: Node, upstream: string): string {
     const conds = (node.data.conditions ?? []).filter((c: any) => c.column && c.operator)
     if (!conds.length) return `SELECT * FROM ${upstream}`
-    const clauses = conds.map((c: any) =>
-      ['IS NULL', 'IS NOT NULL'].includes(c.operator)
-        ? `${c.column} ${c.operator}`
-        : `${c.column} ${c.operator} '${escapeSQL(c.value)}'`
-    )
+    const clauses = conds.map((c: any) => {
+      if (c.operator === 'IS NULL')     return `${c.column} IS NULL`
+      if (c.operator === 'IS NOT NULL') return `${c.column} IS NOT NULL`
+      if (c.operator === 'LIKE')        return `${c.column} LIKE N'${escapeSQL(c.value)}'`
+      if (c.operator === 'IN')          return `${c.column} IN (${c.value})`
+      return `${c.column} ${c.operator} '${escapeSQL(c.value)}'`
+    })
     return `SELECT *\nFROM ${upstream}\nWHERE ${clauses.join('\n  AND ')}`
   }
 
@@ -504,7 +609,13 @@ export function useSqlGenerator() {
     // HAVING from agg filters
     const having = (node.data.filters ?? [])
       .filter((f: any) => f.column && f.operator)
-      .map((f: any) => `${f.column} ${f.operator} ${f.value}`)
+      .map((f: any) => {
+        if (['IS NULL', 'IS NOT NULL'].includes(f.operator)) return `${f.column} ${f.operator}`
+        if (f.operator === 'LIKE') return `${f.column} LIKE N'${escapeSQL(f.value)}'`
+        if (f.operator === 'IN')   return `${f.column} IN (${f.value})`
+        const val = /^-?\d+(\.\d+)?$/.test(String(f.value ?? '')) ? f.value : `'${escapeSQL(f.value)}'`
+        return `${f.column} ${f.operator} ${val}`
+      })
     if (having.length) sql += `\nHAVING ${having.join('\n  AND ')}`
 
     return sql
@@ -522,11 +633,13 @@ export function useSqlGenerator() {
     let sql = `SELECT *,\n${exprs.join(',\n')}\nFROM ${upstream}`
     const filters = (node.data.filters ?? []).filter((f: any) => f.column && f.operator)
     if (filters.length) {
-      const clauses = filters.map((f: any) =>
-        ['IS NULL', 'IS NOT NULL'].includes(f.operator)
-          ? `${f.column} ${f.operator}`
-          : `${f.column} ${f.operator} '${escapeSQL(f.value)}'`
-      )
+      const clauses = filters.map((f: any) => {
+        if (f.operator === 'IS NULL')     return `${f.column} IS NULL`
+        if (f.operator === 'IS NOT NULL') return `${f.column} IS NOT NULL`
+        if (f.operator === 'LIKE')        return `${f.column} LIKE N'${escapeSQL(f.value)}'`
+        if (f.operator === 'IN')          return `${f.column} IN (${f.value})`
+        return `${f.column} ${f.operator} '${escapeSQL(f.value)}'`
+      })
       sql += `\nWHERE ${clauses.join('\n  AND ')}`
     }
     return sql
@@ -554,24 +667,35 @@ export function useSqlGenerator() {
   }
 
   // ── UNION CTE block ───────────────────────────────────────────────────
-  function buildUnionBlock(node: Node, upstreamNames: string[], cteOutputCols?: Map<string, string[]>): string {
-    const uType = node.data.unionType ?? 'UNION ALL'
-    const selectedCols = (node.data.selectedCols ?? []).filter(Boolean) as string[]
+  function buildUnionBlock(
+    node: Node,
+    upstreams: { id: string; name: string }[],
+    cteOutputCols?: Map<string, string[]>,
+  ): string {
+    const uType        = node.data.unionType ?? 'UNION ALL'
+    const colsMap      = (node.data.selectedColsMap ?? {}) as Record<string, string[]>
+    const globalCols   = (node.data.selectedCols ?? []).filter(Boolean) as string[]
+    const upstreamNames = upstreams.map(u => u.name)
 
-    // Auto-intersect: find common columns across all upstreams when no user selection
-    let effectiveCols = selectedCols
-    if (!effectiveCols.length && cteOutputCols) {
+    // Auto-intersect fallback (used when neither per-source nor global cols set)
+    let autoIntersect: string[] = []
+    if (cteOutputCols) {
       const sets = upstreamNames.map(n => cteOutputCols.get(n) ?? [])
-      const allHaveCols = sets.every(s => s.length > 0)
-      if (allHaveCols) {
-        effectiveCols = sets.reduce((a, b) => a.filter(c => b.includes(c)))
-      }
+      if (sets.every(s => s.length > 0))
+        autoIntersect = sets.reduce((a, b) => a.filter(c => b.includes(c)))
     }
 
-    const colSelect = effectiveCols.length
-      ? `SELECT\n  ${effectiveCols.join(',\n  ')}`
-      : 'SELECT *'
-    const parts = upstreamNames.map(name => `${colSelect}\nFROM ${name}`)
+    // Build each UNION arm with its own column list
+    const parts = upstreams.map(({ id, name }) => {
+      const srcCols = id ? (colsMap[id] ?? []).filter(Boolean) : []
+      const effectiveCols = srcCols.length ? srcCols
+        : globalCols.length               ? globalCols
+        : autoIntersect
+      const colSelect = effectiveCols.length
+        ? `SELECT\n  ${effectiveCols.join(',\n  ')}`
+        : 'SELECT *'
+      return `${colSelect}\nFROM ${name}`
+    })
     if (parts.length === 0) return `SELECT * FROM ${upstreamNames[0] ?? '_src'}`
 
     const unionSql = parts.join(`\n${uType}\n`)
@@ -583,7 +707,7 @@ export function useSqlGenerator() {
     const whereClauses = conditions.map((c: any) => {
       if (c.operator === 'IS NULL')     return `${c.column} IS NULL`
       if (c.operator === 'IS NOT NULL') return `${c.column} IS NOT NULL`
-      if (c.operator === 'LIKE')        return `${c.column} LIKE N'${c.value}'`
+      if (c.operator === 'LIKE')        return `${c.column} LIKE N'${escapeSQL(c.value)}'`
       if (c.operator === 'IN')          return `${c.column} IN (${c.value})`
       return `${c.column} ${c.operator} '${escapeSQL(c.value)}'`
     })
@@ -601,6 +725,10 @@ export function useSqlGenerator() {
         if (!f.column || !f.operator) continue
         if (['IS NULL', 'IS NOT NULL'].includes(f.operator)) {
           clauses.push(`${f.column} ${f.operator}`)
+        } else if (f.operator === 'LIKE') {
+          clauses.push(`${f.column} LIKE N'${escapeSQL(f.value)}'`)
+        } else if (f.operator === 'IN') {
+          clauses.push(`${f.column} IN (${f.value})`)
         } else {
           const val = f.type === 'int' ? f.value : `'${escapeSQL(f.value)}'`
           clauses.push(`${f.column} ${f.operator} ${val}`)
