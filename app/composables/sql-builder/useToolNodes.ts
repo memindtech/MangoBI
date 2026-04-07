@@ -112,6 +112,40 @@ export function useToolNodes() {
     setModalData({ selectedCols: [] })
   }
 
+  // ── Union per-source column helpers ───────────────────────────────────
+  function toggleUnionSourceCol(sourceId: string, colName: string) {
+    const map = { ...(modalNodeData('selectedColsMap') ?? {}) } as Record<string, string[]>
+    const current = [...(map[sourceId] ?? [])]
+    const idx = current.indexOf(colName)
+    if (idx >= 0) current.splice(idx, 1)
+    else current.push(colName)
+    map[sourceId] = current
+    setModalData({ selectedColsMap: map })
+  }
+
+  function selectAllUnionSourceCols(sourceId: string, colNames: string[]) {
+    const map = { ...(modalNodeData('selectedColsMap') ?? {}) } as Record<string, string[]>
+    map[sourceId] = [...colNames]
+    setModalData({ selectedColsMap: map })
+  }
+
+  function clearUnionSourceCols(sourceId: string) {
+    const map = { ...(modalNodeData('selectedColsMap') ?? {}) } as Record<string, string[]>
+    map[sourceId] = []
+    setModalData({ selectedColsMap: map })
+  }
+
+  function selectAllUnionSourcesWithCols(sourceIds: string[], colNames: string[]) {
+    const map: Record<string, string[]> = {}
+    for (const id of sourceIds) map[id] = [...colNames]
+    setModalData({ selectedColsMap: map })
+  }
+
+  function isUnionSourceColSelected(sourceId: string, colName: string): boolean {
+    const map = (modalNodeData('selectedColsMap') ?? {}) as Record<string, string[]>
+    return (map[sourceId] ?? []).includes(colName)
+  }
+
   // ── CTE helpers ───────────────────────────────────────────────────────
   function toggleCteCol(colName: string) {
     const current = [...(modalNodeData('selectedCols') ?? [])] as string[]
@@ -227,6 +261,8 @@ export function useToolNodes() {
     addSortItem, removeSortItem, setSortItem,
     // Union
     toggleUnionCol, selectAllUnionCols, clearUnionCols,
+    toggleUnionSourceCol, selectAllUnionSourceCols, clearUnionSourceCols,
+    selectAllUnionSourcesWithCols, isUnionSourceColSelected,
     addUnionCondition, removeUnionCondition, setUnionCondition,
     // CTE
     toggleCteCol, selectAllCteCols, clearCteCols,

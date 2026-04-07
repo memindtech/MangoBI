@@ -298,11 +298,11 @@ export function useSqlGenerator() {
         case 'group':  cteSql = buildGroupBlock(node, upName);   break
         case 'calc':   cteSql = buildCalcBlock(node, upName);    break
         case 'union': {
-          const allUpNames = upIds
-            .map(id => nodeOutput.get(id))
-            .filter((n): n is string => !!n)
-          if (!allUpNames.length) allUpNames.push(lastCTE)
-          cteSql = buildUnionBlock(node, allUpNames, cteOutputCols)
+          const upPairs = upIds
+            .map(id => ({ id, name: nodeOutput.get(id) ?? '' }))
+            .filter(p => p.name)
+          if (!upPairs.length) upPairs.push({ id: '', name: lastCTE })
+          cteSql = buildUnionBlock(node, upPairs, cteOutputCols)
           break
         }
       }
@@ -313,12 +313,15 @@ export function useSqlGenerator() {
         lastCTE = cteName
         // Track output cols for this CTE
         if (nt === 'union') {
-          // union output = the cols actually used (intersection computed inside buildUnionBlock)
-          const unionSelected = (node.data.selectedCols ?? []).filter(Boolean) as string[]
-          if (unionSelected.length) {
-            cteOutputCols.set(cteName, unionSelected)
+          // union output = union of all per-source selections, or global, or intersection
+          const colsMap = (node.data.selectedColsMap ?? {}) as Record<string, string[]>
+          const perSourceCols = [...new Set(Object.values(colsMap).flat().filter(Boolean))]
+          const globalSel = (node.data.selectedCols ?? []).filter(Boolean) as string[]
+          if (perSourceCols.length) {
+            cteOutputCols.set(cteName, perSourceCols)
+          } else if (globalSel.length) {
+            cteOutputCols.set(cteName, globalSel)
           } else {
-            // compute intersection of upstreams
             const upNames = upIds.map(id => nodeOutput.get(id)).filter((n): n is string => !!n)
             const sets = upNames.map(n => cteOutputCols.get(n) ?? [])
             const common = sets.length ? sets.reduce((a, b) => a.filter(c => b.includes(c))) : []
@@ -664,24 +667,35 @@ export function useSqlGenerator() {
   }
 
   // ── UNION CTE block ───────────────────────────────────────────────────
-  function buildUnionBlock(node: Node, upstreamNames: string[], cteOutputCols?: Map<string, string[]>): string {
-    const uType = node.data.unionType ?? 'UNION ALL'
-    const selectedCols = (node.data.selectedCols ?? []).filter(Boolean) as string[]
+  function buildUnionBlock(
+    node: Node,
+    upstreams: { id: string; name: string }[],
+    cteOutputCols?: Map<string, string[]>,
+  ): string {
+    const uType        = node.data.unionType ?? 'UNION ALL'
+    const colsMap      = (node.data.selectedColsMap ?? {}) as Record<string, string[]>
+    const globalCols   = (node.data.selectedCols ?? []).filter(Boolean) as string[]
+    const upstreamNames = upstreams.map(u => u.name)
 
-    // Auto-intersect: find common columns across all upstreams when no user selection
-    let effectiveCols = selectedCols
-    if (!effectiveCols.length && cteOutputCols) {
+    // Auto-intersect fallback (used when neither per-source nor global cols set)
+    let autoIntersect: string[] = []
+    if (cteOutputCols) {
       const sets = upstreamNames.map(n => cteOutputCols.get(n) ?? [])
-      const allHaveCols = sets.every(s => s.length > 0)
-      if (allHaveCols) {
-        effectiveCols = sets.reduce((a, b) => a.filter(c => b.includes(c)))
-      }
+      if (sets.every(s => s.length > 0))
+        autoIntersect = sets.reduce((a, b) => a.filter(c => b.includes(c)))
     }
 
-    const colSelect = effectiveCols.length
-      ? `SELECT\n  ${effectiveCols.join(',\n  ')}`
-      : 'SELECT *'
-    const parts = upstreamNames.map(name => `${colSelect}\nFROM ${name}`)
+    // Build each UNION arm with its own column list
+    const parts = upstreams.map(({ id, name }) => {
+      const srcCols = id ? (colsMap[id] ?? []).filter(Boolean) : []
+      const effectiveCols = srcCols.length ? srcCols
+        : globalCols.length               ? globalCols
+        : autoIntersect
+      const colSelect = effectiveCols.length
+        ? `SELECT\n  ${effectiveCols.join(',\n  ')}`
+        : 'SELECT *'
+      return `${colSelect}\nFROM ${name}`
+    })
     if (parts.length === 0) return `SELECT * FROM ${upstreamNames[0] ?? '_src'}`
 
     const unionSql = parts.join(`\n${uType}\n`)

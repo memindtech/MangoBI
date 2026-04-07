@@ -3,7 +3,7 @@
  * Loads modules, objects, and table schemas from ADDSPEC APIs
  * Based on ChartDB: useChartDBData.js
  */
-import type { ColumnInfo, ErpObject } from '~/types/sql-builder'
+import type { ColumnInfo } from '~/types/sql-builder'
 import { useSqlBuilderStore } from '~/stores/sql-builder'
 
 export function useErpData() {
@@ -190,7 +190,13 @@ export function useErpData() {
   function filteredObjects(mod: string) {
     const q = store.search.toLowerCase().trim()
     const objs = (store.objects[mod] ?? []).filter((o: any) => o.object_type === 'T')
-    return q ? objs.filter((o: any) => matchesQuery(o, q)) : objs
+    const filtered = q ? objs.filter((o: any) => matchesQuery(o, q)) : objs
+    return [...filtered].sort((a: any, b: any) => {
+      const ai = Number(a.menu_id)
+      const bi = Number(b.menu_id)
+      if (!isNaN(ai) && !isNaN(bi)) return ai - bi
+      return String(a.menu_id ?? '').localeCompare(String(b.menu_id ?? ''))
+    })
   }
 
   // ── Display name helper ───────────────────────────────────────────────
