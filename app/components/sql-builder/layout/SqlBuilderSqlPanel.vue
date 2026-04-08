@@ -3,12 +3,16 @@
  * SQL Builder — SQL Output Panel
  * Displays generated SQL with copy/resize functionality
  */
-import { Code2, ChevronDown, ChevronRight, Copy } from 'lucide-vue-next'
+import { Code2, ChevronDown, ChevronRight, Copy, Eye } from 'lucide-vue-next'
 import { useSqlBuilderStore } from '~/stores/sql-builder'
 import { useSqlGenerator } from '~/composables/sql-builder/useSqlGenerator'
 
 const store = useSqlBuilderStore()
 const { generateSQL } = useSqlGenerator()
+
+// ── Preview TOP N ─────────────────────────────────────────────────────
+const previewTop = ref<number | null>(100)
+const previewEnabled = ref(false)
 
 /** Strip SQL comments and collapse blank lines left behind */
 function cleanSQL(sql: string): string {
@@ -20,7 +24,19 @@ function cleanSQL(sql: string): string {
     .trim()
 }
 
-const displaySQL = computed(() => store.generatedSQL ? cleanSQL(store.generatedSQL) : '')
+/** Inject TOP N into SELECT line */
+function injectTop(sql: string, n: number): string {
+  return sql.replace(/^(SELECT)\b/im, `SELECT TOP ${n}`)
+}
+
+const displaySQL = computed(() => {
+  if (!store.generatedSQL) return ''
+  let sql = cleanSQL(store.generatedSQL)
+  if (previewEnabled.value && previewTop.value && previewTop.value > 0) {
+    sql = injectTop(sql, previewTop.value)
+  }
+  return sql
+})
 
 function copySQL() {
   if (displaySQL.value) navigator.clipboard.writeText(displaySQL.value)
@@ -69,6 +85,27 @@ function startResize(e: MouseEvent) {
     <div class="flex items-center gap-2 px-3 h-9 border-b">
       <Code2 class="size-3.5 text-sky-500" />
       <span class="text-xs font-semibold">Generated SQL</span>
+
+      <!-- Preview TOP toggle -->
+      <div class="flex items-center gap-1.5 ml-2 pl-2 border-l border-border/40">
+        <button
+          @click="previewEnabled = !previewEnabled"
+          :class="['flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded transition-colors',
+            previewEnabled
+              ? 'bg-emerald-500/15 text-emerald-500 font-semibold'
+              : 'text-muted-foreground hover:text-foreground']"
+          title="Preview TOP N rows">
+          <Eye class="size-3" />
+          TOP
+        </button>
+        <input
+          v-if="previewEnabled"
+          v-model.number="previewTop"
+          type="number" min="1" max="10000"
+          class="w-16 text-[11px] border rounded px-1.5 py-0.5 bg-background font-mono focus:outline-none focus:ring-1 focus:ring-emerald-500/40 text-emerald-500"
+        />
+      </div>
+
       <button @click="store.sqlPanelOpen = !store.sqlPanelOpen"
         class="ml-auto text-muted-foreground hover:text-foreground">
         <component :is="store.sqlPanelOpen ? ChevronDown : ChevronRight" class="size-3.5" />

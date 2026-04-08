@@ -224,7 +224,11 @@ export const useSqlBuilderStore = defineStore('sql-builder', () => {
   function loadTemplate(id: string) {
     const tpl = listTemplates().find(t => t.id === id)
     if (!tpl) return
-    nodes.value = tpl.nodes
+    nodes.value = tpl.nodes.map((n: Node) =>
+      n.type === 'sqlTable' && n.data?.columnsLoading
+        ? { ...n, data: { ...n.data, columnsLoading: false } }
+        : n
+    )
     edges.value = tpl.edges
   }
 
@@ -249,7 +253,11 @@ export const useSqlBuilderStore = defineStore('sql-builder', () => {
     if (!raw) return false
     try {
       const state: SavedFlowState = JSON.parse(raw)
-      nodes.value = state.nodes
+      nodes.value = state.nodes.map((n: Node) =>
+        n.type === 'sqlTable' && n.data?.columnsLoading
+          ? { ...n, data: { ...n.data, columnsLoading: false } }
+          : n
+      )
       edges.value = state.edges
       return true
     } catch { return false }
