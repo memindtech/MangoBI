@@ -166,13 +166,8 @@ const syncTooltip = computed(() => ({
               :key="obj.object_name"
               draggable="true"
               @dragstart="onDragStart($event, obj)"
-<<<<<<< Updated upstream
-              :title="obj.remark ? `${obj.object_name}\n${obj.remark}` : obj.object_name"
-              class="flex items-center gap-1.5 px-3 py-1.5 text-[11px] cursor-grab hover:bg-accent transition-colors active:cursor-grabbing"
-=======
               :title="`[${obj.menu_id ?? '-'}] ${obj.menu_name || obj.object_name}\n${obj.remark ?? ''}`"
               class="flex flex-col px-3 py-1.5 cursor-grab hover:bg-accent transition-colors active:cursor-grabbing border-b border-border/20 last:border-0"
->>>>>>> Stashed changes
             >
               <span :class="['text-[9px] px-1 py-0.5 rounded font-semibold font-mono shrink-0', erpData.objectTypeColor(obj.object_type)]">
                 {{ obj.object_type }}

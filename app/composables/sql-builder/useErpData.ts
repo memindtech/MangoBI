@@ -184,18 +184,11 @@ export function useErpData() {
   // ── Match helper (searches object_name + remark/display name) ─────────
   function matchesQuery(o: any, q: string): boolean {
     if (!q) return true
-<<<<<<< Updated upstream
-    const name   = (o.object_name ?? '').toLowerCase()
-    const remark = (o.remark ?? '').toLowerCase()
-    const ttype  = (o.t_object_name ?? '').toLowerCase()
-    return name.includes(q) || remark.includes(q) || ttype.includes(q)
-=======
     const name     = (o.object_name ?? '').toLowerCase()
     const remark   = (o.remark ?? '').toLowerCase()
     const menuId   = String(o.menu_id ?? '').toLowerCase()
     const menuName = (o.menu_name ?? '').toLowerCase()
     return name.includes(q) || remark.includes(q) || menuId.includes(q) || menuName.includes(q)
->>>>>>> Stashed changes
   }
 
   // ── Filtered modules (search-aware) ───────────────────────────────────
