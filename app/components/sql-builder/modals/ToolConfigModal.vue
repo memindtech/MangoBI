@@ -76,8 +76,8 @@ function toggleCteCondColDropdown(i: number, e: MouseEvent) {
   openCteCondColIdx.value = i
 }
 function closeCteCondColDropdown() { openCteCondColIdx.value = null; cteCondColDropPos.value = null }
-function selectCteCondCol(i: number, colName: string) {
-  tn.setCteCondition(i, { column: colName })
+function selectCteCondCol(i: number, col: VisibleCol) {
+  tn.setCteCondition(i, { column: col.name, colType: col.type })
   closeCteCondColDropdown()
 }
 
@@ -92,8 +92,8 @@ function toggleUnionCondColDropdown(i: number, e: MouseEvent) {
   openUnionCondColIdx.value = i
 }
 function closeUnionCondColDropdown() { openUnionCondColIdx.value = null; unionCondColDropPos.value = null }
-function selectUnionCondCol(i: number, colName: string) {
-  tn.setUnionCondition(i, { column: colName })
+function selectUnionCondCol(i: number, col: VisibleCol) {
+  tn.setUnionCondition(i, { column: col.name, colType: col.type })
   closeUnionCondColDropdown()
 }
 
@@ -110,8 +110,8 @@ function toggleWhereColDropdown(i: number, e: MouseEvent) {
 
 function closeWhereColDropdown() { openWhereColIdx.value = null; whereColDropPos.value = null }
 
-function selectWhereCol(i: number, colName: string) {
-  tn.setWhereCondition(i, { column: colName })
+function selectWhereCol(i: number, col: VisibleCol) {
+  tn.setWhereCondition(i, { column: col.name, colType: col.type })
   closeWhereColDropdown()
 }
 
@@ -751,6 +751,21 @@ function calcValuePlaceholder(op: string): string {
   return CALC_OPS.find(o => o.id === op)?.ph ?? ''
 }
 
+// Helper: format condition value for SQL preview (mirrors formatCondClause in useSqlGenerator)
+const NUMERIC_TYPES_RE = /^(int|bigint|smallint|tinyint|decimal|numeric|float|real|money|smallmoney|bit)/i
+function condPreview(cond: any): string {
+  const col = cond.column, op = cond.operator, val = String(cond.value ?? '')
+  if (['IS NULL', 'IS NOT NULL'].includes(op)) return `${col} ${op}`
+  if (op === 'LIKE') return `${col} LIKE N'${val || '?'}'`
+  if (op === 'IN')   return `${col} IN (${val || '?'})`
+  const isNumeric = cond.colType
+    ? NUMERIC_TYPES_RE.test(cond.colType)
+    : /^-?\d+(\.\d+)?$/.test(val)
+  return isNumeric
+    ? `${col} ${op} ${val || '?'}`
+    : `${col} ${op} '${val || '?'}'`
+}
+
 // Helper: check if a column is date type (for date picker)
 function isDateCol(colName: string): boolean {
   const col = upstreamCols.value.find(c => c.name === colName)
@@ -1045,7 +1060,7 @@ const finishBtnStyle = computed(() => {
       <div class="overflow-y-auto max-h-[240px]">
         <button
           v-for="c in unionAvailableCols" :key="c.name"
-          @click="selectUnionCondCol(openUnionCondColIdx!, c.name)"
+          @click="selectUnionCondCol(openUnionCondColIdx!, c)"
           :class="['w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-yellow-500/8 transition-colors',
             store.modalNode?.data?.conditions?.[openUnionCondColIdx!]?.column === c.name ? 'bg-yellow-500/10' : '']"
         >
@@ -1077,7 +1092,7 @@ const finishBtnStyle = computed(() => {
       <div class="overflow-y-auto max-h-[240px]">
         <button
           v-for="c in cteAvailableCols" :key="c.name"
-          @click="selectCteCondCol(openCteCondColIdx!, c.name)"
+          @click="selectCteCondCol(openCteCondColIdx!, c)"
           :class="['w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-violet-500/8 transition-colors',
             store.modalNode?.data?.conditions?.[openCteCondColIdx!]?.column === c.name ? 'bg-violet-500/10' : '']"
         >
@@ -1109,7 +1124,7 @@ const finishBtnStyle = computed(() => {
       <div class="overflow-y-auto max-h-[240px]">
         <button
           v-for="c in upstreamCols" :key="c.name"
-          @click="selectWhereCol(openWhereColIdx!, c.name)"
+          @click="selectWhereCol(openWhereColIdx!, c)"
           :class="['w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-rose-500/8 transition-colors', store.modalNode?.data?.conditions?.[openWhereColIdx!]?.column === c.name ? 'bg-rose-500/10' : '']"
         >
           <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(c.type).cls]">{{ getColTypeBadge(c.type).label }}</span>
@@ -2465,7 +2480,7 @@ const finishBtnStyle = computed(() => {
                 <span class="text-[10px] font-bold text-rose-500 uppercase tracking-wide flex-1">
                   Condition {{ Number(i) + 1 }}
                   <span v-if="cond.column" class="normal-case font-mono text-rose-400 ml-1">
-                    — {{ cond.column }} {{ cond.operator }} {{ !['IS NULL','IS NOT NULL'].includes(cond.operator) ? cond.value : '' }}
+                    — {{ condPreview(cond) }}
                   </span>
                 </span>
                 <button @click="tn.removeWhereCondition(Number(i))"
@@ -2541,7 +2556,7 @@ const finishBtnStyle = computed(() => {
                 class="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-rose-500/5 border border-rose-400/20">
                 <span class="text-[9px] font-bold text-rose-500 shrink-0">SQL</span>
                 <code class="text-[9px] font-mono text-rose-300/80 truncate">
-                  {{ cond.column }} {{ cond.operator }}{{ !['IS NULL','IS NOT NULL'].includes(cond.operator) ? ` '${cond.value || '?'}'` : '' }}
+                  {{ condPreview(cond) }}
                 </code>
               </div>
             </div>

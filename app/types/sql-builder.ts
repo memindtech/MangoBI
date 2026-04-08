@@ -296,34 +296,40 @@ export const TEMPLATES_KEY  = 'mangobi_sql_templates_v1'
 
 // ── Column Type Helpers ──────────────────────────────────────────────────────
 
-const NUMERIC_TYPES = ['int','integer','bigint','smallint','tinyint','decimal','numeric','float','double','real','money','smallmoney','number']
-const DATE_TYPES    = ['date','datetime','datetime2','datetimeoffset','smalldatetime','time','timestamp','year']
+// Use prefix-based matching so modifiers like `int identity`, `decimal(18,2)`,
+// `datetime2(7)` are classified correctly (not as varchar).
+const NUM_RE  = /^(int|integer|bigint|smallint|tinyint|decimal|numeric|float|double precision|double|real|money|smallmoney|number)(\s|\(|$)/
+const DATE_RE = /^(datetime2|datetimeoffset|smalldatetime|datetime|date|time|timestamp|year)(\s|\(|$)/
+const BIT_RE  = /^(bit|bool|boolean)$/
+const BIN_RE  = /^(binary|varbinary|image)(\s|\(|$)/
+
+function normType(colType: string): string { return (colType ?? '').toLowerCase().trim() }
 
 /** Soft variant — for use on light backgrounds (badges inside lists, filter hints) */
 export function getColTypeBadge(colType: string): { label: string; cls: string } {
-  const t = colType?.toLowerCase() ?? ''
-  if (NUMERIC_TYPES.includes(t)) return { label: 'NUM',  cls: 'bg-blue-500/20   text-blue-500'    }
-  if (DATE_TYPES.includes(t))    return { label: 'DATE', cls: 'bg-amber-500/20  text-amber-600'   }
-  if (['bit','bool','boolean'].includes(t))         return { label: 'BIT',  cls: 'bg-violet-500/20 text-violet-500' }
-  if (['binary','varbinary','image'].includes(t))   return { label: 'BIN',  cls: 'bg-zinc-500/20   text-zinc-500'   }
+  const t = normType(colType)
+  if (NUM_RE.test(t))  return { label: 'NUM',  cls: 'bg-blue-500/20   text-blue-500'    }
+  if (DATE_RE.test(t)) return { label: 'DATE', cls: 'bg-amber-500/20  text-amber-600'   }
+  if (BIT_RE.test(t))  return { label: 'BIT',  cls: 'bg-violet-500/20 text-violet-500'  }
+  if (BIN_RE.test(t))  return { label: 'BIN',  cls: 'bg-zinc-500/20   text-zinc-500'    }
   return { label: 'TXT', cls: 'bg-emerald-500/20 text-emerald-600' }
 }
 
 /** Solid variant — for use inside dark nodes / canvas cards */
 export function getColTypeBadgeSolid(colType: string): { label: string; cls: string } {
-  const t = colType?.toLowerCase() ?? ''
-  if (NUMERIC_TYPES.includes(t)) return { label: 'NUM',  cls: 'bg-blue-500   text-white' }
-  if (DATE_TYPES.includes(t))    return { label: 'DATE', cls: 'bg-amber-500  text-white' }
-  if (['bit','bool','boolean'].includes(t))         return { label: 'BIT',  cls: 'bg-violet-500 text-white' }
-  if (['binary','varbinary','image'].includes(t))   return { label: 'BIN',  cls: 'bg-zinc-500   text-white' }
+  const t = normType(colType)
+  if (NUM_RE.test(t))  return { label: 'NUM',  cls: 'bg-blue-500   text-white' }
+  if (DATE_RE.test(t)) return { label: 'DATE', cls: 'bg-amber-500  text-white' }
+  if (BIT_RE.test(t))  return { label: 'BIT',  cls: 'bg-violet-500 text-white' }
+  if (BIN_RE.test(t))  return { label: 'BIN',  cls: 'bg-zinc-500   text-white' }
   return { label: 'TXT', cls: 'bg-emerald-500 text-white' }
 }
 
 export function getFilterType(colType: string): 'int' | 'date' | 'boolean' | 'varchar' {
-  const t = colType?.toLowerCase() ?? ''
-  if (NUMERIC_TYPES.includes(t)) return 'int'
-  if (DATE_TYPES.includes(t))    return 'date'
-  if (['bit','bool','boolean'].includes(t)) return 'boolean'
+  const t = normType(colType)
+  if (NUM_RE.test(t))  return 'int'
+  if (DATE_RE.test(t)) return 'date'
+  if (BIT_RE.test(t))  return 'boolean'
   return 'varchar'
 }
 

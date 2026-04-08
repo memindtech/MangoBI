@@ -196,9 +196,17 @@ function selectColumn(i: number, colName: string) {
               >
                 <!-- Row label + delete -->
                 <div class="flex items-center justify-between">
-                  <span class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+                  <span class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1.5 flex-wrap">
                     Condition {{ i + 1 }}
-                    <span v-if="f.column" class="normal-case font-mono text-amber-600 ml-1">— {{ f.column }}</span>
+                    <template v-if="f.column && colInfo(f.column)">
+                      <span class="normal-case font-mono text-amber-600">— {{ f.column }}</span>
+                      <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono', getColTypeBadge(colInfo(f.column)!.column_type).cls]">
+                        {{ getColTypeBadge(colInfo(f.column)!.column_type).label }}
+                      </span>
+                      <span class="text-[9px] font-mono text-muted-foreground/50 normal-case font-normal">
+                        {{ colInfo(f.column)!.column_type }}
+                      </span>
+                    </template>
                   </span>
                   <button @click="removeFilter(i)"
                     class="size-5 flex items-center justify-center rounded hover:bg-destructive/10 hover:text-destructive text-muted-foreground transition-colors">
