@@ -4,7 +4,7 @@ import { Database, X, Filter, ChevronDown, ChevronUp, Key, SlidersHorizontal, Ne
 import type { VisibleCol } from '~/types/sql-builder'
 import { getColTypeBadgeSolid } from '~/types/sql-builder'
 import { useSqlBuilderStore } from '~/stores/sql-builder'
-import { useErpData } from '~/composables/sql-builder/useErpData'
+import { objectTypeColor } from '~/composables/sql-builder/useErpData'
 import { useDragDrop } from '~/composables/sql-builder/useDragDrop'
 
 const props = defineProps<{
@@ -14,7 +14,6 @@ const props = defineProps<{
 }>()
 
 const store    = useSqlBuilderStore()
-const erpData  = useErpData()
 const dragDrop = useDragDrop()
 const { updateNodeInternals } = useVueFlow()
 
@@ -38,9 +37,22 @@ const visibleCols = computed((): VisibleCol[] => props.data.visibleCols ?? [])
 const filters     = computed(() => props.data.filters ?? [])
 const hasFilters  = computed(() => filters.value.length > 0)
 
+// O(1) lookup instead of O(N) .some() called per column per render
+const visibleColSet = computed(() => new Set(visibleCols.value.map((v: VisibleCol) => v.name)))
 function isVisible(colName: string): boolean {
-  return visibleCols.value.some((v: VisibleCol) => v.name === colName)
+  return visibleColSet.value.has(colName)
 }
+
+// Pre-compute badge counts once instead of .filter() per badge per render
+const BADGE_TYPES = ['NUM', 'DATE', 'TXT', 'BIT', 'BIN'] as const
+const typeCounts = computed(() => {
+  const counts: Record<string, number> = {}
+  for (const col of details.value) {
+    const label = getColTypeBadgeSolid(col.column_type).label
+    counts[label] = (counts[label] ?? 0) + 1
+  }
+  return counts
+})
 
 function toggleCol(colName: string) {
   const current = [...visibleCols.value]
@@ -104,11 +116,12 @@ function clearAll() {
 
     <!-- Card -->
     <div :class="[
-      'rounded-xl border-2 shadow-lg overflow-hidden bg-card transition-all duration-150',
-      props.selected
-        ? 'border-sky-400 shadow-sky-500/30 shadow-xl ring-2 ring-sky-400/30'
-        : 'border-sky-500/40 hover:border-sky-500/70',
-    ]">
+        'rounded-xl border-2 shadow-lg overflow-hidden bg-card transition-all duration-150',
+        props.selected
+          ? 'border-sky-400 shadow-sky-500/30 shadow-xl ring-2 ring-sky-400/30'
+          : 'border-sky-500/40 hover:border-sky-500/70',
+      ]"
+    >
 
       <!-- ── Header ─────────────────────────────────────────── -->
       <div class="flex items-center gap-2 px-3 py-2 bg-sky-500/10 border-b border-sky-500/20">
@@ -127,7 +140,7 @@ function clearAll() {
 
       <!-- ── Meta row ────────────────────────────────────────── -->
       <div class="flex items-center gap-1.5 px-3 py-1.5 border-b border-border/40 bg-muted/30">
-        <span :class="['text-[9px] px-1.5 py-0.5 rounded-md font-bold font-mono shrink-0', erpData.objectTypeColor(data.type)]">
+        <span :class="['text-[9px] px-1.5 py-0.5 rounded-md font-bold font-mono shrink-0', objectTypeColor(data.type)]">
           {{ data.ttype ?? data.type }}
         </span>
         <span class="text-[10px] text-muted-foreground truncate flex-1">{{ data.module }}</span>
@@ -256,10 +269,10 @@ function clearAll() {
             <span :class="visibleCols.length ? 'text-sky-400 font-semibold' : 'text-muted-foreground/50'">
               {{ visibleCols.length }}</span>/{{ details.length }}
           </span>
-          <template v-for="badge in ['NUM','DATE','TXT','BIT','BIN']" :key="badge">
-            <span v-if="details.some((c: any) => getColTypeBadgeSolid(c.column_type).label === badge)"
+          <template v-for="badge in BADGE_TYPES" :key="badge">
+            <span v-if="typeCounts[badge]"
               :class="['text-[8px] px-1 py-0 rounded font-bold font-mono leading-4', getColTypeBadgeSolid(details.find((c: any) => getColTypeBadgeSolid(c.column_type).label === badge)?.column_type ?? '').cls]">
-              {{ details.filter((c: any) => getColTypeBadgeSolid(c.column_type).label === badge).length }}{{ badge }}
+              {{ typeCounts[badge] }}{{ badge }}
             </span>
           </template>
         </div>

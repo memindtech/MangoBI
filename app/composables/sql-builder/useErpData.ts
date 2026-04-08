@@ -9,8 +9,19 @@
  *   - Firewall config ที่ server level เท่านั้น
  *   - Cache fallback ถ้า Mango ไม่ตอบ
  */
-import type { ColumnInfo, ErpObject } from '~/types/sql-builder'
+import type { ColumnInfo } from '~/types/sql-builder'
 import { useSqlBuilderStore } from '~/stores/sql-builder'
+
+// ── Standalone pure helper (safe to import without calling useErpData) ────────
+export function objectTypeColor(type: string): string {
+  return ({
+    T:  'bg-blue-500/20 text-blue-600',
+    V:  'bg-purple-500/20 text-purple-600',
+    FN: 'bg-teal-500/20 text-teal-600',
+    R:  'bg-orange-500/20 text-orange-600',
+    SP: 'bg-rose-500/20 text-rose-600',
+  } as Record<string, string>)[type] ?? 'bg-muted text-muted-foreground'
+}
 
 export function useErpData() {
   const store = useSqlBuilderStore()
@@ -212,16 +223,6 @@ export function useErpData() {
     const remark = obj?.remark?.trim()
     if (!remark) return obj?.object_name ?? ''
     return remark.split('\n')[0].replace(/^[-–•]\s*/, '').trim() || obj.object_name
-  }
-
-  function objectTypeColor(type: string): string {
-    return ({
-      T:  'bg-blue-500/20 text-blue-600',
-      V:  'bg-purple-500/20 text-purple-600',
-      FN: 'bg-teal-500/20 text-teal-600',
-      R:  'bg-orange-500/20 text-orange-600',
-      SP: 'bg-rose-500/20 text-rose-600',
-    } as Record<string, string>)[type] ?? 'bg-muted text-muted-foreground'
   }
 
   return {

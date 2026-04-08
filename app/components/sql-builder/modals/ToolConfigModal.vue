@@ -2556,6 +2556,122 @@ const finishBtnStyle = computed(() => {
             </button>
           </template>
 
+          <!-- ── Standard WHERE (pre-filter) for group / sort / calc ──────── -->
+          <template v-if="nodeType === 'group' || nodeType === 'sort' || nodeType === 'calc'">
+            <div class="border-t border-border/40 pt-4 mt-1 flex flex-col gap-3">
+              <!-- Section header -->
+              <div class="flex items-center gap-2">
+                <div class="flex items-center gap-1.5 flex-1">
+                  <Filter class="size-3.5 text-rose-500 shrink-0" />
+                  <span class="text-[11px] font-semibold text-rose-500 uppercase tracking-wide">WHERE</span>
+                  <span v-if="whereCondCount"
+                    class="text-[9px] px-1.5 py-0.5 rounded-full bg-rose-500/15 text-rose-400 font-bold">
+                    {{ whereCondCount }}
+                  </span>
+                </div>
+                <span class="text-[10px] text-muted-foreground/50">กรองข้อมูลก่อนประมวลผล</span>
+              </div>
+
+              <!-- Condition rows -->
+              <div
+                v-for="(cond, i) in (store.modalNode.data.conditions ?? [])" :key="i"
+                class="flex flex-col gap-3 border rounded-xl p-4 bg-rose-500/3"
+              >
+                <!-- Row header -->
+                <div class="flex items-center gap-2">
+                  <span class="text-[10px] font-bold text-rose-500 uppercase tracking-wide flex-1">
+                    Condition {{ Number(i) + 1 }}
+                    <span v-if="cond.column" class="normal-case font-mono text-rose-400 ml-1">
+                      — {{ cond.column }} {{ cond.operator }}
+                      {{ !['IS NULL','IS NOT NULL'].includes(cond.operator) ? cond.value : '' }}
+                    </span>
+                  </span>
+                  <button @click="tn.removeWhereCondition(Number(i))"
+                    class="size-5 flex items-center justify-center rounded hover:bg-destructive/10 hover:text-destructive text-muted-foreground transition-colors">
+                    <X class="size-3.5" />
+                  </button>
+                </div>
+
+                <!-- Column picker -->
+                <div class="flex items-center gap-2">
+                  <label class="text-[10px] font-semibold text-muted-foreground w-16 shrink-0">Column</label>
+                  <button
+                    @click="toggleWhereColDropdown(Number(i), $event)"
+                    :class="[
+                      'flex-1 flex items-center gap-2 text-xs border rounded-lg px-2.5 py-2 bg-background text-left transition-colors',
+                      cond.column ? 'border-rose-400/40' : 'border-border hover:border-rose-400/30',
+                      openWhereColIdx === Number(i) ? 'ring-2 ring-rose-400/50 border-rose-400/40' : '',
+                    ]"
+                  >
+                    <template v-if="cond.column">
+                      <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0',
+                        getColTypeBadge(upstreamCols.find(c => c.name === cond.column)?.type ?? '').cls]">
+                        {{ getColTypeBadge(upstreamCols.find(c => c.name === cond.column)?.type ?? '').label }}
+                      </span>
+                      <span class="font-mono text-[11px] flex-1 truncate">{{ cond.column }}</span>
+                    </template>
+                    <span v-else class="text-muted-foreground text-[11px] flex-1">— เลือก Column —</span>
+                    <ChevronDown :class="['size-3 shrink-0 text-muted-foreground transition-transform', openWhereColIdx === Number(i) ? 'rotate-180' : '']" />
+                  </button>
+                </div>
+
+                <!-- Operator pills -->
+                <div class="flex flex-col gap-1.5">
+                  <label class="text-[10px] font-semibold text-muted-foreground">เงื่อนไข</label>
+                  <div v-for="grp in WHERE_OP_GROUPS" :key="grp.color" class="flex flex-wrap gap-1">
+                    <button
+                      v-for="op in grp.ops" :key="op"
+                      @click="tn.setWhereCondition(Number(i), { operator: op })"
+                      :class="['text-[10px] px-2.5 py-1 rounded-lg border font-mono font-bold transition-colors whitespace-nowrap', whereOpClass(cond.operator, op)]"
+                    >{{ op }}</button>
+                  </div>
+                </div>
+
+                <!-- Value input -->
+                <div v-if="cond.operator && !['IS NULL', 'IS NOT NULL'].includes(cond.operator)" class="flex items-center gap-2">
+                  <label class="text-[10px] font-semibold text-muted-foreground w-16 shrink-0">ค่า</label>
+                  <div v-if="isDateCol(cond.column)" class="flex-1 relative flex items-center">
+                    <input
+                      :ref="(el) => setWhereDateRef(Number(i), el)"
+                      type="date"
+                      :value="cond.value"
+                      @input="tn.setWhereCondition(Number(i), { value: ($event.target as HTMLInputElement).value })"
+                      class="flex-1 text-xs border rounded-lg pl-2.5 pr-9 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-rose-400/50 font-mono"
+                      :class="cond.value ? 'border-rose-400/40' : ''"
+                    />
+                    <button type="button" @click="openWhereDatePicker(Number(i))"
+                      class="absolute right-2 size-5 flex items-center justify-center rounded text-rose-500 hover:bg-rose-500/15 transition-colors">
+                      <Calendar class="size-3.5" />
+                    </button>
+                  </div>
+                  <input
+                    v-else
+                    :value="cond.value"
+                    @input="tn.setWhereCondition(Number(i), { value: ($event.target as HTMLInputElement).value })"
+                    :placeholder="cond.operator === 'LIKE' ? 'เช่น %keyword%' : cond.operator === 'IN' ? 'เช่น 1,2,3' : 'ค่าที่ต้องการ'"
+                    class="flex-1 text-xs border rounded-lg px-2.5 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-rose-400/50 font-mono"
+                    :class="cond.value ? 'border-rose-400/40' : ''"
+                  />
+                </div>
+
+                <!-- Preview -->
+                <div v-if="cond.column && cond.operator"
+                  class="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-rose-500/5 border border-rose-400/20">
+                  <span class="text-[9px] font-bold text-rose-500 shrink-0">SQL</span>
+                  <code class="text-[9px] font-mono text-rose-300/80 truncate">
+                    {{ cond.column }} {{ cond.operator }}{{ !['IS NULL','IS NOT NULL'].includes(cond.operator) ? ` '${cond.value || '?'}'` : '' }}
+                  </code>
+                </div>
+              </div>
+
+              <!-- Add condition button -->
+              <button @click="tn.addWhereCondition"
+                class="text-xs w-full py-2 rounded-xl border border-dashed border-rose-500/40 text-rose-600 hover:bg-rose-500/10 font-semibold transition-colors flex items-center justify-center gap-1.5">
+                <Plus class="size-3.5" /> เพิ่ม WHERE Condition
+              </button>
+            </div>
+          </template>
+
         </div>
 
         <!-- Footer -->
@@ -2568,13 +2684,20 @@ const finishBtnStyle = computed(() => {
             <span v-if="groupFilterCount">
               + <span class="font-semibold text-amber-600">{{ groupFilterCount }}</span> HAVING
             </span>
+            <span v-if="whereCondCount">
+              · WHERE <span class="font-semibold text-rose-500">{{ whereCondCount }}</span>
+            </span>
           </p>
           <p v-else-if="nodeType === 'sort'" class="text-[10px] text-muted-foreground">
             ORDER BY <span class="font-semibold text-green-600">{{ sortItemCount }}</span> columns
+            <span v-if="whereCondCount">
+              · WHERE <span class="font-semibold text-rose-500">{{ whereCondCount }}</span>
+            </span>
           </p>
           <p v-else-if="nodeType === 'calc'" class="text-[10px] text-muted-foreground">
             <span class="font-semibold text-teal-500">{{ calcItemCount }}</span> calculated columns
             <span v-if="calcFilterCount"> + <span class="font-semibold text-rose-500">{{ calcFilterCount }}</span> filters</span>
+            <span v-if="whereCondCount"> · WHERE <span class="font-semibold text-rose-500">{{ whereCondCount }}</span></span>
           </p>
           <p v-else-if="nodeType === 'where'" class="text-[10px] text-muted-foreground">
             WHERE <span class="font-semibold text-rose-500">{{ whereCondCount }}</span> conditions

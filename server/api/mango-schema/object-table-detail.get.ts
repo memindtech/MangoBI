@@ -21,7 +21,7 @@ export default defineEventHandler(async (event): Promise<unknown> => {
   try {
     const mango = createMangoFetcher(event)
     const res   = await mango<any>(
-      `AnywhereAPI/Master/Addspec_Object_table_detail_Read?table_name=${encodeURIComponent(table)}`
+      `AnywhereAPI/SQLGenerator/Schema_Object_Table_Detail_Read?table_name=${encodeURIComponent(table)}`
     )
     await writeCache(cacheKey, res, CACHE_TTL.detail)
     setHeader(event, 'X-Cache', 'miss')
