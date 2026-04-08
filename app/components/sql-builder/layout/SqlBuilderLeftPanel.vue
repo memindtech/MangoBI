@@ -2,7 +2,7 @@
 /**
  * SQL Builder — Left Panel (Table Browser)
  */
-import { Database, Search, RefreshCw, X, ChevronRight } from 'lucide-vue-next'
+import { Database, Search, RefreshCw, X, ChevronRight, AlertTriangle, WifiOff } from 'lucide-vue-next'
 import { useSqlBuilderStore } from '~/stores/sql-builder'
 import { useErpData } from '~/composables/sql-builder/useErpData'
 
@@ -26,14 +26,83 @@ function isExpanded(mod: string) {
   // When searching — always show objects
   return isSearching.value || store.expandedMods.has(mod)
 }
+
+// ── Sync status helpers ──────────────────────────────────────────────
+const syncLabel = computed(() => {
+  switch (store.syncStatus) {
+    case 'syncing': return 'กำลัง sync…'
+    case 'ok':      return syncAge.value
+    case 'stale':   return `cache เก่า · ${syncAge.value}`
+    case 'error':   return 'เชื่อมต่อ Mango ไม่ได้'
+    default:        return ''
+  }
+})
+
+const syncAge = computed(() => {
+  if (!store.syncLastAt) return ''
+  const diffMs  = Date.now() - store.syncLastAt.getTime()
+  const diffMin = Math.floor(diffMs / 60000)
+  if (diffMin < 1)  return 'เมื่อกี้'
+  if (diffMin < 60) return `${diffMin} นาทีที่แล้ว`
+  const h = Math.floor(diffMin / 60)
+  return `${h} ชั่วโมงที่แล้ว`
+})
+
+const syncDotClass = computed(() => ({
+  'idle':    'bg-muted-foreground/30',
+  'syncing': 'bg-sky-400 animate-pulse',
+  'ok':      'bg-green-400',
+  'stale':   'bg-amber-400',
+  'error':   'bg-red-500',
+}[store.syncStatus] ?? 'bg-muted-foreground/30'))
+
+const syncTooltip = computed(() => ({
+  'idle':    '',
+  'syncing': 'กำลังดึงข้อมูลจาก Mango…',
+  'ok':      'ข้อมูล structure สด จาก Mango API',
+  'stale':   'Mango API ตอบไม่ได้ — ใช้ข้อมูล cache ครั้งล่าสุด',
+  'error':   'ไม่สามารถเชื่อมต่อ Mango ได้ และไม่มี cache',
+}[store.syncStatus] ?? ''))
 </script>
 
 <template>
   <aside aria-label="Database Tables" class="w-56 border-r bg-background flex flex-col overflow-hidden shrink-0">
 
-    <!-- Search -->
+    <!-- Header + Sync Status -->
     <div class="px-3 py-2 border-b shrink-0">
-      <p class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-1.5">Database Tables</p>
+      <div class="flex items-center justify-between mb-1.5">
+        <p class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Database Tables</p>
+
+        <!-- Sync status bar -->
+        <div v-if="store.syncStatus !== 'idle'" class="flex items-center gap-1.5 min-w-0">
+          <!-- dot indicator -->
+          <span :class="['size-1.5 rounded-full shrink-0', syncDotClass]" />
+
+          <!-- label -->
+          <span
+            :title="syncTooltip"
+            :class="['text-[10px] truncate max-w-[100px]', {
+              'text-muted-foreground':  store.syncStatus === 'ok' || store.syncStatus === 'syncing',
+              'text-amber-500':         store.syncStatus === 'stale',
+              'text-red-500':           store.syncStatus === 'error',
+            }]"
+          >
+            {{ syncLabel }}
+          </span>
+
+          <!-- manual sync button -->
+          <button
+            @click="erpData.syncNow()"
+            :disabled="store.syncStatus === 'syncing'"
+            title="Sync ข้อมูลจาก Mango ใหม่"
+            class="shrink-0 text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            <RefreshCw :class="['size-3', store.syncStatus === 'syncing' && 'animate-spin']" />
+          </button>
+        </div>
+      </div>
+
+      <!-- Search -->
       <div class="relative">
         <Search class="absolute left-2 top-1/2 -translate-y-1/2 size-3 text-muted-foreground" />
         <input
@@ -97,8 +166,13 @@ function isExpanded(mod: string) {
               :key="obj.object_name"
               draggable="true"
               @dragstart="onDragStart($event, obj)"
+<<<<<<< Updated upstream
               :title="obj.remark ? `${obj.object_name}\n${obj.remark}` : obj.object_name"
               class="flex items-center gap-1.5 px-3 py-1.5 text-[11px] cursor-grab hover:bg-accent transition-colors active:cursor-grabbing"
+=======
+              :title="`[${obj.menu_id ?? '-'}] ${obj.menu_name || obj.object_name}\n${obj.remark ?? ''}`"
+              class="flex flex-col px-3 py-1.5 cursor-grab hover:bg-accent transition-colors active:cursor-grabbing border-b border-border/20 last:border-0"
+>>>>>>> Stashed changes
             >
               <span :class="['text-[9px] px-1 py-0.5 rounded font-semibold font-mono shrink-0', erpData.objectTypeColor(obj.object_type)]">
                 {{ obj.object_type }}

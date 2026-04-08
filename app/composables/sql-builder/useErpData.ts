@@ -1,20 +1,26 @@
 /**
  * SQL Builder — ERP Data Loading
- * Loads modules, objects, and table schemas from ADDSPEC APIs
- * Based on ChartDB: useChartDBData.js
+ *
+ * เปลี่ยนจากเรียก Mango API โดยตรงจาก browser
+ * → เรียกผ่าน Nuxt server proxy /api/mango-schema/*
+ *
+ * ข้อดี:
+ *   - Browser คุยกับ MangoBI เท่านั้น (same-origin)
+ *   - Firewall config ที่ server level เท่านั้น
+ *   - Cache fallback ถ้า Mango ไม่ตอบ
  */
 import type { ColumnInfo, ErpObject } from '~/types/sql-builder'
 import { useSqlBuilderStore } from '~/stores/sql-builder'
 
 export function useErpData() {
-  const { $xt } = useNuxtApp() as any
   const store = useSqlBuilderStore()
 
   // ── Load module list then immediately load all objects ───────────────
   async function loadModules() {
-    store.loadingMods = true
+    store.loadingMods  = true
+    store.syncStatus   = 'syncing'
     try {
-      const res: any = await $xt.getServer('AnywhereAPI/Master/Addspec_Module_ReadList')
+      const res: any = await $fetch('/api/mango-schema/modules')
       const seen = new Set<string>()
       store.modules = (res?.data ?? [])
         .map((m: any) => m.module)
@@ -23,8 +29,11 @@ export function useErpData() {
           seen.add(m)
           return true
         })
+      store.syncStatus  = 'ok'
+      store.syncLastAt  = new Date()
     } catch {
-      store.modules = []
+      store.modules    = []
+      store.syncStatus = 'error'
     } finally {
       store.loadingMods = false
     }
@@ -45,9 +54,7 @@ export function useErpData() {
     if (!store.objects[mod] && !store.loadingObjs[mod]) {
       store.loadingObjs = { ...store.loadingObjs, [mod]: true }
       try {
-        const res: any = await $xt.getServer(
-          `AnywhereAPI/Master/Addspec_Object_ReadList?module=${mod}&text=`
-        )
+        const res: any = await $fetch(`/api/mango-schema/objects?module=${encodeURIComponent(mod)}`)
         store.objects = { ...store.objects, [mod]: res?.data ?? [] }
       } catch {
         store.objects = { ...store.objects, [mod]: [] }
@@ -62,9 +69,7 @@ export function useErpData() {
     if (cached) return cached
 
     try {
-      const res: any = await $xt.getServer(
-        `AnywhereAPI/Master/Addspec_Table_Read?table_name=${tableName}`
-      )
+      const res: any = await $fetch(`/api/mango-schema/table-columns?table=${encodeURIComponent(tableName)}`)
       const detail = res?.data?.detail ?? res?.detail ?? []
       const cols: ColumnInfo[] = detail.map((d: any) => ({
         column_name: d.COLUMN_NAME ?? d.column_name ?? '',
@@ -85,9 +90,7 @@ export function useErpData() {
   // ── Load ADDSPEC column metadata (step 2 of onRead) ──────────────────
   async function loadObjectTableDetail(tableName: string): Promise<ColumnInfo[]> {
     try {
-      const res: any = await $xt.getServer(
-        `AnywhereAPI/Master/Addspec_Object_table_detail_Read?table_name=${tableName}`
-      )
+      const res: any = await $fetch(`/api/mango-schema/object-table-detail?table=${encodeURIComponent(tableName)}`)
       const rows = res?.data ?? res ?? []
       if (!Array.isArray(rows)) return []
       return rows.map((d: any) => ({
@@ -109,7 +112,6 @@ export function useErpData() {
       loadObjectTableDetail(tableName),
     ])
     if (!addspecCols.length) return dbCols
-    // DB is authoritative for type + pk; ADDSPEC fills in remark when DB has none
     return dbCols.map(dbCol => {
       const ac = addspecCols.find(a => a.column_name === dbCol.column_name)
       return { ...dbCol, remark: dbCol.remark || ac?.remark || '' }
@@ -119,10 +121,9 @@ export function useErpData() {
   // ── Load object header + related tables ───────────────────────────────
   async function loadObjectDetail(objectName: string, module = 'Master') {
     try {
-      const res: any = await $xt.getServer(
-        `AnywhereAPI/Master/Addspec_Object_Read?module=${encodeURIComponent(module)}&object_name=${encodeURIComponent(objectName)}`
+      const res: any = await $fetch(
+        `/api/mango-schema/object-detail?module=${encodeURIComponent(module)}&object_name=${encodeURIComponent(objectName)}`
       )
-      // Support both { data: { header, object_table } } and { header, object_table } directly
       const body = (res?.data && !Array.isArray(res.data) && typeof res.data === 'object')
         ? res.data
         : (res && !Array.isArray(res) && typeof res === 'object' ? res : {})
@@ -151,9 +152,7 @@ export function useErpData() {
       await Promise.all(unloaded.map(async (mod: string) => {
         store.loadingObjs = { ...store.loadingObjs, [mod]: true }
         try {
-          const res: any = await $xt.getServer(
-            `AnywhereAPI/Master/Addspec_Object_ReadList?module=${mod}&text=`
-          )
+          const res: any = await $fetch(`/api/mango-schema/objects?module=${encodeURIComponent(mod)}`)
           store.objects = { ...store.objects, [mod]: res?.data ?? [] }
         } catch {
           store.objects = { ...store.objects, [mod]: [] }
@@ -165,13 +164,38 @@ export function useErpData() {
     }
   }
 
+  // ── Manual sync (cache bust + re-fetch) ──────────────────────────────
+  async function syncNow() {
+    store.syncStatus = 'syncing'
+    try {
+      const res: any = await $fetch('/api/mango-schema/sync', { method: 'POST' })
+      // รีเซ็ต objects cache ใน store เพื่อ force re-load จาก server
+      store.objects   = {}
+      store.modules   = []
+      store.columnCache = {}
+      store.syncLastAt = new Date(res.syncedAt)
+      await loadModules()
+      store.syncStatus = res.mangoReachable ? 'ok' : 'stale'
+    } catch {
+      store.syncStatus = 'error'
+    }
+  }
+
   // ── Match helper (searches object_name + remark/display name) ─────────
   function matchesQuery(o: any, q: string): boolean {
     if (!q) return true
+<<<<<<< Updated upstream
     const name   = (o.object_name ?? '').toLowerCase()
     const remark = (o.remark ?? '').toLowerCase()
     const ttype  = (o.t_object_name ?? '').toLowerCase()
     return name.includes(q) || remark.includes(q) || ttype.includes(q)
+=======
+    const name     = (o.object_name ?? '').toLowerCase()
+    const remark   = (o.remark ?? '').toLowerCase()
+    const menuId   = String(o.menu_id ?? '').toLowerCase()
+    const menuName = (o.menu_name ?? '').toLowerCase()
+    return name.includes(q) || remark.includes(q) || menuId.includes(q) || menuName.includes(q)
+>>>>>>> Stashed changes
   }
 
   // ── Filtered modules (search-aware) ───────────────────────────────────
@@ -208,7 +232,7 @@ export function useErpData() {
   }
 
   return {
-    loadModules, toggleModule, loadAllObjects,
+    loadModules, toggleModule, loadAllObjects, syncNow,
     loadTableColumns, loadTableColumnsEnriched, loadObjectDetail,
     filteredModules, filteredObjects, objDisplayName, objectTypeColor,
   }

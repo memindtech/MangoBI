@@ -43,6 +43,15 @@ export const useSqlBuilderStore = defineStore('sql-builder', () => {
   const loadingObjs    = ref<Record<string, boolean>>({})
   const searchLoading  = ref(false)
 
+  // ── Mango Schema Sync Status ─────────────────────────────────────────────
+  // idle     = ยังไม่เริ่ม
+  // syncing  = กำลัง fetch จาก Mango
+  // ok       = fetch สำเร็จ ข้อมูลสด
+  // stale    = ใช้ cache เก่า (Mango ไม่ตอบ)
+  // error    = ไม่มี cache + Mango ไม่ตอบ
+  const syncStatus     = ref<'idle' | 'syncing' | 'ok' | 'stale' | 'error'>('idle')
+  const syncLastAt     = ref<Date | null>(null)
+
   // ── Column Cache (table_name → columns) ─────────────────────────────────
   const columnCache    = ref<Record<string, ColumnInfo[]>>({})
 
@@ -264,6 +273,7 @@ export const useSqlBuilderStore = defineStore('sql-builder', () => {
     nodes, edges, generatedSQL, sqlPanelOpen, activeEdgeId, selectedNodeId, selectedNodeIds,
     modalNodeId, filterNodeId, relationEdgeId, search, clipboard, groupModalData,
     modules, objects, expandedMods, loadingMods, loadingObjs, searchLoading,
+    syncStatus, syncLastAt,
     columnCache, history, historyIndex, isUndoing, MAX_HISTORY, nodeCounter,
 
     // Getters

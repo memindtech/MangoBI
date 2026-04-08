@@ -15,10 +15,21 @@ export default defineNuxtConfig({
   },
 
   runtimeConfig: {
+    // Server-only — ไม่ expose ไป browser
+    // ค่าจริงอยู่ใน .env → NUXT_MANGO_BASE / NUXT_MANGO_SCHEMA_PASSCODE
+    mangoBase: '',
+    mangoSchemaPasscode: '',
     public: {
-      apiBase:      'http://localhost/service/',        // Main service (auth, public)
-      planningBase: 'http://localhost:8310/api/v1/',   // Planning Service (dev)
+      // ค่าจริงอยู่ใน .env → NUXT_PUBLIC_API_BASE / NUXT_PUBLIC_PLANNING_BASE
+      apiBase:      '',
+      planningBase: '',
     }
+  },
+
+  nitro: {
+    storage: {
+      'mango-schema': { driver: 'memory' },
+    },
   },
 
   devtools: { enabled: true },
