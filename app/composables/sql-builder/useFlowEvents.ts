@@ -104,6 +104,22 @@ export function useFlowEvents() {
     if (nodes.length === 1) store.selectedNodeId = nodes[0]!.id
   }
 
+  // ── Node double-click → open the relevant modal ───────────────────────
+  function onNodeDblClick(event: any) {
+    const node = event.node ?? event
+    if (!node?.id) return
+
+    // Ignore dblclick originating from interactive elements inside the node
+    const target = (event.event ?? event)?.target as HTMLElement | undefined
+    if (target?.closest('button, input, select, textarea, a')) return
+
+    if (node.type === 'sqlTable') {
+      store.filterNodeId = node.id        // WHERE filter modal for table nodes
+    } else if (node.type === 'toolNode' || node.type === 'cteFrame') {
+      store.modalNodeId = node.id         // tool config modal
+    }
+  }
+
   // ── Pane click → deselect ─────────────────────────────────────────────
   function onPaneClick() {
     store.selectedNodeId  = null
@@ -134,7 +150,7 @@ export function useFlowEvents() {
   }
 
   return {
-    onConnect, onEdgeClick, onNodeClick, onPaneClick, onSelectionChange,
+    onConnect, onEdgeClick, onNodeClick, onNodeDblClick, onPaneClick, onSelectionChange,
     setJoinType, removeNode, sendToDataModel, resetCanvas, getCols,
   }
 }

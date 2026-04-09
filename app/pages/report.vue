@@ -1889,6 +1889,7 @@ async function doDeleteRp(id: string) {
                 <div
                   v-for="item in rpLoadList" :key="item.id"
                   class="flex items-center gap-2 px-3 py-2.5 rounded-lg border hover:bg-accent cursor-pointer transition-colors"
+                  @mouseenter="biApi.prefetchReport(item.id)"
                   @click="doLoadRp(item.id)"
                 >
                   <div class="flex-1 min-w-0">

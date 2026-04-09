@@ -8,18 +8,25 @@ import '@vue-flow/controls/dist/style.css'
 import { VueFlow, useVueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
-import { Code2 } from 'lucide-vue-next'
+import { Code2, Layers } from 'lucide-vue-next'
 import { useSqlBuilderStore } from '~/stores/sql-builder'
 import { useFlowEvents } from '~/composables/sql-builder/useFlowEvents'
+import { useHistory } from '~/composables/sql-builder/useHistory'
 
 const store = useSqlBuilderStore()
 const flowEvents = useFlowEvents()
-const { updateNodeInternals } = useVueFlow('sql-builder')
+const history = useHistory()
+const { updateNodeInternals, onNodeDoubleClick } = useVueFlow('sql-builder')
+
+// Register via VueFlow's internal hook system (not template @event) so VueFlow
+// actually wires up the DOM dblclick listener on node elements.
+onNodeDoubleClick(flowEvents.onNodeDblClick)
 
 // Delay VueFlow mount until layout (SidebarProvider etc.) has fully settled.
 // On first page load the sidebar transition hasn't finished, so VueFlow would
 // measure a wrong container size. double-rAF = "after browser layout + paint".
-const flowReady = ref(false)
+const flowReady   = ref(false)
+const showLayers  = ref(false)
 
 const emit = defineEmits<{
   drop: [e: DragEvent]
@@ -29,8 +36,10 @@ function onDrop(e: DragEvent) {
   emit('drop', e)
 }
 
-// ── Node drag stop: no-op — cteFrame uses bounds check, no parentNode ─────
-function onNodeDragStop(_: any) {}
+// ── Node drag stop: record position change in history ─────────────────────
+function onNodeDragStop(_: any) {
+  history.recordHistory()
+}
 
 function onPaneReady() {
   // Give node ResizeObservers ~100ms to measure dimensions, then re-position handles
@@ -67,6 +76,23 @@ onMounted(() => {
   <div class="flex-1 flex flex-col overflow-hidden" style="min-width:0">
     <!-- Canvas area -->
     <div class="flex-1 relative sql-builder-canvas-wrap" @dragover.prevent @drop="onDrop">
+
+      <!-- Layers toggle button -->
+      <button
+        @click="showLayers = !showLayers"
+        :class="[
+          'absolute top-3 right-3 z-20 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-all shadow-sm',
+          showLayers
+            ? 'bg-sky-500 text-white border-sky-500 shadow-sky-500/30'
+            : 'bg-background text-muted-foreground border-border hover:border-sky-400/50 hover:text-sky-500',
+        ]"
+      >
+        <Layers class="size-3.5" />
+        Layers
+      </button>
+
+      <!-- Layers panel -->
+      <SqlBuilderLayoutSqlBuilderLayersPanel v-model:show="showLayers" />
       <VueFlow
         v-if="flowReady"
         id="sql-builder"
