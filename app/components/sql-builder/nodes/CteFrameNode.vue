@@ -94,12 +94,12 @@ function toggleOpen() {
   <!-- ── EXPANDED frame ────────────────────────────────────────────────── -->
   <div
     v-if="isOpen"
-    class="w-full h-full rounded-2xl border-2 transition-colors"
+    class="w-full h-full rounded-2xl border-2 transition-colors pointer-events-none"
     :class="selected ? 'border-violet-500 bg-violet-500/8' : 'border-violet-500/40 bg-violet-500/5'"
     style="backdrop-filter: blur(2px)"
   >
     <!-- Title bar -->
-    <div class="flex items-center gap-2 px-3 py-2 border-b border-violet-500/20 rounded-t-2xl select-none">
+    <div class="flex items-center gap-2 px-3 py-2 border-b border-violet-500/20 rounded-t-2xl select-none pointer-events-auto">
       <!-- Collapse toggle -->
       <button @click.stop="toggleOpen"
         class="size-5 flex items-center justify-center rounded hover:bg-violet-500/20 text-violet-400 transition-colors shrink-0"

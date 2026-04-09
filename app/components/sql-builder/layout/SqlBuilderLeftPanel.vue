@@ -167,10 +167,16 @@ const syncTooltip = computed(() => ({
                 {{ obj.object_type }}
               </span>
               <!-- name + object_name -->
-              <div class="flex flex-col min-w-0 gap-0.5">
-                <span class="truncate text-xs font-medium leading-snug">
-                  {{ obj.menu_name || erpData.objDisplayName(obj) }}
-                </span>
+              <div class="flex flex-col min-w-0 gap-0.5 flex-1">
+                <div class="flex items-center gap-1.5 min-w-0">
+                  <span v-if="obj.menu_id != null"
+                    class="text-[9px] px-1.5 py-0 rounded-md bg-sky-500/15 text-sky-500 font-mono font-bold shrink-0 leading-4">
+                    {{ obj.menu_id }}
+                  </span>
+                  <span class="truncate text-xs font-medium leading-snug">
+                    {{ obj.menu_name || erpData.objDisplayName(obj) }}
+                  </span>
+                </div>
                 <span class="truncate text-[10px] text-muted-foreground/60 font-mono leading-tight">
                   {{ obj.object_name }}
                 </span>
