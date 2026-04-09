@@ -340,9 +340,9 @@ export function useSqlGenerator() {
     }
 
     // ── Step 3: assemble ───────────────────────────────────────────────
-    const withBlock  = ctes.map(c => `  ${c.name} AS (\n${indent(c.sql)}\n  )`).join(',\n')
+    const withBlock  = ctes.map(c => `  ${c.name} AS (\n${indent(c.sql)}\n  )`).join(',\n\n')
     const orderClause = sortOrder ? `\nORDER BY ${sortOrder}` : ''
-    return `WITH\n${withBlock}\nSELECT * FROM ${lastCTE}${orderClause}`
+    return `WITH\n${withBlock}\n\nSELECT\n  *\nFROM ${lastCTE}${orderClause}`
   }
 
   // ── Direct SQL (no tool nodes) ────────────────────────────────────────
@@ -512,17 +512,41 @@ export function useSqlGenerator() {
 
   // ── Named CTE tool block ──────────────────────────────────────────────
   function buildCteToolBlock(node: Node, upstream: string): string {
-    const selectedCols = (node.data.selectedCols ?? []) as string[]
-    const conditions   = (node.data.conditions  ?? []).filter((c: any) => c.column && c.operator)
+    const rawCols    = (node.data.selectedCols ?? []) as string[]
+    const conditions = (node.data.conditions  ?? []).filter((c: any) => c.column && c.operator)
 
-    const selectPart = selectedCols.length
-      ? selectedCols.map(c => `  ${c}`).join(',\n')
-      : '  *'
+    // selectedCols may be "tableName.colName" (from CTE frame picker) — strip prefix
+    // when referencing the upstream CTE (which already resolved the real column names).
+    // Also build the output column name: if there was a dot (qualified), keep original col name
+    // unless it's a duplicate, then use the stored alias from the frame's auto-aliasing.
+    const selectParts: string[] = []
+    if (rawCols.length) {
+      const usedAliases = new Set<string>()
+      for (const raw of rawCols) {
+        const dotIdx = raw.indexOf('.')
+        if (dotIdx > -1) {
+          // qualified: "tableName.colName" → in CTE context, just "colName" (frame already aliased dups)
+          const colName = raw.slice(dotIdx + 1)
+          selectParts.push(`  ${colName}`)
+          usedAliases.add(colName)
+        } else {
+          selectParts.push(`  ${raw}`)
+          usedAliases.add(raw)
+        }
+      }
+    }
 
+    const selectPart = selectParts.length ? selectParts.join(',\n') : '  *'
     let sql = `SELECT\n${selectPart}\nFROM ${upstream}`
 
     if (conditions.length) {
-      sql += `\nWHERE ${conditions.map(formatCondClause).join('\n  AND ')}`
+      // Strip table prefix from condition columns too — we're querying an upstream CTE
+      const normConds = conditions.map((c: any) => {
+        const col = String(c.column ?? '')
+        const normCol = col.includes('.') ? col.slice(col.indexOf('.') + 1) : col
+        return { ...c, column: normCol }
+      })
+      sql += `\nWHERE ${normConds.map(formatCondClause).join('\n  AND ')}`
     }
 
     return sql
@@ -532,10 +556,42 @@ export function useSqlGenerator() {
   function buildCteFrameBlock(frame: Node, childTables: Node[], childEdges: Edge[]): string {
     if (!childTables.length) return 'SELECT NULL AS _empty_frame -- ไม่มี Table ในกรอบ CTE นี้'
 
-    // Build column → table alias map for qualifying selected cols
-    function buildColTableMap(tables: Node[]): Map<string, string> {
+    // ── Build BFS-ordered node list starting from header ─────────────────
+    const nodeIds  = new Set(childTables.map(n => n.id))
+    const hasIncoming = new Set(
+      childEdges.filter(e => nodeIds.has(e.source) && nodeIds.has(e.target)).map(e => e.target)
+    )
+    const header = childTables.find(n => n.data?.isHeaderNode)
+      ?? childTables.find(n => !hasIncoming.has(n.id))
+      ?? childTables[0]!
+
+    const adjBfs = new Map<string, string[]>()
+    for (const n of childTables) adjBfs.set(n.id, [])
+    for (const e of childEdges) {
+      if (nodeIds.has(e.source) && nodeIds.has(e.target))
+        adjBfs.get(e.source)?.push(e.target)
+    }
+    const visitedBfs = new Set<string>([header.id])
+    const qBfs = [header.id]
+    const orderedNodes: Node[] = [header]
+    while (qBfs.length) {
+      const cur = qBfs.shift()!
+      for (const tgtId of (adjBfs.get(cur) ?? [])) {
+        if (!visitedBfs.has(tgtId)) {
+          visitedBfs.add(tgtId)
+          qBfs.push(tgtId)
+          const n = childTables.find(x => x.id === tgtId)
+          if (n) orderedNodes.push(n)
+        }
+      }
+    }
+    for (const n of childTables) if (!visitedBfs.has(n.id)) orderedNodes.push(n)
+
+    // ── Build col → table map in header-first BFS order ───────────────────
+    // Maps raw column name to the FIRST (header-priority) table that has it.
+    function buildColTableMap(): Map<string, string> {
       const map = new Map<string, string>()
-      for (const tn of tables) {
+      for (const tn of orderedNodes) {
         const tbl     = alias(tn)
         const details = (tn.data.details ?? []) as any[]
         const visible = (tn.data.visibleCols ?? []) as any[]
@@ -549,27 +605,37 @@ export function useSqlGenerator() {
       return map
     }
 
-    // Build the JOIN part (reuse buildJoinBlock)
+    // Build the JOIN SQL
     let sql = buildJoinBlock(childTables, childEdges)
 
-    // Apply selectedCols override — qualify each col with table prefix to avoid ambiguity
+    // ── Apply selectedCols override ───────────────────────────────────────
+    // selectedCols may be stored as "tableName.colName" (qualified) or plain "colName" (legacy).
     const selectedCols = ((frame.data as any).selectedCols ?? []) as string[]
     if (selectedCols.length) {
-      const colTableMap = buildColTableMap(childTables)
+      const colTableMap = buildColTableMap()
       const qualifiedCols = selectedCols.map(c => {
+        if (c.includes('.')) {
+          // Already qualified — use as-is: "table.col" → "  table.col"
+          return `  ${c}`
+        }
         const tbl = colTableMap.get(c)
         return tbl ? `  ${tbl}.${c}` : `  ${c}`
       })
-      sql = sql.replace(/^SELECT\n[\s\S]*?\nFROM/, `SELECT\n${qualifiedCols.join(',\n')}\nFROM`)
+      // Replace SELECT … FROM with the user-chosen columns
+      sql = sql.replace(/^SELECT\n[\s\S]*?\nFROM /, `SELECT\n${qualifiedCols.join(',\n')}\nFROM `)
     }
 
-    // Append WHERE conditions — qualify column with table alias to avoid ambiguity
+    // ── Append WHERE conditions (qualify column names) ────────────────────
     const conditions = ((frame.data as any).conditions ?? []).filter((c: any) => c.column && c.operator)
     if (conditions.length) {
-      const colTableMap2 = buildColTableMap(childTables)
+      const colTableMap = buildColTableMap()
       const whereClauses = conditions.map((c: any) => {
-        const tbl = colTableMap2.get(c.column)
-        return formatCondClause({ ...c, column: tbl ? `${tbl}.${c.column}` : c.column })
+        let col = c.column as string
+        if (!col.includes('.')) {
+          const tbl = colTableMap.get(col)
+          if (tbl) col = `${tbl}.${col}`
+        }
+        return formatCondClause({ ...c, column: col })
       })
       if (sql.includes('\nWHERE ')) {
         sql += `\n  AND ${whereClauses.join('\n  AND ')}`

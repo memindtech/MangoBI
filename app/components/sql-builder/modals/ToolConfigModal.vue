@@ -161,14 +161,14 @@ const cteAvailableCols = computed((): VisibleCol[] => {
 })
 
 // ── CTE: column search ────────────────────────────────────────────────────
-const cteColSearch     = ref('')
-const selectedCteGroup = ref<string | null>(null)
+const cteColSearch = ref('')
 
 // ── CTE: grouped cols by source table (for hierarchical picker) ───────────
 interface CteColGroup {
   sourceId:    string
-  sourceLabel: string   // table name
-  cteLabel?:   string   // upstream CTE/tool label if any
+  sourceLabel: string   // table name (used as qualifier in SQL)
+  isHeader:    boolean  // true if this table has isHeaderNode = true
+  cteLabel?:   string
   cols:        VisibleCol[]
 }
 
@@ -219,8 +219,11 @@ const cteGroupedCols = computed((): CteColGroup[] => {
     }
   }
 
-  // Show ONLY nodes inside this CTE frame — no fallback to all canvas tables
-  for (const node of cteChildTableNodes.value) {
+  // Show ONLY nodes inside this CTE frame — header table first
+  const nodes = [...cteChildTableNodes.value]
+  // Sort: isHeaderNode first
+  nodes.sort((a, b) => (b.data?.isHeaderNode ? 1 : 0) - (a.data?.isHeaderNode ? 1 : 0))
+  for (const node of nodes) {
     if (visited.has(node.id as string)) continue
     visited.add(node.id as string)
     const cols = getTableCols(node)
@@ -228,6 +231,7 @@ const cteGroupedCols = computed((): CteColGroup[] => {
       groups.push({
         sourceId:    node.id as string,
         sourceLabel: (node.data.tableName || node.data.label || node.id) as string,
+        isHeader:    !!(node.data?.isHeaderNode),
         cols,
       })
     }
@@ -246,6 +250,7 @@ const cteFilteredGroups = computed((): CteColGroup[] => {
 })
 
 // ── CTE: active group selection (after cteGroupedCols is declared) ────────
+const selectedCteGroup = ref<string | null>(null)
 watch(() => store.modalNodeId, () => { selectedCteGroup.value = null })
 watch(cteGroupedCols, (groups) => {
   if (!selectedCteGroup.value && groups.length) {
@@ -265,15 +270,38 @@ const filteredActiveCols = computed(() => {
     : activeCteGroup.value.cols
 })
 
+// ── CTE: qualified key for a col in a group ("tableName.colName") ─────────
+function cteQualKey(group: CteColGroup, colName: string): string {
+  return `${group.sourceLabel}.${colName}`
+}
+function isCteColSelected(group: CteColGroup, colName: string): boolean {
+  const sel = (store.modalNode?.data?.selectedCols ?? []) as string[]
+  return sel.includes(cteQualKey(group, colName))
+}
+function toggleCteQualCol(group: CteColGroup, colName: string) {
+  const qKey = cteQualKey(group, colName)
+  const sel = [...(store.modalNode?.data?.selectedCols ?? [])] as string[]
+  const wasSelected = sel.includes(qKey)
+  // Remove only the exact qualified key (or legacy plain name for this group's col)
+  const filtered = sel.filter(s => s !== qKey)
+  if (!wasSelected) filtered.push(qKey)
+  tn.setModalData({ selectedCols: filtered })
+}
 // ── CTE: select / clear all cols from a specific group ───────────────────
 function selectAllFromCteGroup(group: CteColGroup) {
-  const current = new Set((store.modalNode?.data?.selectedCols ?? []) as string[])
-  group.cols.forEach(c => current.add(c.name))
-  tn.setModalData({ selectedCols: [...current] })
+  const qKeys = group.cols.map(c => cteQualKey(group, c.name))
+  const current = (store.modalNode?.data?.selectedCols ?? []) as string[]
+  // Remove any old plain-name entries for these cols, then add qualified
+  const prefix = `${group.sourceLabel}.`
+  const filtered = current.filter(s => !qKeys.includes(s) && !group.cols.some(c => s === c.name) && !s.startsWith(prefix))
+  tn.setModalData({ selectedCols: [...filtered, ...qKeys] })
 }
 function clearAllFromCteGroup(group: CteColGroup) {
-  const toRemove = new Set(group.cols.map(c => c.name))
-  const current  = ((store.modalNode?.data?.selectedCols ?? []) as string[]).filter(n => !toRemove.has(n))
+  const prefix = `${group.sourceLabel}.`
+  const plainNames = new Set(group.cols.map(c => c.name))
+  const current = ((store.modalNode?.data?.selectedCols ?? []) as string[]).filter(
+    s => !s.startsWith(prefix) && !plainNames.has(s)
+  )
   tn.setModalData({ selectedCols: current })
 }
 
@@ -1313,7 +1341,7 @@ const finishBtnStyle = computed(() => {
                   </span>
                 </label>
                 <div class="flex gap-1">
-                  <button @click="tn.selectAllCteCols(cteAvailableCols.map(c => c.name))"
+                  <button @click="cteGroupedCols.forEach(g => selectAllFromCteGroup(g))"
                     class="text-[10px] px-2.5 py-1 rounded-lg border border-violet-500/30 text-violet-400 hover:bg-violet-500/10 transition-colors font-medium">ทั้งหมด</button>
                   <button @click="tn.clearCteCols()"
                     class="text-[10px] px-2.5 py-1 rounded-lg border border-border text-muted-foreground hover:bg-accent transition-colors">ล้าง</button>
@@ -1340,17 +1368,21 @@ const finishBtnStyle = computed(() => {
                         : 'hover:bg-accent/50 border-l-2 border-l-transparent',
                     ]"
                   >
-                    <span class="font-mono text-[10px] font-semibold truncate w-full"
-                      :class="selectedCteGroup === group.sourceId ? 'text-violet-300' : 'text-foreground/80'">
-                      {{ group.sourceLabel }}
-                    </span>
+                    <div class="flex items-center gap-1 w-full min-w-0">
+                      <span v-if="group.isHeader"
+                        class="text-[8px] px-1 py-0 rounded bg-emerald-500/20 text-emerald-500 font-bold font-mono shrink-0">H</span>
+                      <span class="font-mono text-[10px] font-semibold truncate flex-1"
+                        :class="selectedCteGroup === group.sourceId ? 'text-violet-300' : 'text-foreground/80'">
+                        {{ group.sourceLabel }}
+                      </span>
+                    </div>
                     <div class="flex items-center gap-1.5 w-full">
                       <span class="text-[8px] text-muted-foreground/60">
                         {{ group.cols.length }} cols
                       </span>
-                      <span v-if="(store.modalNode?.data?.selectedCols ?? []).filter((s: string) => group.cols.some(c => c.name === s)).length"
+                      <span v-if="group.cols.filter(c => isCteColSelected(group, c.name)).length"
                         class="text-[8px] px-1 py-0 rounded bg-violet-500/20 text-violet-400 font-bold font-mono">
-                        ✓{{ (store.modalNode?.data?.selectedCols ?? []).filter((s: string) => group.cols.some(c => c.name === s)).length }}
+                        ✓{{ group.cols.filter(c => isCteColSelected(group, c.name)).length }}
                       </span>
                     </div>
                   </button>
@@ -1360,7 +1392,9 @@ const finishBtnStyle = computed(() => {
                 <div class="flex-1 flex flex-col min-w-0 min-h-0">
                   <!-- Table header bar -->
                   <div v-if="activeCteGroup" class="flex items-center gap-2 px-3 py-2 bg-violet-500/8 border-b border-violet-500/15 shrink-0">
-                    <span class="text-[8px] font-bold px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-400 font-mono">TABLE</span>
+                    <span v-if="activeCteGroup.isHeader"
+                      class="text-[8px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-500 font-mono">H</span>
+                    <span v-else class="text-[8px] font-bold px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-400 font-mono">TABLE</span>
                     <span class="font-mono text-[11px] font-semibold text-foreground/90 flex-1 truncate">{{ activeCteGroup.sourceLabel }}</span>
                     <button @click="selectAllFromCteGroup(activeCteGroup)"
                       class="text-[9px] text-violet-400 hover:underline shrink-0 font-medium">ทั้งหมด</button>
@@ -1390,10 +1424,10 @@ const finishBtnStyle = computed(() => {
                     </p>
                     <button
                       v-for="c in filteredActiveCols" :key="c.name"
-                      @click="tn.toggleCteCol(c.name)"
+                      @click="activeCteGroup && toggleCteQualCol(activeCteGroup, c.name)"
                       :class="[
                         'w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors border-b border-border/15 last:border-b-0',
-                        (store.modalNode?.data?.selectedCols ?? []).includes(c.name)
+                        activeCteGroup && isCteColSelected(activeCteGroup, c.name)
                           ? 'bg-violet-500/10 hover:bg-violet-500/15'
                           : 'hover:bg-accent/40',
                       ]"
@@ -1401,11 +1435,11 @@ const finishBtnStyle = computed(() => {
                       <!-- Checkbox -->
                       <div :class="[
                         'size-3.5 rounded border-2 flex items-center justify-center shrink-0 transition-colors',
-                        (store.modalNode?.data?.selectedCols ?? []).includes(c.name)
+                        activeCteGroup && isCteColSelected(activeCteGroup, c.name)
                           ? 'bg-violet-500 border-violet-500'
                           : 'border-border/60 bg-background',
                       ]">
-                        <svg v-if="(store.modalNode?.data?.selectedCols ?? []).includes(c.name)"
+                        <svg v-if="activeCteGroup && isCteColSelected(activeCteGroup, c.name)"
                           class="size-2 text-white" fill="none" viewBox="0 0 10 10">
                           <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
                         </svg>
