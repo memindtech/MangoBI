@@ -24,7 +24,12 @@ export const useSqlBuilderStore = defineStore('sql-builder', () => {
   const selectedNodeIds = ref<string[]>([])
   const modalNodeId    = ref<string | null>(null)
   const filterNodeId   = ref<string | null>(null)
+  const pendingToolId  = ref<string | null>(null)
+  const pendingVp      = ref<{ x: number; y: number; zoom: number } | null>(null)
   const relationEdgeId = ref<string | null>(null)
+  // Tracks the ID of a freshly-created tool node (not yet confirmed by finish())
+  // so close() can delete it if the user cancels.
+  const newToolNodeId  = ref<string | null>(null)
   const search         = ref('')
 
   // ── Clipboard (copy-paste) ───────────────────────────────────────────────
@@ -98,21 +103,29 @@ export const useSqlBuilderStore = defineStore('sql-builder', () => {
     const seen    = new Set<string>()
     const visited = new Set<string>()
 
-    // Collect visible cols from a sqlTable node
+    // Collect ALL columns from a sqlTable node (details = full DB column list)
+    // Tool modals need all available columns, not just the user-selected subset.
     function collectTableCols(tbl: Node) {
-      const visibleCols = tbl.data.visibleCols as VisibleCol[] | undefined
-      const details     = tbl.data.details     as any[] | undefined
-      const colsToUse: VisibleCol[] = visibleCols?.length
-        ? visibleCols
-        : (details ?? []).map((c: any) => ({
-            name:   c.column_name,
-            type:   c.column_type || c.data_type,
-            remark: c.remark ?? '',
-            isPk:   c.data_pk === 'Y',
-            alias:  '',
+      const details          = tbl.data.details as any[] | undefined
+      const sourceTable      = tbl.data.tableName as string | undefined
+      const sourceTableLabel = tbl.data.label    as string | undefined
+      const colsToUse: VisibleCol[] = details?.length
+        ? details.map((c: any) => ({
+            name:             c.column_name,
+            type:             c.column_type || c.data_type,
+            remark:           c.remark ?? '',
+            isPk:             c.data_pk === 'Y',
+            alias:            '',
+            sourceTable,
+            sourceTableLabel,
           }))
+        : ((tbl.data.visibleCols as VisibleCol[] | undefined) ?? []).map((c: VisibleCol) => ({
+            ...c, sourceTable, sourceTableLabel,
+          }))
+      // Dedup by "table:column" so same-named columns from different tables both appear
       for (const col of colsToUse) {
-        if (!seen.has(col.name)) { seen.add(col.name); cols.push(col) }
+        const key = `${col.sourceTable ?? ''}:${col.name}`
+        if (!seen.has(key)) { seen.add(key); cols.push(col) }
       }
     }
 
@@ -130,6 +143,27 @@ export const useSqlBuilderStore = defineStore('sql-builder', () => {
       )
     }
 
+    // Flood-fill through all JOIN-connected table nodes (bidirectional)
+    function collectJoinCluster(startNode: Node) {
+      const q: Node[] = [startNode]
+      while (q.length) {
+        const n = q.shift()!
+        if (visited.has(n.id as string)) continue
+        visited.add(n.id as string)
+        collectTableCols(n)
+        for (const e of edges.value) {
+          if ((e as any).data?.isTool) continue   // skip pipe/tool edges
+          let neighbour: Node | undefined
+          if ((e as any).source === n.id)
+            neighbour = nodes.value.find((x: Node) => x.id === (e as any).target)
+          else if ((e as any).target === n.id)
+            neighbour = nodes.value.find((x: Node) => x.id === (e as any).source)
+          if (neighbour?.type === 'sqlTable' && !visited.has(neighbour.id as string))
+            q.push(neighbour)
+        }
+      }
+    }
+
     function collect(nodeId: string) {
       if (visited.has(nodeId)) return
       visited.add(nodeId)
@@ -138,9 +172,8 @@ export const useSqlBuilderStore = defineStore('sql-builder', () => {
         const src = nodes.value.find((n: Node) => n.id === (edge as any).source)
         if (!src) continue
         if (src.type === 'sqlTable') {
-          collectTableCols(src)
+          collectJoinCluster(src)   // collect src + all JOIN-connected tables
         } else if (src.type === 'cteFrame') {
-          // cteFrame children are bounds-based (no edges to children)
           for (const child of getCteChildren(src)) {
             if (!visited.has(child.id)) {
               visited.add(child.id)
@@ -148,7 +181,6 @@ export const useSqlBuilderStore = defineStore('sql-builder', () => {
             }
           }
         } else {
-          // toolNode or union — recurse upstream
           collect(src.id)
         }
       }
@@ -279,7 +311,7 @@ export const useSqlBuilderStore = defineStore('sql-builder', () => {
   return {
     // State
     nodes, edges, generatedSQL, sqlPanelOpen, activeEdgeId, selectedNodeId, selectedNodeIds,
-    modalNodeId, filterNodeId, relationEdgeId, search, clipboard, groupModalData,
+    modalNodeId, filterNodeId, pendingToolId, pendingVp, relationEdgeId, newToolNodeId, search, clipboard, groupModalData,
     modules, objects, expandedMods, loadingMods, loadingObjs, searchLoading,
     syncStatus, syncLastAt,
     columnCache, history, historyIndex, isUndoing, MAX_HISTORY, nodeCounter,

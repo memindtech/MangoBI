@@ -593,9 +593,38 @@ const unionSqlPreview = computed(() => {
   return `SELECT * FROM (\n  ${unionPart.replace(/\n/g, '\n  ')}\n) _u\nWHERE ${wherePart}`
 })
 
-// ── Group By: field search ────────────────────────────────────────────────
-const colSearch = ref('')
+// ── Group By / Sort: field search ────────────────────────────────────────
+const colSearch     = ref('')
+const sortColSearch = ref('')
 
+// ── Grouped by source table ───────────────────────────────────────────────
+interface ColGroup { tableId: string; tableLabel: string; cols: VisibleCol[] }
+
+const groupedUpstreamCols = computed((): ColGroup[] => {
+  const map = new Map<string, ColGroup>()
+  for (const col of upstreamCols.value) {
+    const key   = col.sourceTable ?? '__unknown__'
+    const label = col.sourceTableLabel ?? col.sourceTable ?? 'Table'
+    if (!map.has(key)) map.set(key, { tableId: key, tableLabel: label, cols: [] })
+    map.get(key)!.cols.push(col)
+  }
+  return [...map.values()]
+})
+
+function applyGroupSearch(q: string): ColGroup[] {
+  if (!q) return groupedUpstreamCols.value
+  const lq = q.toLowerCase()
+  return groupedUpstreamCols.value
+    .map(g => ({ ...g, cols: g.cols.filter(c =>
+      c.name.toLowerCase().includes(lq) || (c.remark ?? '').toLowerCase().includes(lq)
+    )}))
+    .filter(g => g.cols.length > 0)
+}
+
+const filteredGroupedCols     = computed(() => applyGroupSearch(colSearch.value.trim()))
+const filteredGroupedSortCols = computed(() => applyGroupSearch(sortColSearch.value.trim()))
+
+// keep flat versions for dropdowns / datalists
 const filteredCols = computed(() => {
   const q = colSearch.value.toLowerCase().trim()
   if (!q) return upstreamCols.value
@@ -603,10 +632,6 @@ const filteredCols = computed(() => {
     c.name.toLowerCase().includes(q) || (c.remark ?? '').toLowerCase().includes(q)
   )
 })
-
-// ── Sort: field search ────────────────────────────────────────────────────
-const sortColSearch = ref('')
-
 const filteredSortCols = computed(() => {
   const q = sortColSearch.value.toLowerCase().trim()
   if (!q) return upstreamCols.value
@@ -975,18 +1000,26 @@ function selectAggCol(i: number, colName: string) {
 
 // ── Finish = save config + generate SQL + close ───────────────────────────
 function finish() {
-  // Safety: if sort items is still empty and user didn't explicitly clear,
-  // commit the full upstream list now so the node card shows data immediately.
   if (nodeType.value === 'sort' && store.modalNodeId && !sortItems.value.length && !sortExplicitlyCleared.value && upstreamCols.value.length) {
     store.updateNodeData(store.modalNodeId, {
       items: upstreamCols.value.map((c: VisibleCol) => ({ col: c.name, dir: 'ASC' as 'ASC' | 'DESC' })),
     })
   }
+  // Node is confirmed — clear the "new, unsaved" tracking
+  store.newToolNodeId = null
   generateSQL()
   store.modalNodeId = null
 }
 
 function close() {
+  // If this modal was opened for a freshly-created node, delete it on cancel
+  const nodeId = store.modalNodeId
+  if (nodeId && store.newToolNodeId === nodeId) {
+    store.newToolNodeId = null
+    store.removeNode(nodeId)
+    return
+  }
+  store.newToolNodeId = null
   store.modalNodeId = null
 }
 
@@ -1025,23 +1058,29 @@ const finishBtnStyle = computed(() => {
     <div
       v-if="openAggColIdx !== null && aggDropdownPos"
       class="fixed z-[200] bg-background border rounded-xl shadow-2xl overflow-hidden flex flex-col"
-      :style="{ top: aggDropdownPos.top + 'px', left: aggDropdownPos.left + 'px', width: aggDropdownPos.width + 'px', maxHeight: '240px' }"
+      :style="{ top: aggDropdownPos.top + 'px', left: aggDropdownPos.left + 'px', width: aggDropdownPos.width + 'px', maxHeight: '280px' }"
       @click.stop
     >
       <div class="overflow-y-auto flex-1">
-        <button
-          v-for="c in upstreamCols" :key="c.name"
-          @click="selectAggCol(openAggColIdx!, c.name)"
-          :class="['w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-orange-500/8 transition-colors', store.modalNode?.data?.aggs?.[openAggColIdx!]?.col === c.name ? 'bg-orange-500/10' : '']"
-        >
-          <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(c.type).cls]">{{ getColTypeBadge(c.type).label }}</span>
-          <Key v-if="c.isPk" class="size-3 text-amber-400 shrink-0" />
-          <div class="flex-1 min-w-0 flex flex-col leading-none gap-0.5">
-            <span class="font-mono text-[11px] truncate" :class="c.isPk ? 'text-amber-400 font-semibold' : ''">{{ c.name }}</span>
-            <span v-if="c.remark" class="text-[9px] text-muted-foreground/55 truncate">{{ c.remark }}</span>
+        <template v-for="group in groupedUpstreamCols" :key="group.tableId">
+          <div class="sticky top-0 z-10 flex items-center gap-1.5 px-2.5 py-1 bg-muted border-b border-border/40">
+            <Database class="size-2.5 text-orange-400 shrink-0" />
+            <span class="text-[9px] font-semibold text-foreground truncate">{{ group.tableLabel }}</span>
           </div>
-        </button>
-        <div v-if="!upstreamCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">ไม่พบ columns — เชื่อมต่อ table node ก่อน</div>
+          <button
+            v-for="c in group.cols" :key="c.name"
+            @click="selectAggCol(openAggColIdx!, c.name)"
+            :class="['w-full flex items-center gap-2 px-3 pl-5 py-1.5 text-left hover:bg-orange-500/8 transition-colors', store.modalNode?.data?.aggs?.[openAggColIdx!]?.col === c.name ? 'bg-orange-500/10' : '']"
+          >
+            <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(c.type).cls]">{{ getColTypeBadge(c.type).label }}</span>
+            <Key v-if="c.isPk" class="size-2.5 text-amber-400 shrink-0" />
+            <div class="flex-1 min-w-0">
+              <p class="text-[11px] truncate" :class="c.isPk ? 'text-amber-400 font-semibold' : ''">{{ c.remark || c.name }}</p>
+              <p v-if="c.remark" class="font-mono text-[9px] text-muted-foreground/55 truncate">{{ c.name }}</p>
+            </div>
+          </button>
+        </template>
+        <div v-if="!groupedUpstreamCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">ไม่พบ columns — เชื่อมต่อ table node ก่อน</div>
       </div>
     </div>
   </Teleport>
@@ -1118,23 +1157,29 @@ const finishBtnStyle = computed(() => {
     <div
       v-if="openWhereColIdx !== null && whereColDropPos"
       class="fixed z-[200] bg-background border rounded-xl shadow-2xl overflow-hidden"
-      :style="{ top: whereColDropPos.top + 'px', left: whereColDropPos.left + 'px', width: whereColDropPos.width + 'px', maxHeight: '240px' }"
+      :style="{ top: whereColDropPos.top + 'px', left: whereColDropPos.left + 'px', width: whereColDropPos.width + 'px', maxHeight: '280px' }"
       @click.stop
     >
-      <div class="overflow-y-auto max-h-[240px]">
-        <button
-          v-for="c in upstreamCols" :key="c.name"
-          @click="selectWhereCol(openWhereColIdx!, c)"
-          :class="['w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-rose-500/8 transition-colors', store.modalNode?.data?.conditions?.[openWhereColIdx!]?.column === c.name ? 'bg-rose-500/10' : '']"
-        >
-          <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(c.type).cls]">{{ getColTypeBadge(c.type).label }}</span>
-          <Key v-if="c.isPk" class="size-3 text-amber-400 shrink-0" />
-          <div class="flex-1 min-w-0 flex flex-col leading-none gap-0.5">
-            <span class="font-mono text-[11px] truncate" :class="c.isPk ? 'text-amber-400 font-semibold' : ''">{{ c.name }}</span>
-            <span v-if="c.remark" class="text-[9px] text-muted-foreground/55 truncate">{{ c.remark }}</span>
+      <div class="overflow-y-auto max-h-[280px]">
+        <template v-for="group in groupedUpstreamCols" :key="group.tableId">
+          <div class="sticky top-0 z-10 flex items-center gap-1.5 px-2.5 py-1 bg-muted border-b border-border/40">
+            <Database class="size-2.5 text-rose-400 shrink-0" />
+            <span class="text-[9px] font-semibold text-foreground truncate">{{ group.tableLabel }}</span>
           </div>
-        </button>
-        <div v-if="!upstreamCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">ไม่พบ columns — เชื่อมต่อ table node ก่อน</div>
+          <button
+            v-for="c in group.cols" :key="c.name"
+            @click="selectWhereCol(openWhereColIdx!, c)"
+            :class="['w-full flex items-center gap-2 px-3 pl-5 py-1.5 text-left hover:bg-rose-500/8 transition-colors', store.modalNode?.data?.conditions?.[openWhereColIdx!]?.column === c.name ? 'bg-rose-500/10' : '']"
+          >
+            <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(c.type).cls]">{{ getColTypeBadge(c.type).label }}</span>
+            <Key v-if="c.isPk" class="size-2.5 text-amber-400 shrink-0" />
+            <div class="flex-1 min-w-0">
+              <p class="text-[11px] truncate" :class="c.isPk ? 'text-amber-400 font-semibold' : ''">{{ c.remark || c.name }}</p>
+              <p v-if="c.remark" class="font-mono text-[9px] text-muted-foreground/55 truncate">{{ c.name }}</p>
+            </div>
+          </button>
+        </template>
+        <div v-if="!groupedUpstreamCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">ไม่พบ columns — เชื่อมต่อ table node ก่อน</div>
       </div>
     </div>
   </Teleport>
@@ -1149,23 +1194,29 @@ const finishBtnStyle = computed(() => {
     <div
       v-if="openCalcFilterColIdx !== null && calcFilterColDropPos"
       class="fixed z-[200] bg-background border rounded-xl shadow-2xl overflow-hidden"
-      :style="{ top: calcFilterColDropPos.top + 'px', left: calcFilterColDropPos.left + 'px', width: calcFilterColDropPos.width + 'px', maxHeight: '240px' }"
+      :style="{ top: calcFilterColDropPos.top + 'px', left: calcFilterColDropPos.left + 'px', width: calcFilterColDropPos.width + 'px', maxHeight: '280px' }"
       @click.stop
     >
-      <div class="overflow-y-auto max-h-[240px]">
-        <button
-          v-for="c in upstreamCols" :key="c.name"
-          @click="selectCalcFilterCol(openCalcFilterColIdx!, c.name)"
-          :class="['w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-rose-500/8 transition-colors', calcFilters[openCalcFilterColIdx!]?.column === c.name ? 'bg-rose-500/10' : '']"
-        >
-          <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(c.type).cls]">{{ getColTypeBadge(c.type).label }}</span>
-          <Key v-if="c.isPk" class="size-3 text-amber-400 shrink-0" />
-          <div class="flex-1 min-w-0 flex flex-col leading-none gap-0.5">
-            <span class="font-mono text-[11px] truncate" :class="c.isPk ? 'text-amber-400 font-semibold' : ''">{{ c.name }}</span>
-            <span v-if="c.remark" class="text-[9px] text-muted-foreground/55 truncate">{{ c.remark }}</span>
+      <div class="overflow-y-auto max-h-[280px]">
+        <template v-for="group in groupedUpstreamCols" :key="group.tableId">
+          <div class="sticky top-0 z-10 flex items-center gap-1.5 px-2.5 py-1 bg-muted border-b border-border/40">
+            <Database class="size-2.5 text-rose-400 shrink-0" />
+            <span class="text-[9px] font-semibold text-foreground truncate">{{ group.tableLabel }}</span>
           </div>
-        </button>
-        <div v-if="!upstreamCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">ไม่พบ columns — เชื่อมต่อ table node ก่อน</div>
+          <button
+            v-for="c in group.cols" :key="c.name"
+            @click="selectCalcFilterCol(openCalcFilterColIdx!, c.name)"
+            :class="['w-full flex items-center gap-2 px-3 pl-5 py-1.5 text-left hover:bg-rose-500/8 transition-colors', calcFilters[openCalcFilterColIdx!]?.column === c.name ? 'bg-rose-500/10' : '']"
+          >
+            <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(c.type).cls]">{{ getColTypeBadge(c.type).label }}</span>
+            <Key v-if="c.isPk" class="size-2.5 text-amber-400 shrink-0" />
+            <div class="flex-1 min-w-0">
+              <p class="text-[11px] truncate" :class="c.isPk ? 'text-amber-400 font-semibold' : ''">{{ c.remark || c.name }}</p>
+              <p v-if="c.remark" class="font-mono text-[9px] text-muted-foreground/55 truncate">{{ c.name }}</p>
+            </div>
+          </button>
+        </template>
+        <div v-if="!groupedUpstreamCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">ไม่พบ columns — เชื่อมต่อ table node ก่อน</div>
       </div>
     </div>
   </Teleport>
@@ -1180,23 +1231,29 @@ const finishBtnStyle = computed(() => {
     <div
       v-if="openCalcColIdx !== null && calcColDropPos"
       class="fixed z-[200] bg-background border rounded-xl shadow-2xl overflow-hidden"
-      :style="{ top: calcColDropPos.top + 'px', left: calcColDropPos.left + 'px', width: calcColDropPos.width + 'px', maxHeight: '240px' }"
+      :style="{ top: calcColDropPos.top + 'px', left: calcColDropPos.left + 'px', width: calcColDropPos.width + 'px', maxHeight: '280px' }"
       @click.stop
     >
-      <div class="overflow-y-auto max-h-[240px]">
-        <button
-          v-for="c in upstreamCols" :key="c.name"
-          @click="selectCalcCol(openCalcColIdx!, c.name)"
-          :class="['w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-teal-500/8 transition-colors', calcItems[openCalcColIdx!]?.col === c.name ? 'bg-teal-500/10' : '']"
-        >
-          <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(c.type).cls]">{{ getColTypeBadge(c.type).label }}</span>
-          <Key v-if="c.isPk" class="size-3 text-amber-400 shrink-0" />
-          <div class="flex-1 min-w-0 flex flex-col leading-none gap-0.5">
-            <span class="font-mono text-[11px] truncate" :class="c.isPk ? 'text-amber-400 font-semibold' : ''">{{ c.name }}</span>
-            <span v-if="c.remark" class="text-[9px] text-muted-foreground/55 truncate">{{ c.remark }}</span>
+      <div class="overflow-y-auto max-h-[280px]">
+        <template v-for="group in groupedUpstreamCols" :key="group.tableId">
+          <div class="sticky top-0 z-10 flex items-center gap-1.5 px-2.5 py-1 bg-muted border-b border-border/40">
+            <Database class="size-2.5 text-teal-400 shrink-0" />
+            <span class="text-[9px] font-semibold text-foreground truncate">{{ group.tableLabel }}</span>
           </div>
-        </button>
-        <div v-if="!upstreamCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">ไม่พบ columns — เชื่อมต่อ table node ก่อน</div>
+          <button
+            v-for="c in group.cols" :key="c.name"
+            @click="selectCalcCol(openCalcColIdx!, c.name)"
+            :class="['w-full flex items-center gap-2 px-3 pl-5 py-1.5 text-left hover:bg-teal-500/8 transition-colors', calcItems[openCalcColIdx!]?.col === c.name ? 'bg-teal-500/10' : '']"
+          >
+            <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(c.type).cls]">{{ getColTypeBadge(c.type).label }}</span>
+            <Key v-if="c.isPk" class="size-2.5 text-amber-400 shrink-0" />
+            <div class="flex-1 min-w-0">
+              <p class="text-[11px] truncate" :class="c.isPk ? 'text-amber-400 font-semibold' : ''">{{ c.remark || c.name }}</p>
+              <p v-if="c.remark" class="font-mono text-[9px] text-muted-foreground/55 truncate">{{ c.name }}</p>
+            </div>
+          </button>
+        </template>
+        <div v-if="!groupedUpstreamCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">ไม่พบ columns — เชื่อมต่อ table node ก่อน</div>
       </div>
     </div>
   </Teleport>
@@ -1539,7 +1596,10 @@ const finishBtnStyle = computed(() => {
                       getColTypeBadge(upstreamCols.find(c => c.name === item.col)?.type ?? '').cls]">
                       {{ getColTypeBadge(upstreamCols.find(c => c.name === item.col)?.type ?? '').label }}
                     </span>
-                    <span class="font-mono text-[11px] flex-1 truncate">{{ item.col }}</span>
+                    <div class="flex-1 min-w-0">
+                      <p class="text-[11px] truncate">{{ upstreamCols.find(c => c.name === item.col)?.remark || item.col }}</p>
+                      <p v-if="upstreamCols.find(c => c.name === item.col)?.remark" class="font-mono text-[9px] text-muted-foreground/60 truncate">{{ item.col }}</p>
+                    </div>
                   </template>
                   <span v-else class="text-muted-foreground text-[11px] flex-1">— เลือก Column —</span>
                   <ChevronDown :class="['size-3 shrink-0 text-muted-foreground transition-transform', openCalcColIdx === Number(i) ? 'rotate-180' : '']" />
@@ -1783,56 +1843,57 @@ const finishBtnStyle = computed(() => {
                 ยังไม่มี columns — เชื่อมต่อ table node เข้ากับ GROUP BY node ก่อน
               </div>
 
-              <!-- Column list with checkboxes -->
-              <div v-else class="border rounded-lg divide-y divide-border/40 overflow-hidden max-h-[220px] overflow-y-auto">
-                <label
-                  v-for="col in filteredCols"
-                  :key="col.name"
-                  class="flex items-center gap-2.5 px-3 py-2 cursor-pointer select-none transition-colors hover:bg-orange-500/5"
-                  :class="(store.modalNode.data.groupCols ?? []).includes(col.name) ? 'bg-orange-500/5' : ''"
-                >
-                  <!-- Checkbox -->
-                  <div :class="[
-                    'size-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors',
-                    (store.modalNode.data.groupCols ?? []).includes(col.name)
-                      ? 'bg-orange-500 border-orange-500'
-                      : 'border-border/60 bg-background',
-                  ]">
-                    <svg v-if="(store.modalNode.data.groupCols ?? []).includes(col.name)"
-                      class="size-2.5 text-white" fill="none" viewBox="0 0 10 10">
-                      <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-                    </svg>
-                    <input
-                      type="checkbox"
-                      class="sr-only"
-                      :checked="(store.modalNode.data.groupCols ?? []).includes(col.name)"
-                      @change="toggleGroupCol(col.name, ($event.target as HTMLInputElement).checked)"
-                    />
+              <!-- Column list grouped by table -->
+              <div v-else class="border rounded-lg overflow-hidden max-h-[280px] overflow-y-auto">
+                <template v-for="group in filteredGroupedCols" :key="group.tableId">
+                  <!-- Table group header -->
+                  <div class="sticky top-0 z-10 flex items-center gap-2 px-3 py-1.5 bg-muted border-b border-border/50">
+                    <Database class="size-3 text-orange-400 shrink-0" />
+                    <span class="text-[10px] font-semibold text-foreground truncate flex-1">{{ group.tableLabel }}</span>
+                    <span class="text-[9px] text-muted-foreground shrink-0">{{ group.cols.length }}</span>
                   </div>
+                  <!-- Columns -->
+                  <label
+                    v-for="col in group.cols"
+                    :key="col.name"
+                    class="flex items-center gap-2.5 px-3 py-2 pl-5 cursor-pointer select-none transition-colors border-b border-border/30 last:border-0 hover:bg-orange-500/5"
+                    :class="(store.modalNode.data.groupCols ?? []).includes(col.name) ? 'bg-orange-500/5' : ''"
+                  >
+                    <!-- Checkbox -->
+                    <div :class="[
+                      'size-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors',
+                      (store.modalNode.data.groupCols ?? []).includes(col.name)
+                        ? 'bg-orange-500 border-orange-500'
+                        : 'border-border/60 bg-background',
+                    ]">
+                      <svg v-if="(store.modalNode.data.groupCols ?? []).includes(col.name)"
+                        class="size-2.5 text-white" fill="none" viewBox="0 0 10 10">
+                        <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                      </svg>
+                      <input type="checkbox" class="sr-only"
+                        :checked="(store.modalNode.data.groupCols ?? []).includes(col.name)"
+                        @change="toggleGroupCol(col.name, ($event.target as HTMLInputElement).checked)"
+                      />
+                    </div>
+                    <!-- PK icon -->
+                    <Key v-if="col.isPk" class="size-3 text-amber-400 shrink-0" />
+                    <!-- Type badge -->
+                    <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(col.type).cls]">
+                      {{ getColTypeBadge(col.type).label }}
+                    </span>
+                    <!-- Remark (primary) + column name (secondary) -->
+                    <div class="flex-1 min-w-0">
+                      <p class="text-[11px] truncate" :class="col.isPk ? 'text-amber-500 font-semibold' : 'text-foreground'">
+                        {{ col.remark || col.name }}
+                      </p>
+                      <p v-if="col.remark" class="font-mono text-[9px] text-muted-foreground/60 truncate">{{ col.name }}</p>
+                    </div>
+                  </label>
+                </template>
 
-                  <!-- PK icon -->
-                  <Key v-if="col.isPk" class="size-3 text-amber-400 shrink-0" />
-
-                  <!-- Type badge -->
-                  <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(col.type).cls]">
-                    {{ getColTypeBadge(col.type).label }}
-                  </span>
-
-                  <!-- Column name -->
-                  <span class="font-mono text-[11px] flex-1 truncate"
-                    :class="col.isPk ? 'text-amber-500 font-semibold' : ''">
-                    {{ col.name }}
-                  </span>
-
-                  <!-- Remark -->
-                  <span v-if="col.remark" class="text-[9px] text-muted-foreground/50 truncate max-w-[100px]">
-                    {{ col.remark }}
-                  </span>
-                </label>
-
-                <div v-if="filteredCols.length === 0 && colSearch"
+                <div v-if="filteredGroupedCols.length === 0"
                   class="px-3 py-3 text-[10px] text-muted-foreground/60 italic text-center">
-                  ไม่พบ column ที่ตรงกับ "{{ colSearch }}"
+                  {{ colSearch ? `ไม่พบ column ที่ตรงกับ "${colSearch}"` : 'กำลังโหลด columns...' }}
                 </div>
               </div>
             </div>
@@ -1895,7 +1956,10 @@ const finishBtnStyle = computed(() => {
                         getColTypeBadge(upstreamCols.find(c => c.name === agg.col)?.type ?? '').cls]">
                         {{ getColTypeBadge(upstreamCols.find(c => c.name === agg.col)?.type ?? '').label }}
                       </span>
-                      <span class="font-mono text-[11px] flex-1 truncate">{{ agg.col }}</span>
+                      <div class="flex-1 min-w-0">
+                        <p class="text-[11px] truncate">{{ upstreamCols.find(c => c.name === agg.col)?.remark || agg.col }}</p>
+                        <p v-if="upstreamCols.find(c => c.name === agg.col)?.remark" class="font-mono text-[9px] text-muted-foreground/60 truncate">{{ agg.col }}</p>
+                      </div>
                     </template>
                     <span v-else class="text-muted-foreground text-[11px] flex-1">— เลือก Column —</span>
                     <ChevronDown :class="['size-3 shrink-0 text-muted-foreground transition-transform', openAggColIdx === Number(i) ? 'rotate-180' : '']" />
@@ -2048,75 +2112,65 @@ const finishBtnStyle = computed(() => {
                 ยังไม่มี columns — เชื่อมต่อ table node เข้ากับ ORDER BY node ก่อน
               </div>
 
-              <!-- Column list with checkboxes + ASC/DESC toggle -->
-              <div v-else class="border rounded-lg divide-y divide-border/40 overflow-hidden max-h-[260px] overflow-y-auto">
-                <label
-                  v-for="col in filteredSortCols"
-                  :key="col.name"
-                  class="flex items-center gap-2.5 px-3 py-2 cursor-pointer select-none transition-colors hover:bg-green-500/5"
-                  :class="isSortSelected(col.name) ? 'bg-green-500/5' : ''"
-                >
-                  <!-- Checkbox -->
-                  <div :class="[
-                    'size-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors',
-                    isSortSelected(col.name) ? 'bg-green-500 border-green-500' : 'border-border/60 bg-background',
-                  ]">
-                    <svg v-if="isSortSelected(col.name)" class="size-2.5 text-white" fill="none" viewBox="0 0 10 10">
-                      <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-                    </svg>
-                    <input
-                      type="checkbox"
-                      class="sr-only"
-                      :checked="isSortSelected(col.name)"
-                      @change="toggleSortCol(col.name, ($event.target as HTMLInputElement).checked)"
-                    />
+              <!-- Column list grouped by table + ASC/DESC toggle -->
+              <div v-else class="border rounded-lg overflow-hidden max-h-[280px] overflow-y-auto">
+                <template v-for="group in filteredGroupedSortCols" :key="group.tableId">
+                  <!-- Table group header -->
+                  <div class="sticky top-0 z-10 flex items-center gap-2 px-3 py-1.5 bg-muted border-b border-border/50">
+                    <Database class="size-3 text-green-500 shrink-0" />
+                    <span class="text-[10px] font-semibold text-foreground truncate flex-1">{{ group.tableLabel }}</span>
+                    <span class="text-[9px] text-muted-foreground shrink-0">{{ group.cols.length }}</span>
                   </div>
-
-                  <!-- PK icon -->
-                  <Key v-if="col.isPk" class="size-3 text-amber-400 shrink-0" />
-
-                  <!-- Type badge -->
-                  <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(col.type).cls]">
-                    {{ getColTypeBadge(col.type).label }}
-                  </span>
-
-                  <!-- Column name -->
-                  <span class="font-mono text-[11px] flex-1 truncate"
-                    :class="col.isPk ? 'text-amber-500 font-semibold' : ''">
-                    {{ col.name }}
-                  </span>
-
-                  <!-- Remark -->
-                  <span v-if="col.remark" class="text-[9px] text-muted-foreground/50 truncate max-w-[80px]">
-                    {{ col.remark }}
-                  </span>
-
-                  <!-- ASC / DESC toggle pills (only when checked) -->
-                  <div v-if="isSortSelected(col.name)" class="flex gap-1 shrink-0" @click.stop>
-                    <button
-                      @click="setSortDir(col.name, 'ASC')"
-                      :class="[
+                  <!-- Columns -->
+                  <label
+                    v-for="col in group.cols"
+                    :key="col.name"
+                    class="flex items-center gap-2.5 px-3 py-2 pl-5 cursor-pointer select-none transition-colors border-b border-border/30 last:border-0 hover:bg-green-500/5"
+                    :class="isSortSelected(col.name) ? 'bg-green-500/5' : ''"
+                  >
+                    <!-- Checkbox -->
+                    <div :class="[
+                      'size-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors',
+                      isSortSelected(col.name) ? 'bg-green-500 border-green-500' : 'border-border/60 bg-background',
+                    ]">
+                      <svg v-if="isSortSelected(col.name)" class="size-2.5 text-white" fill="none" viewBox="0 0 10 10">
+                        <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                      </svg>
+                      <input type="checkbox" class="sr-only"
+                        :checked="isSortSelected(col.name)"
+                        @change="toggleSortCol(col.name, ($event.target as HTMLInputElement).checked)"
+                      />
+                    </div>
+                    <!-- PK icon -->
+                    <Key v-if="col.isPk" class="size-3 text-amber-400 shrink-0" />
+                    <!-- Type badge -->
+                    <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(col.type).cls]">
+                      {{ getColTypeBadge(col.type).label }}
+                    </span>
+                    <!-- Remark (primary) + column name (secondary) -->
+                    <div class="flex-1 min-w-0">
+                      <p class="text-[11px] truncate" :class="col.isPk ? 'text-amber-500 font-semibold' : 'text-foreground'">
+                        {{ col.remark || col.name }}
+                      </p>
+                      <p v-if="col.remark" class="font-mono text-[9px] text-muted-foreground/60 truncate">{{ col.name }}</p>
+                    </div>
+                    <!-- ASC / DESC toggle pills (only when checked) -->
+                    <div v-if="isSortSelected(col.name)" class="flex gap-1 shrink-0" @click.stop>
+                      <button @click="setSortDir(col.name, 'ASC')" :class="[
                         'text-[9px] px-2 py-0.5 rounded-md font-bold border transition-colors',
-                        getSortDir(col.name) === 'ASC'
-                          ? 'bg-green-500 border-green-500 text-white'
-                          : 'border-border/50 text-muted-foreground hover:border-green-400 hover:text-green-600',
-                      ]"
-                    >ASC</button>
-                    <button
-                      @click="setSortDir(col.name, 'DESC')"
-                      :class="[
+                        getSortDir(col.name) === 'ASC' ? 'bg-green-500 border-green-500 text-white' : 'border-border/50 text-muted-foreground hover:border-green-400 hover:text-green-600',
+                      ]">ASC</button>
+                      <button @click="setSortDir(col.name, 'DESC')" :class="[
                         'text-[9px] px-2 py-0.5 rounded-md font-bold border transition-colors',
-                        getSortDir(col.name) === 'DESC'
-                          ? 'bg-rose-500 border-rose-500 text-white'
-                          : 'border-border/50 text-muted-foreground hover:border-rose-400 hover:text-rose-600',
-                      ]"
-                    >DESC</button>
-                  </div>
-                </label>
+                        getSortDir(col.name) === 'DESC' ? 'bg-rose-500 border-rose-500 text-white' : 'border-border/50 text-muted-foreground hover:border-rose-400 hover:text-rose-600',
+                      ]">DESC</button>
+                    </div>
+                  </label>
+                </template>
 
-                <div v-if="filteredSortCols.length === 0 && sortColSearch"
+                <div v-if="filteredGroupedSortCols.length === 0"
                   class="px-3 py-3 text-[10px] text-muted-foreground/60 italic text-center">
-                  ไม่พบ column ที่ตรงกับ "{{ sortColSearch }}"
+                  {{ sortColSearch ? `ไม่พบ column ที่ตรงกับ "${sortColSearch}"` : 'กำลังโหลด columns...' }}
                 </div>
               </div>
             </div>
@@ -2505,7 +2559,10 @@ const finishBtnStyle = computed(() => {
                       getColTypeBadge(upstreamCols.find(c => c.name === cond.column)?.type ?? '').cls]">
                       {{ getColTypeBadge(upstreamCols.find(c => c.name === cond.column)?.type ?? '').label }}
                     </span>
-                    <span class="font-mono text-[11px] flex-1 truncate">{{ cond.column }}</span>
+                    <div class="flex-1 min-w-0">
+                      <p class="text-[11px] truncate">{{ upstreamCols.find(c => c.name === cond.column)?.remark || cond.column }}</p>
+                      <p v-if="upstreamCols.find(c => c.name === cond.column)?.remark" class="font-mono text-[9px] text-muted-foreground/60 truncate">{{ cond.column }}</p>
+                    </div>
                   </template>
                   <span v-else class="text-muted-foreground text-[11px] flex-1">— เลือก Column —</span>
                   <ChevronDown :class="['size-3 shrink-0 text-muted-foreground transition-transform', openWhereColIdx === Number(i) ? 'rotate-180' : '']" />
@@ -2619,7 +2676,10 @@ const finishBtnStyle = computed(() => {
                         getColTypeBadge(upstreamCols.find(c => c.name === cond.column)?.type ?? '').cls]">
                         {{ getColTypeBadge(upstreamCols.find(c => c.name === cond.column)?.type ?? '').label }}
                       </span>
-                      <span class="font-mono text-[11px] flex-1 truncate">{{ cond.column }}</span>
+                      <div class="flex-1 min-w-0">
+                        <p class="text-[11px] truncate">{{ upstreamCols.find(c => c.name === cond.column)?.remark || cond.column }}</p>
+                        <p v-if="upstreamCols.find(c => c.name === cond.column)?.remark" class="font-mono text-[9px] text-muted-foreground/60 truncate">{{ cond.column }}</p>
+                      </div>
                     </template>
                     <span v-else class="text-muted-foreground text-[11px] flex-1">— เลือก Column —</span>
                     <ChevronDown :class="['size-3 shrink-0 text-muted-foreground transition-transform', openWhereColIdx === Number(i) ? 'rotate-180' : '']" />

@@ -108,11 +108,13 @@ export interface ColumnInfo {
 }
 
 export interface VisibleCol {
-  name:   string
-  type:   string
-  remark: string
-  isPk:   boolean
-  alias:  string
+  name:              string
+  type:              string
+  remark:            string
+  isPk:              boolean
+  alias:             string
+  sourceTable?:      string   // table_name of the source sqlTable node
+  sourceTableLabel?: string   // display label of the source sqlTable node
 }
 
 export const OBJECT_TYPE_LABELS: Record<string, string> = {
