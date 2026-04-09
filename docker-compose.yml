@@ -1,4 +1,6 @@
 services:
+
+  # ── Frontend (Nuxt 3 / Nitro) ─────────────────────────────────────────────
   mangobi-frontend:
     build:
       context: .
@@ -7,6 +9,31 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - NUXT_PUBLIC_API_BASE=https://demotokbud.mangoanywhere.com/production.service/
-      - NUXT_PUBLIC_PLANNING_BASE=http://localhost:8080/api/v1/
+      # Mango Central API (server-to-server — Nitro เท่านั้น)
+      - NUXT_MANGO_BASE=http://localhost/service/
+      - NUXT_MANGO_SCHEMA_PASSCODE=MANGOCON
+      # Mango ของลูกค้า (browser เข้าถึงได้)
+      - NUXT_PUBLIC_API_BASE=http://localhost/service/
+      # Planning Backend (browser → backend container ผ่าน port 8310)
+      - NUXT_PUBLIC_PLANNING_BASE=http://localhost:8310/api/v1/
+    depends_on:
+      - mangobi-backend
+    restart: unless-stopped
+
+  # ── Backend (ASP.NET Core 8) ──────────────────────────────────────────────
+  mangobi-backend:
+    build:
+      context: ../../Backend/Backend-Planning-Service/MicroBackend
+      dockerfile: Dockerfile
+    container_name: mangobi-backend
+    ports:
+      - "8310:8080"
+    environment:
+      # DB connection key file (path inside container)
+      - MANGO_CONNECTION=./KeyFile/demotokbud_production_real.mglc
+      # Anywhere Service URL
+      - Anywhere__BaseUrl=http://localhost/service/
+      # Report base URL ชี้ไป frontend container
+      - MangoBIScheduler__ReportBaseUrl=http://mangobi-frontend:3000/view/
+      - MangoBIScheduler__LinkExpiryDays=7
     restart: unless-stopped
