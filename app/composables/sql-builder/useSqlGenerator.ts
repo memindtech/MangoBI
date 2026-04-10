@@ -277,13 +277,24 @@ export function useSqlGenerator() {
 
       const nt = node.data.nodeType as string
 
-      // sort node: not a CTE — just captures ORDER BY for the final SELECT
+      // sort node: ORDER BY goes to final SELECT; WHERE pre-filter (if any) gets its own CTE
       if (nt === 'sort') {
         const items = (node.data.items ?? []).filter((s: any) => s.col)
         if (items.length) {
           sortOrder = items.map((s: any) => `${s.col} ${s.dir}`).join(', ')
         }
-        nodeOutput.set(node.id, upName)  // pass-through
+        const sortConds = (node.data.conditions ?? []).filter((c: any) => c.column && c.operator)
+        if (sortConds.length) {
+          // Pre-filter: create a WHERE CTE so the conditions are actually applied
+          const filterName = nextCteIdx()
+          const filterSql  = `SELECT *\nFROM ${upName}\nWHERE ${sortConds.map(formatCondClause).join('\n  AND ')}`
+          ctes.push({ name: filterName, sql: filterSql })
+          nodeOutput.set(node.id, filterName)
+          lastCTE = filterName
+          cteOutputCols.set(filterName, cteOutputCols.get(upName) ?? [])
+        } else {
+          nodeOutput.set(node.id, upName)  // pass-through
+        }
         continue
       }
 
@@ -606,6 +617,11 @@ export function useSqlGenerator() {
     ]
 
     let sql = `SELECT\n${selectParts.join(',\n')}\nFROM ${upstream}`
+
+    // WHERE pre-filter (applied before GROUP BY)
+    const preConds = (node.data.conditions ?? []).filter((c: any) => c.column && c.operator)
+    if (preConds.length) sql += `\nWHERE ${preConds.map(formatCondClause).join('\n  AND ')}`
+
     if (groupCols.length) sql += `\nGROUP BY ${groupCols.join(', ')}`
 
     // HAVING from agg filters

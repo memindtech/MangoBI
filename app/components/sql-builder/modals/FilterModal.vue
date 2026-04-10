@@ -292,8 +292,8 @@ function close() { store.filterNodeId = null }
         @click.self="close"
       >
         <div
-          class="bg-background rounded-2xl border shadow-2xl w-full max-w-3xl mx-4 flex flex-col overflow-hidden"
-          style="max-height: 90vh"
+          class="bg-background rounded-2xl border shadow-2xl w-full max-w-5xl mx-4 flex flex-col overflow-hidden"
+          style="height: 85vh"
           @click.stop
         >
 
@@ -323,277 +323,241 @@ function close() { store.filterNodeId = null }
             </button>
           </div>
 
-          <!-- ── Search + global select ────────────────────────────────── -->
-          <div class="px-4 py-3 border-b bg-muted/10 shrink-0 flex items-center gap-2">
-            <div class="relative flex-1">
-              <Search class="absolute left-3 size-4 text-muted-foreground/50 pointer-events-none top-1/2 -translate-y-1/2" />
-              <input
-                v-model="colSearch"
-                placeholder="ค้นหา column…"
-                class="w-full text-sm border rounded-xl pl-9 pr-3 py-2 bg-background focus:outline-none focus:ring-1 focus:ring-sky-400/60 placeholder:text-muted-foreground/40"
-              />
-            </div>
-            <div class="flex items-center gap-1.5 shrink-0 border-r border-border/40 pr-2.5">
-              <button @click="toggleExpandAll"
-                class="text-xs text-muted-foreground hover:text-foreground font-medium whitespace-nowrap transition-colors">
-                {{ allExpanded ? 'Collapse' : 'Expand' }}
-              </button>
-            </div>
-            <button @click="selectAllGroups"
-              class="text-xs font-semibold text-sky-500 hover:underline shrink-0 whitespace-nowrap">
-              ทั้งหมด
-            </button>
-            <span class="text-muted-foreground/40 text-xs">/</span>
-            <button @click="clearAllGroups"
-              class="text-xs text-muted-foreground hover:underline shrink-0 whitespace-nowrap">
-              ล้างทั้งหมด
-            </button>
-          </div>
+          <!-- ── Body: 2-panel grid ─────────────────────────────────────── -->
+          <div class="flex-1 grid grid-cols-[1fr_1fr] overflow-hidden min-h-0 divide-x divide-border">
 
-          <!-- ── Column picker body ─────────────────────────────────────── -->
-          <div class="flex-1 overflow-y-auto min-h-0">
+            <!-- ── LEFT: Column Picker ─────────────────────────────────── -->
+            <div class="flex flex-col overflow-hidden min-h-0">
 
-            <!-- Empty: no tables connected -->
-            <div v-if="!columnGroups.length" class="flex flex-col items-center gap-3 py-10 text-center px-6">
-              <div class="size-12 rounded-full bg-sky-500/10 flex items-center justify-center">
-                <SlidersHorizontal class="size-5 text-sky-400" />
+              <!-- Left sub-header: search + global controls -->
+              <div class="px-4 py-2.5 border-b bg-muted/10 shrink-0 flex items-center gap-2">
+                <div class="relative flex-1">
+                  <Search class="absolute left-2.5 size-3.5 text-muted-foreground/50 pointer-events-none top-1/2 -translate-y-1/2" />
+                  <input v-model="colSearch" placeholder="ค้นหา column…"
+                    class="w-full text-xs border rounded-lg pl-8 pr-3 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-sky-400/60 font-mono" />
+                </div>
+                <button @click="toggleExpandAll"
+                  class="text-[11px] text-muted-foreground hover:text-foreground font-medium whitespace-nowrap transition-colors border-r border-border/40 pr-2.5 shrink-0">
+                  {{ allExpanded ? 'Collapse' : 'Expand' }}
+                </button>
+                <button @click="selectAllGroups"
+                  class="text-[11px] font-semibold text-sky-500 hover:underline shrink-0 whitespace-nowrap">ทั้งหมด</button>
+                <span class="text-muted-foreground/40 text-[11px]">/</span>
+                <button @click="clearAllGroups"
+                  class="text-[11px] text-muted-foreground hover:underline shrink-0 whitespace-nowrap">ล้าง</button>
               </div>
-              <p class="text-sm font-medium text-muted-foreground">ยังไม่มีตารางที่เชื่อมต่อ</p>
-              <p class="text-xs text-muted-foreground/60">เชื่อม Table node เพื่อเลือก columns</p>
-            </div>
 
-            <!-- No match for search -->
-            <div v-else-if="!filteredGroups.length" class="px-5 py-8 text-center text-[11px] text-muted-foreground italic">
-              ไม่พบ "{{ colSearch }}"
-            </div>
+              <!-- Column list (scrollable) -->
+              <div class="flex-1 overflow-y-auto min-h-0">
 
-            <!-- Tree groups -->
-            <div v-for="g in filteredGroups" :key="g.nodeId" class="mb-1">
-
-              <!-- ── Group header (tree root) ─────────────────────────── -->
-              <button
-                @click.stop="toggleGroupExpanded(g.nodeId)"
-                class="w-full flex items-center gap-2 px-3 py-2 bg-muted hover:bg-muted/80 transition-colors sticky top-0 z-10"
-              >
-                <ChevronRight :class="['size-3.5 text-muted-foreground transition-transform shrink-0', expandedGroups.has(g.nodeId) ? 'rotate-90' : '']" />
-                <span class="font-mono text-xs font-bold text-foreground flex-1 truncate tracking-wide">{{ g.table }}</span>
-                <span class="text-xs font-mono shrink-0">
-                  <span :class="(localVisibleColsMap.get(g.nodeId)?.length ?? 0) ? 'text-sky-500 font-semibold' : 'text-muted-foreground/50'">
-                    {{ localVisibleColsMap.get(g.nodeId)?.length ?? 0 }}</span><span class="text-muted-foreground/40">/{{ g.cols.length }}</span>
-                </span>
-                <button @click.stop="selectAllGroup(g.nodeId, g.cols)"
-                  class="text-xs text-sky-500 hover:underline font-medium ml-2 shrink-0">ทั้งหมด</button>
-                <span class="text-muted-foreground/40 text-xs">/</span>
-                <button @click.stop="clearGroup(g.nodeId)"
-                  class="text-xs text-muted-foreground hover:underline shrink-0">ล้าง</button>
-              </button>
-
-              <!-- ── Children (tree branches) ────────────────────────── -->
-              <div v-if="expandedGroups.has(g.nodeId)" class="relative ml-4 border-l-2 border-border/30">
-                <div
-                  v-for="(col, idx) in g.cols" :key="`${g.nodeId}.${col.column_name}`"
-                  @click.stop="toggleCol(g.nodeId, col)"
-                  :class="[
-                    'relative flex items-center gap-2.5 pr-4 py-2 cursor-pointer select-none transition-colors',
-                    isVisible(g.nodeId, col.column_name)
-                      ? 'bg-sky-500/10 hover:bg-sky-500/15'
-                      : 'hover:bg-accent/50',
-                  ]"
-                >
-                  <!-- Tree connector -->
-                  <span class="flex items-center shrink-0 text-border/60 font-mono text-xs leading-none pl-2 select-none">
-                    {{ idx === g.cols.length - 1 ? '└─' : '├─' }}
-                  </span>
-
-                  <!-- Checkbox -->
-                  <div :class="[
-                    'rounded border-2 flex items-center justify-center shrink-0 transition-colors',
-                    isVisible(g.nodeId, col.column_name)
-                      ? 'bg-sky-500 border-sky-500'
-                      : 'border-border/60 bg-background',
-                  ]" style="width:16px;height:16px;min-width:16px">
-                    <svg v-if="isVisible(g.nodeId, col.column_name)"
-                      class="size-2 text-white" fill="none" viewBox="0 0 10 10">
-                      <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
-                    </svg>
+                <!-- Empty: no tables connected -->
+                <div v-if="!columnGroups.length" class="flex flex-col items-center gap-3 py-10 text-center px-6">
+                  <div class="size-12 rounded-full bg-sky-500/10 flex items-center justify-center">
+                    <SlidersHorizontal class="size-5 text-sky-400" />
                   </div>
+                  <p class="text-sm font-medium text-muted-foreground">ยังไม่มีตารางที่เชื่อมต่อ</p>
+                  <p class="text-xs text-muted-foreground/60">เชื่อม Table node เพื่อเลือก columns</p>
+                </div>
 
-                  <!-- Type badge -->
-                  <span :class="[
-                    'text-xs px-1.5 py-0.5 rounded font-bold font-mono tracking-wide shrink-0',
-                    getColTypeBadgeSolid(col.column_type).cls,
-                  ]">{{ getColTypeBadgeSolid(col.column_type).label }}</span>
+                <!-- No match -->
+                <div v-else-if="!filteredGroups.length" class="px-5 py-8 text-center text-[11px] text-muted-foreground italic">
+                  ไม่พบ "{{ colSearch }}"
+                </div>
 
-                  <!-- PK icon -->
-                  <Key v-if="col.data_pk === 'Y'" class="size-3 text-amber-400 shrink-0" />
+                <!-- Tree groups -->
+                <div v-for="g in filteredGroups" :key="g.nodeId" class="mb-0.5">
 
-                  <!-- Remark (primary) + column_name (secondary) -->
-                  <div class="flex-1 min-w-0 flex flex-col leading-tight gap-0.5">
-                    <span class="text-sm font-medium truncate"
-                      :class="col.data_pk === 'Y' ? 'text-amber-400 font-semibold' : ''">
-                      {{ col.remark || col.column_name }}
+                  <!-- Group header -->
+                  <button @click.stop="toggleGroupExpanded(g.nodeId)"
+                    class="w-full flex items-center gap-2 px-3 py-2 bg-muted hover:bg-muted/80 transition-colors sticky top-0 z-10">
+                    <ChevronRight :class="['size-3.5 text-muted-foreground transition-transform shrink-0', expandedGroups.has(g.nodeId) ? 'rotate-90' : '']" />
+                    <span class="font-mono text-xs font-bold text-foreground flex-1 truncate tracking-wide">{{ g.table }}</span>
+                    <span class="text-xs font-mono shrink-0">
+                      <span :class="(localVisibleColsMap.get(g.nodeId)?.length ?? 0) ? 'text-sky-500 font-semibold' : 'text-muted-foreground/50'">
+                        {{ localVisibleColsMap.get(g.nodeId)?.length ?? 0 }}</span><span class="text-muted-foreground/40">/{{ g.cols.length }}</span>
                     </span>
-                    <span class="font-mono text-xs text-muted-foreground/45 truncate">{{ col.column_name }}</span>
+                    <button @click.stop="selectAllGroup(g.nodeId, g.cols)"
+                      class="text-[11px] text-sky-500 hover:underline font-medium ml-2 shrink-0">ทั้งหมด</button>
+                    <span class="text-muted-foreground/40 text-[11px]">/</span>
+                    <button @click.stop="clearGroup(g.nodeId)"
+                      class="text-[11px] text-muted-foreground hover:underline shrink-0">ล้าง</button>
+                  </button>
+
+                  <!-- Children -->
+                  <div v-if="expandedGroups.has(g.nodeId)" class="relative ml-4 border-l-2 border-border/30">
+                    <div v-for="(col, idx) in g.cols" :key="`${g.nodeId}.${col.column_name}`"
+                      @click.stop="toggleCol(g.nodeId, col)"
+                      :class="[
+                        'relative flex items-center gap-2.5 pr-3 py-1.5 cursor-pointer select-none transition-colors',
+                        isVisible(g.nodeId, col.column_name) ? 'bg-sky-500/10 hover:bg-sky-500/15' : 'hover:bg-accent/50',
+                      ]">
+                      <span class="flex items-center shrink-0 text-border/60 font-mono text-xs leading-none pl-2 select-none">
+                        {{ idx === g.cols.length - 1 ? '└─' : '├─' }}
+                      </span>
+                      <div :class="['rounded border-2 flex items-center justify-center shrink-0 transition-colors',
+                        isVisible(g.nodeId, col.column_name) ? 'bg-sky-500 border-sky-500' : 'border-border/60 bg-background']"
+                        style="width:14px;height:14px;min-width:14px">
+                        <svg v-if="isVisible(g.nodeId, col.column_name)" class="size-2 text-white" fill="none" viewBox="0 0 10 10">
+                          <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+                        </svg>
+                      </div>
+                      <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono tracking-wide shrink-0', getColTypeBadgeSolid(col.column_type).cls]">
+                        {{ getColTypeBadgeSolid(col.column_type).label }}
+                      </span>
+                      <Key v-if="col.data_pk === 'Y'" class="size-3 text-amber-400 shrink-0" />
+                      <div class="flex-1 min-w-0 flex flex-col leading-tight gap-0">
+                        <span class="text-[11px] font-medium truncate" :class="col.data_pk === 'Y' ? 'text-amber-400 font-semibold' : ''">
+                          {{ col.remark || col.column_name }}
+                        </span>
+                        <span class="font-mono text-[9px] text-muted-foreground/45 truncate">{{ col.column_name }}</span>
+                      </div>
+                      <input v-if="isVisible(g.nodeId, col.column_name)"
+                        :value="localVisibleColsMap.get(g.nodeId)?.find(v => v.name === col.column_name)?.alias ?? ''"
+                        @input.stop="setColAlias(g.nodeId, col.column_name, ($event.target as HTMLInputElement).value)"
+                        @click.stop
+                        placeholder="AS…"
+                        class="w-16 text-[10px] border rounded-md px-1.5 py-0.5 bg-background font-mono focus:outline-none focus:ring-1 focus:ring-sky-400/60 text-sky-400 placeholder:text-muted-foreground/30"
+                        :class="localVisibleColsMap.get(g.nodeId)?.find(v => v.name === col.column_name)?.alias ? 'border-sky-400/40' : 'border-border/40'" />
+                    </div>
                   </div>
 
-                  <!-- Alias input (when selected) -->
-                  <input
-                    v-if="isVisible(g.nodeId, col.column_name)"
-                    :value="localVisibleColsMap.get(g.nodeId)?.find(v => v.name === col.column_name)?.alias ?? ''"
-                    @input.stop="setColAlias(g.nodeId, col.column_name, ($event.target as HTMLInputElement).value)"
-                    @click.stop
-                    placeholder="AS…"
-                    class="w-20 text-xs border rounded-lg px-2 py-1 bg-background font-mono focus:outline-none focus:ring-1 focus:ring-sky-400/60 text-sky-400 placeholder:text-muted-foreground/30"
-                    :class="localVisibleColsMap.get(g.nodeId)?.find(v => v.name === col.column_name)?.alias ? 'border-sky-400/40' : 'border-border/40'"
-                  />
                 </div>
               </div>
+            </div><!-- /LEFT -->
 
-            </div>
-          </div>
+            <!-- ── RIGHT: WHERE Conditions ─────────────────────────────── -->
+            <div class="flex flex-col overflow-hidden min-h-0">
 
-          <!-- ── WHERE section (fixed, always visible, above footer) ──────── -->
-          <div class="border-t border-amber-500/25 bg-amber-500/3 shrink-0">
-            <!-- Toggle header -->
-            <button
-              @click="whereExpanded = !whereExpanded"
-              class="w-full flex items-center gap-2.5 px-5 py-3 text-left hover:bg-amber-500/8 transition-colors"
-            >
-              <div class="flex size-6 items-center justify-center rounded-md bg-amber-500/20">
-                <Filter class="size-3.5 text-amber-500" />
-              </div>
-              <span class="text-sm font-semibold text-amber-600 flex-1">WHERE Conditions</span>
-              <span v-if="localFilters.filter(f => f.column).length"
-                class="text-xs px-2 py-0.5 rounded-full bg-amber-500 text-white font-bold shrink-0">
-                {{ localFilters.filter(f => f.column).length }}
-              </span>
-              <component :is="whereExpanded ? ChevronUp : ChevronDown" class="size-4 text-muted-foreground shrink-0" />
-            </button>
-
-            <!-- Expanded body (own scroll, capped height) -->
-            <div v-if="whereExpanded" class="border-t border-amber-500/15 overflow-y-auto" style="max-height: 280px">
-              <!-- Empty state -->
-              <div v-if="!localFilters.length" class="px-5 py-5 text-center">
-                <p class="text-sm text-muted-foreground/60 italic">ยังไม่มีเงื่อนไข WHERE</p>
+              <!-- Right sub-header -->
+              <div class="px-4 py-2.5 border-b bg-amber-500/5 shrink-0 flex items-center gap-2">
+                <div class="flex size-6 items-center justify-center rounded-md bg-amber-500/20 shrink-0">
+                  <Filter class="size-3.5 text-amber-500" />
+                </div>
+                <span class="text-sm font-semibold text-amber-600 flex-1">WHERE Conditions</span>
+                <span v-if="localFilters.filter(f => f.column).length"
+                  class="text-xs px-2 py-0.5 rounded-full bg-amber-500 text-white font-bold shrink-0">
+                  {{ localFilters.filter(f => f.column).length }}
+                </span>
+                <button @click="addFilter"
+                  class="flex items-center gap-1 text-[11px] px-2 py-0.5 rounded border border-amber-500/30 text-amber-500 hover:bg-amber-500/10 transition-colors shrink-0">
+                  <Plus class="size-3" /> เพิ่ม
+                </button>
               </div>
 
-              <!-- Condition rows -->
-              <div class="divide-y divide-amber-500/10">
-                <div
-                  v-for="(f, i) in localFilters"
-                  :key="i"
-                  class="px-5 py-3 flex flex-col gap-2"
-                  :class="f.column ? 'bg-amber-500/5' : ''"
-                >
-                  <div class="flex items-center justify-between">
-                    <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1.5 flex-wrap">
-                      Condition {{ i + 1 }}
-                      <template v-if="f.column && colInfo(f.column)">
-                        <span class="normal-case font-medium text-amber-600">— {{ colInfo(f.column)!.remark || f.column }}</span>
-                        <span class="text-[10px] font-mono text-muted-foreground/50 bg-muted/60 px-1.5 py-0.5 rounded normal-case font-normal">{{ colInfo(f.column)!.table_label }}</span>
-                      </template>
-                    </span>
-                    <button @click="removeFilter(i)"
-                      class="size-6 flex items-center justify-center rounded hover:bg-destructive/10 hover:text-destructive text-muted-foreground transition-colors">
-                      <X class="size-3.5" />
-                    </button>
+              <!-- Conditions list (scrollable) -->
+              <div class="flex-1 overflow-y-auto min-h-0">
+
+                <!-- Empty state -->
+                <div v-if="!localFilters.length" class="flex flex-col items-center gap-3 py-10 text-center px-6">
+                  <div class="size-12 rounded-full bg-amber-500/10 flex items-center justify-center">
+                    <Filter class="size-5 text-amber-400" />
                   </div>
+                  <p class="text-sm font-medium text-muted-foreground">ยังไม่มีเงื่อนไข</p>
+                  <p class="text-xs text-muted-foreground/60">กด "+ เพิ่ม" เพื่อเพิ่ม WHERE condition</p>
+                  <button @click="addFilter"
+                    class="mt-1 text-xs px-4 py-1.5 rounded-lg border border-amber-500/40 text-amber-600 hover:bg-amber-500/8 font-semibold transition-colors flex items-center gap-1.5">
+                    <Plus class="size-3.5" /> เพิ่ม Condition
+                  </button>
+                </div>
 
-                  <!-- Col dropdown + operator pills -->
-                  <div class="flex items-start gap-2 flex-wrap">
-                    <button
-                      @click="toggleColDropdown(i, $event)"
-                      :class="[
-                        'flex items-center gap-2 text-xs border rounded-lg px-2.5 py-2 bg-background focus:outline-none text-left transition-colors',
+                <!-- Condition rows -->
+                <div class="divide-y divide-border/40 p-3 flex flex-col gap-2">
+                  <div v-for="(f, i) in localFilters" :key="i"
+                    class="flex flex-col gap-3 p-3 rounded-xl border bg-amber-500/3 shrink-0">
+
+                    <!-- Row header -->
+                    <div class="flex items-center gap-2">
+                      <span class="text-[10px] font-bold text-amber-600 uppercase tracking-wide flex-1">
+                        Condition {{ i + 1 }}
+                        <span v-if="f.column" class="normal-case font-mono text-amber-500 ml-1">— {{ colInfo(f.column)?.remark || f.column }}</span>
+                      </span>
+                      <button @click="removeFilter(i)"
+                        class="size-5 flex items-center justify-center rounded hover:bg-destructive/10 hover:text-destructive text-muted-foreground transition-colors">
+                        <X class="size-3.5" />
+                      </button>
+                    </div>
+
+                    <!-- Column picker -->
+                    <button @click="toggleColDropdown(i, $event)"
+                      :class="['w-full flex items-center gap-2 text-xs border rounded-lg px-2.5 py-2 bg-background text-left transition-colors',
                         f.column ? 'border-amber-400/40' : 'border-border hover:border-amber-400/30',
-                        openColIdx === i ? 'ring-2 ring-amber-400/50 border-amber-400/40' : '',
-                      ]"
-                      style="min-width: 220px; max-width: 320px"
-                    >
+                        openColIdx === i ? 'ring-2 ring-amber-400/50 border-amber-400/40' : '']">
                       <template v-if="f.column && colInfo(f.column)">
                         <Key v-if="colInfo(f.column)!.data_pk === 'Y'" class="size-3 text-amber-400 shrink-0" />
-                        <span :class="['text-[10px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadgeSolid(colInfo(f.column)!.column_type).cls]">
+                        <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadgeSolid(colInfo(f.column)!.column_type).cls]">
                           {{ getColTypeBadgeSolid(colInfo(f.column)!.column_type).label }}
                         </span>
-                        <div class="flex-1 min-w-0 flex flex-col leading-tight gap-0.5">
-                          <span class="text-xs font-medium truncate text-foreground">{{ colInfo(f.column)!.remark || f.column }}</span>
+                        <div class="flex-1 min-w-0">
+                          <p class="text-[11px] truncate">{{ colInfo(f.column)!.remark || f.column }}</p>
                           <div class="flex items-center gap-1.5">
-                            <span v-if="colInfo(f.column)!.remark" class="font-mono text-[10px] text-muted-foreground/55 truncate">{{ f.column }}</span>
+                            <span v-if="colInfo(f.column)!.remark" class="font-mono text-[9px] text-muted-foreground/55 truncate">{{ f.column }}</span>
                             <span class="text-[9px] font-mono text-amber-600/80 bg-amber-500/10 px-1 py-px rounded shrink-0">{{ colInfo(f.column)!.table_label }}</span>
                           </div>
                         </div>
                       </template>
-                      <span v-else class="text-muted-foreground flex-1 text-xs">— เลือก Column —</span>
-                      <ChevronDown :class="['size-3 shrink-0 transition-transform text-muted-foreground ml-1', openColIdx === i ? 'rotate-180' : '']" />
+                      <span v-else class="text-muted-foreground text-[11px] flex-1">— เลือก Column —</span>
+                      <ChevronDown :class="['size-3 shrink-0 text-muted-foreground transition-transform', openColIdx === i ? 'rotate-180' : '']" />
                     </button>
 
                     <!-- Operator pills -->
-                    <div class="flex items-center gap-1 flex-wrap">
-                      <template v-for="group in OP_GROUPS" :key="group.label">
-                        <div class="flex items-center rounded-lg border overflow-hidden">
-                          <button
-                            v-for="op in group.ops" :key="op.value"
-                            @click="setOperator(i, op.value)"
-                            :title="op.title"
-                            :class="[
-                              'text-xs px-2 py-1.5 font-mono font-semibold transition-colors border-r last:border-r-0 whitespace-nowrap',
-                              f.operator === op.value
-                                ? 'bg-amber-500 text-white'
-                                : 'hover:bg-amber-500/10 text-muted-foreground hover:text-amber-600',
-                            ]"
-                          >{{ op.label }}</button>
-                        </div>
-                      </template>
+                    <div class="flex flex-col gap-1.5">
+                      <div class="flex flex-wrap gap-1">
+                        <template v-for="group in OP_GROUPS" :key="group.label">
+                          <div class="flex items-center rounded-lg border overflow-hidden">
+                            <button v-for="op in group.ops" :key="op.value"
+                              @click="setOperator(i, op.value)"
+                              :title="op.title"
+                              :class="['text-[10px] px-2 py-1.5 font-mono font-semibold transition-colors border-r last:border-r-0 whitespace-nowrap',
+                                f.operator === op.value ? 'bg-amber-500 text-white' : 'hover:bg-amber-500/10 text-muted-foreground hover:text-amber-600']">
+                              {{ op.label }}
+                            </button>
+                          </div>
+                        </template>
+                      </div>
                     </div>
-                  </div>
 
-                  <!-- Value input -->
-                  <div v-if="!noValueOps.includes(f.operator)" class="flex items-center gap-2">
-                    <div v-if="f.type === 'date'" class="flex-1 relative flex items-center">
-                      <input
-                        :ref="(el) => setDateInputRef(i, el)"
-                        type="date"
-                        :value="f.value"
+                    <!-- Value input -->
+                    <div v-if="!noValueOps.includes(f.operator)" class="flex items-center gap-2">
+                      <label class="text-[10px] font-semibold text-muted-foreground w-8 shrink-0">ค่า</label>
+                      <div v-if="f.type === 'date'" class="flex-1 relative flex items-center">
+                        <input :ref="(el) => setDateInputRef(i, el)" type="date" :value="f.value"
+                          @input="localFilters[i] = { ...f, value: ($event.target as HTMLInputElement).value }"
+                          class="flex-1 text-xs border rounded-lg pl-2.5 pr-9 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-amber-400/50 font-mono"
+                          :class="f.value ? 'border-amber-400/40' : ''" />
+                        <button @click="openDatePicker(i)" type="button"
+                          class="absolute right-2 size-5 flex items-center justify-center rounded text-amber-500 hover:bg-amber-500/15 transition-colors">
+                          <Calendar class="size-3.5" />
+                        </button>
+                      </div>
+                      <input v-else :value="f.value"
                         @input="localFilters[i] = { ...f, value: ($event.target as HTMLInputElement).value }"
-                        class="flex-1 text-xs border rounded-lg pl-3 pr-10 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-amber-400/50 font-mono"
-                        :class="f.value ? 'border-amber-400/40' : ''"
-                      />
-                      <button @click="openDatePicker(i)" type="button"
-                        class="absolute right-2 size-6 flex items-center justify-center rounded-md text-amber-500 hover:bg-amber-500/15 transition-colors">
-                        <Calendar class="size-3.5" />
-                      </button>
+                        :placeholder="f.operator === 'IN' ? 'a, b, c' : f.operator === 'LIKE' ? '%keyword%' : 'ค่า...'"
+                        :type="f.type === 'int' ? 'number' : 'text'"
+                        class="flex-1 text-xs border rounded-lg px-2.5 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-amber-400/50 font-mono"
+                        :class="f.value ? 'border-amber-400/40' : ''" />
+                      <span class="text-[9px] text-muted-foreground/50 shrink-0 font-mono">{{ f.type }}</span>
                     </div>
-                    <input
-                      v-else
-                      :value="f.value"
-                      @input="localFilters[i] = { ...f, value: ($event.target as HTMLInputElement).value }"
-                      :placeholder="f.operator === 'IN' ? 'a, b, c' : f.operator === 'LIKE' ? '%keyword%' : 'ค่า...'"
-                      :type="f.type === 'int' ? 'number' : 'text'"
-                      class="flex-1 text-xs border rounded-lg px-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-amber-400/50 font-mono"
-                      :class="f.value ? 'border-amber-400/40' : ''"
-                    />
-                    <span class="text-[10px] text-muted-foreground/50 shrink-0 font-mono">{{ f.type }}</span>
-                  </div>
-                  <div v-else class="flex items-center gap-1.5 px-3 py-1.5 bg-muted/30 rounded-lg">
-                    <span class="text-xs text-muted-foreground italic">
-                      {{ f.operator === 'IS NULL' ? 'ตรวจสอบว่าข้อมูลเป็น NULL' : 'ตรวจสอบว่าข้อมูลไม่เป็น NULL' }}
-                      — ไม่ต้องระบุค่า
-                    </span>
+                    <div v-else class="flex items-center gap-1.5 px-3 py-1.5 bg-muted/30 rounded-lg">
+                      <span class="text-[10px] text-muted-foreground italic">
+                        {{ f.operator === 'IS NULL' ? 'ตรวจสอบว่าข้อมูลเป็น NULL' : 'ตรวจสอบว่าข้อมูลไม่เป็น NULL' }} — ไม่ต้องระบุค่า
+                      </span>
+                    </div>
+
                   </div>
                 </div>
-              </div>
 
-              <!-- Add condition button -->
-              <div class="px-5 py-2.5 border-t border-amber-500/15 bg-background/50">
-                <button
-                  @click="addFilter"
-                  class="w-full text-sm py-2 rounded-xl border border-dashed border-amber-500/40 text-amber-600 hover:bg-amber-500/8 font-semibold transition-colors flex items-center justify-center gap-2"
-                >
-                  <Plus class="size-4" /> เพิ่ม Condition
-                </button>
+                <!-- Add condition (bottom of scrollable area) -->
+                <div v-if="localFilters.length" class="px-4 pb-4">
+                  <button @click="addFilter"
+                    class="w-full text-xs py-2 rounded-xl border border-dashed border-amber-500/40 text-amber-600 hover:bg-amber-500/8 font-semibold transition-colors flex items-center justify-center gap-1.5">
+                    <Plus class="size-3.5" /> เพิ่ม Condition
+                  </button>
+                </div>
+
               </div>
-            </div>
-          </div>
+            </div><!-- /RIGHT -->
+
+          </div><!-- /grid -->
 
           <!-- ── Footer ─────────────────────────────────────────────────── -->
           <div class="px-5 py-3.5 flex items-center justify-between border-t shrink-0">

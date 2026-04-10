@@ -91,7 +91,7 @@ const USE_COLORS: Record<string, string> = {
       >
         <div
           class="bg-background border rounded-2xl shadow-2xl w-full max-w-lg mx-4 flex flex-col overflow-hidden"
-          style="max-height: 85vh"
+          style="height: 75vh"
           @click.stop
         >
           <!-- Header -->
