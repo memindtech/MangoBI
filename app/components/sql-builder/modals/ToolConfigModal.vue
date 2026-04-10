@@ -121,161 +121,47 @@ const nodeType = computed(() => store.modalNode?.data?.nodeType as string | unde
 // ── Upstream columns (from connected table nodes) ─────────────────────────
 const upstreamCols = computed((): VisibleCol[] => store.modalNodeUpstreamCols)
 
-// ── CTE child nodes: sqlTable nodes inside the cteFrame bounds ───────────
-const cteChildTableNodes = computed(() => {
-  const frame = store.nodes.find((n: any) => n.id === store.modalNodeId)
-  if (!frame) return []
-  const fw = parseFloat(String(frame.style?.width  ?? '420'))
-  const fh = parseFloat(String(frame.style?.height ?? '280'))
-  const fx = frame.position.x
-  const fy = frame.position.y
-  const NW = 112, NH = 80
-  return store.nodes.filter((n: any) =>
-    n.type === 'sqlTable' &&
-    (n.position.x + NW) >= fx && (n.position.x + NW) <= fx + fw &&
-    (n.position.y + NH) >= fy && (n.position.y + NH) <= fy + fh
-  )
-})
-
-// ── CTE column source: ONLY child nodes inside this frame (no fallback) ──
-const cteAvailableCols = computed((): VisibleCol[] => {
-  const seen = new Set<string>()
-  const cols: VisibleCol[] = []
-  for (const node of cteChildTableNodes.value) {
-    const details = node.data.details as any[] | undefined
-    const visible = node.data.visibleCols as VisibleCol[] | undefined
-    const src: VisibleCol[] = details?.length
-      ? details.map((c: any) => ({
-          name:   c.column_name,
-          type:   c.column_type || c.data_type,
-          remark: c.remark ?? '',
-          isPk:   c.data_pk === 'Y',
-          alias:  '',
-        }))
-      : (visible ?? [])
-    for (const col of src) {
-      if (!seen.has(col.name)) { seen.add(col.name); cols.push(col) }
-    }
-  }
-  return cols
-})
-
 // ── CTE: column search ────────────────────────────────────────────────────
-const cteColSearch     = ref('')
-const selectedCteGroup = ref<string | null>(null)
-
-// ── CTE: grouped cols by source table (for hierarchical picker) ───────────
-interface CteColGroup {
-  sourceId:    string
-  sourceLabel: string   // table name
-  cteLabel?:   string   // upstream CTE/tool label if any
-  cols:        VisibleCol[]
-}
-
-const cteGroupedCols = computed((): CteColGroup[] => {
-  const groups: CteColGroup[] = []
-  const visited = new Set<string>()
-
-  function getTableCols(node: any): VisibleCol[] {
-    // Always use full details list — so all columns are available to pick
-    const details = node.data.details as any[] | undefined
-    if (details?.length) {
-      return details.map((c: any) => ({
-        name:   c.column_name,
-        type:   c.column_type || c.data_type,
-        remark: c.remark ?? '',
-        isPk:   c.data_pk === 'Y',
-        alias:  '',
-      }))
-    }
-    // Fallback to visibleCols if details not loaded yet
-    const visible = node.data.visibleCols as VisibleCol[] | undefined
-    return visible ?? []
-  }
-
-  // Walk upstream from CTE modal node, group cols by sqlTable source
-  function walk(nodeId: string, parentLabel?: string) {
-    if (visited.has(nodeId)) return
-    visited.add(nodeId)
-    const node = store.nodes.find((n: any) => n.id === nodeId)
-    if (!node) return
-
-    if (node.type === 'sqlTable') {
-      const cols = getTableCols(node)
-      if (cols.length) {
-        groups.push({
-          sourceId:    node.id as string,
-          sourceLabel: (node.data.tableName || node.data.label || node.id) as string,
-          cteLabel:    parentLabel,
-          cols,
-        })
-      }
-    } else {
-      // tool node — use its label as parent context, then recurse
-      const lbl = (node.data.name || node.data.label || node.data.nodeType) as string | undefined
-      store.edges
-        .filter((e: any) => e.target === nodeId)
-        .forEach((e: any) => walk(e.source as string, lbl ?? parentLabel))
-    }
-  }
-
-  // Show ONLY nodes inside this CTE frame — no fallback to all canvas tables
-  for (const node of cteChildTableNodes.value) {
-    if (visited.has(node.id as string)) continue
-    visited.add(node.id as string)
-    const cols = getTableCols(node)
-    if (cols.length) {
-      groups.push({
-        sourceId:    node.id as string,
-        sourceLabel: (node.data.tableName || node.data.label || node.id) as string,
-        cols,
-      })
-    }
-  }
-
-  return groups
-})
-
-// ── CTE: filtered groups (by search) ─────────────────────────────────────
-const cteFilteredGroups = computed((): CteColGroup[] => {
-  const q = cteColSearch.value.toLowerCase().trim()
-  if (!q) return cteGroupedCols.value
-  return cteGroupedCols.value
-    .map(g => ({ ...g, cols: g.cols.filter(c => c.name.toLowerCase().includes(q) || (c.remark ?? '').toLowerCase().includes(q)) }))
-    .filter(g => g.cols.length)
-})
-
-// ── CTE: active group selection (after cteGroupedCols is declared) ────────
-watch(() => store.modalNodeId, () => { selectedCteGroup.value = null })
-watch(cteGroupedCols, (groups) => {
-  if (!selectedCteGroup.value && groups.length) {
-    selectedCteGroup.value = groups[0]!.sourceId
-  }
-}, { immediate: true })
-
-const activeCteGroup = computed(() =>
-  cteGroupedCols.value.find(g => g.sourceId === selectedCteGroup.value) ?? cteGroupedCols.value[0] ?? null
-)
-
-const filteredActiveCols = computed(() => {
-  const q = cteColSearch.value.toLowerCase().trim()
-  if (!activeCteGroup.value) return []
-  return q
-    ? activeCteGroup.value.cols.filter(c => c.name.toLowerCase().includes(q) || (c.remark ?? '').toLowerCase().includes(q))
-    : activeCteGroup.value.cols
-})
+const cteColSearch = ref('')
 
 // ── CTE: select / clear all cols from a specific group ───────────────────
-function selectAllFromCteGroup(group: CteColGroup) {
+// Accepts both CteColGroup and ColGroup (both have cols: VisibleCol[])
+function selectAllFromCteGroup(group: { cols: VisibleCol[] }) {
   const current = new Set((store.modalNode?.data?.selectedCols ?? []) as string[])
   group.cols.forEach(c => current.add(c.name))
   tn.setModalData({ selectedCols: [...current] })
 }
-function clearAllFromCteGroup(group: CteColGroup) {
+function clearAllFromCteGroup(group: { cols: VisibleCol[] }) {
   const toRemove = new Set(group.cols.map(c => c.name))
   const current  = ((store.modalNode?.data?.selectedCols ?? []) as string[]).filter(n => !toRemove.has(n))
   tn.setModalData({ selectedCols: current })
 }
+
+// ── CTE: grouped column list (uses same groupedUpstreamCols as GROUP BY) ─
+const filteredGroupedCteCols = computed((): ColGroup[] => {
+  const q = cteColSearch.value.toLowerCase().trim()
+  if (!q) return groupedUpstreamCols.value
+  return groupedUpstreamCols.value
+    .map(g => ({ ...g, cols: g.cols.filter(c => c.name.toLowerCase().includes(q) || (c.remark ?? '').toLowerCase().includes(q)) }))
+    .filter(g => g.cols.length > 0)
+})
+
+// ── CTE: SQL preview ─────────────────────────────────────────────────────
+const cteSqlPreview = computed(() => {
+  const selectedCols = (store.modalNode?.data?.selectedCols ?? []) as string[]
+  const conditions   = ((store.modalNode?.data?.conditions ?? []) as any[]).filter((c: any) => c.column && c.operator)
+  const sel = selectedCols.length
+    ? `SELECT\n  ${selectedCols.join(',\n  ')}`
+    : 'SELECT *'
+  let sql = `${sel}\nFROM _upstream`
+  if (conditions.length) {
+    const where = conditions.map((c: any) =>
+      `${c.column} ${c.operator}${!['IS NULL','IS NOT NULL'].includes(c.operator) ? ` '${c.value || '?'}'` : ''}`
+    ).join('\n  AND ')
+    sql += `\nWHERE ${where}`
+  }
+  return sql
+})
 
 // ── Union: get sqlTable nodes inside a cteFrame by bounds ─────────────────
 function getCteFrameChildren(frame: any): any[] {
@@ -823,6 +709,18 @@ function openCalcFilterDatePicker(i: number) {
   try { input.showPicker() } catch { input.click() }
 }
 
+// Date input refs — CTE conditions
+const cteDateRefs = ref<Map<number, HTMLInputElement>>(new Map())
+function setCteDateRef(i: number, el: any) {
+  if (el) cteDateRefs.value.set(i, el as HTMLInputElement)
+  else cteDateRefs.value.delete(i)
+}
+function openCteDatePicker(i: number) {
+  const input = cteDateRefs.value.get(i)
+  if (!input) return
+  try { input.showPicker() } catch { input.click() }
+}
+
 // Calc filters
 const calcFilters = computed(() =>
   (store.modalNode?.data?.filters ?? []) as Array<{ column: string; operator: string; value: string }>
@@ -1130,7 +1028,7 @@ const finishBtnStyle = computed(() => {
     >
       <div class="overflow-y-auto max-h-[240px]">
         <button
-          v-for="c in cteAvailableCols" :key="c.name"
+          v-for="c in upstreamCols" :key="c.name"
           @click="selectCteCondCol(openCteCondColIdx!, c)"
           :class="['w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-violet-500/8 transition-colors',
             store.modalNode?.data?.conditions?.[openCteCondColIdx!]?.column === c.name ? 'bg-violet-500/10' : '']"
@@ -1142,7 +1040,7 @@ const finishBtnStyle = computed(() => {
             <span v-if="c.remark" class="text-[9px] text-muted-foreground/55 truncate">{{ c.remark }}</span>
           </div>
         </button>
-        <div v-if="!cteAvailableCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">ลาก table node ลง canvas ก่อน</div>
+        <div v-if="!upstreamCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">เชื่อมต่อ table node เข้ากับ CTE node ก่อน</div>
       </div>
     </div>
   </Teleport>
@@ -1300,8 +1198,8 @@ const finishBtnStyle = computed(() => {
         :class="[
           'bg-background rounded-2xl border shadow-2xl flex flex-col overflow-hidden',
           nodeType === 'union' ? 'w-full max-w-[960px]' :
-          nodeType === 'cte' ? 'w-full max-w-[720px]' :
-          (nodeType === 'group' || nodeType === 'sort' || nodeType === 'calc' || nodeType === 'where') ? 'w-full max-w-[640px]' : 'w-[440px]',
+          nodeType === 'cte'   ? 'w-full max-w-[800px]' :
+          (nodeType === 'group' || nodeType === 'sort' || nodeType === 'calc' || nodeType === 'where') ? 'w-full max-w-[560px]' : 'w-[440px]',
         ]"
         style="max-height: 92vh"
         @click.stop
@@ -1341,222 +1239,261 @@ const finishBtnStyle = computed(() => {
         </datalist>
 
         <!-- Body -->
-        <div :class="['flex-1 flex flex-col gap-5', nodeType === 'cte' ? 'overflow-hidden p-5' : 'overflow-y-auto p-5']">
+        <div class="flex-1 flex flex-col gap-5 overflow-y-auto p-5">
 
           <!-- ── Named CTE ──────────────────────────────────────────── -->
           <template v-if="nodeType === 'cte'">
 
-            <!-- CTE name -->
-            <div class="flex flex-col gap-1.5">
-              <label class="text-[11px] font-semibold text-violet-500 uppercase tracking-wide">CTE Name</label>
-              <input
-                :value="store.modalNode?.data?.name ?? 'my_cte'"
-                @input="tn.setModalData({ name: ($event.target as HTMLInputElement).value })"
-                class="w-full h-9 px-3 rounded-lg border bg-background text-sm font-mono focus:outline-none focus:ring-2 focus:ring-violet-500/40"
-                placeholder="my_cte"
-                spellcheck="false"
-              />
-              <p class="text-[10px] text-muted-foreground">ชื่อที่ใช้ใน WITH <span class="font-mono text-violet-400">{{ store.modalNode?.data?.name || 'my_cte' }}</span> AS (...)</p>
-            </div>
+            <!-- 2-column grid: left=name+where, right=columns+preview -->
+            <div class="grid grid-cols-[1fr_1fr] gap-5 items-start">
 
-            <!-- Column picker — 2-panel layout -->
-            <div class="flex flex-col gap-2 flex-1 min-h-0">
-              <!-- Header row -->
-              <div class="flex items-center justify-between shrink-0">
-                <label class="text-[11px] font-semibold text-violet-500 uppercase tracking-wide">
-                  SELECT COLUMNS
-                  <span class="ml-1.5 px-1.5 py-0.5 rounded-full bg-violet-500/15 text-violet-400 text-[9px] font-bold">
-                    {{ (store.modalNode?.data?.selectedCols ?? []).length || '*' }}
-                  </span>
-                </label>
-                <div class="flex gap-1">
-                  <button @click="tn.selectAllCteCols(cteAvailableCols.map(c => c.name))"
-                    class="text-[10px] px-2.5 py-1 rounded-lg border border-violet-500/30 text-violet-400 hover:bg-violet-500/10 transition-colors font-medium">ทั้งหมด</button>
-                  <button @click="tn.clearCteCols()"
-                    class="text-[10px] px-2.5 py-1 rounded-lg border border-border text-muted-foreground hover:bg-accent transition-colors">ล้าง</button>
-                </div>
+            <!-- ── LEFT COLUMN ─────────────────────────────────────── -->
+            <div class="flex flex-col gap-4">
+
+              <!-- CTE name -->
+              <div class="flex flex-col gap-1.5">
+                <label class="text-[11px] font-semibold text-violet-500 uppercase tracking-wide">CTE Name</label>
+                <input
+                  :value="store.modalNode?.data?.name ?? 'my_cte'"
+                  @input="tn.setModalData({ name: ($event.target as HTMLInputElement).value })"
+                  class="w-full h-9 px-3 rounded-lg border bg-background text-sm font-mono focus:outline-none focus:ring-2 focus:ring-violet-500/40"
+                  placeholder="my_cte"
+                  spellcheck="false"
+                />
+                <p class="text-[10px] text-muted-foreground">
+                  ชื่อที่ใช้ใน WITH <span class="font-mono text-violet-400">{{ store.modalNode?.data?.name || 'my_cte' }}</span> AS (...)
+                </p>
               </div>
 
-              <!-- No tables -->
-              <p v-if="!cteGroupedCols.length" class="text-[11px] text-muted-foreground italic px-1 py-4 text-center">
-                ยังไม่มี table อยู่ในกรอบ CTE — ลาก Table node เข้ากรอบก่อน
-              </p>
-
-              <!-- 2-panel: table list | column list -->
-              <div v-else class="flex gap-0 flex-1 min-h-0 rounded-xl border border-violet-500/20 overflow-hidden">
-
-                <!-- LEFT: table tabs -->
-                <div class="w-44 shrink-0 flex flex-col border-r border-violet-500/15 bg-muted/20 overflow-y-auto">
-                  <button
-                    v-for="group in cteGroupedCols" :key="group.sourceId"
-                    @click="selectedCteGroup = group.sourceId"
-                    :class="[
-                      'flex flex-col items-start px-3 py-2.5 text-left transition-colors border-b border-border/20 last:border-b-0 gap-0.5',
-                      selectedCteGroup === group.sourceId
-                        ? 'bg-violet-500/15 border-l-2 border-l-violet-500'
-                        : 'hover:bg-accent/50 border-l-2 border-l-transparent',
-                    ]"
-                  >
-                    <span class="font-mono text-[10px] font-semibold truncate w-full"
-                      :class="selectedCteGroup === group.sourceId ? 'text-violet-300' : 'text-foreground/80'">
-                      {{ group.sourceLabel }}
+              <!-- WHERE filter -->
+              <div class="flex flex-col gap-2">
+                <div class="flex items-center justify-between">
+                  <label class="text-[11px] font-semibold text-violet-500 uppercase tracking-wide">
+                    WHERE Filter
+                    <span v-if="(store.modalNode?.data?.conditions ?? []).filter((c: any) => c.column).length"
+                      class="ml-1 text-[10px] font-normal text-muted-foreground normal-case">
+                      {{ (store.modalNode?.data?.conditions ?? []).filter((c: any) => c.column).length }} conditions
                     </span>
-                    <div class="flex items-center gap-1.5 w-full">
-                      <span class="text-[8px] text-muted-foreground/60">
-                        {{ group.cols.length }} cols
-                      </span>
-                      <span v-if="(store.modalNode?.data?.selectedCols ?? []).filter((s: string) => group.cols.some(c => c.name === s)).length"
-                        class="text-[8px] px-1 py-0 rounded bg-violet-500/20 text-violet-400 font-bold font-mono">
-                        ✓{{ (store.modalNode?.data?.selectedCols ?? []).filter((s: string) => group.cols.some(c => c.name === s)).length }}
-                      </span>
-                    </div>
+                  </label>
+                  <button @click="tn.addCteCondition()"
+                    class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-violet-500/30 text-violet-400 hover:bg-violet-500/10 transition-colors">
+                    <Plus class="size-2.5" /> เพิ่ม
                   </button>
                 </div>
 
-                <!-- RIGHT: columns of selected table -->
-                <div class="flex-1 flex flex-col min-w-0 min-h-0">
-                  <!-- Table header bar -->
-                  <div v-if="activeCteGroup" class="flex items-center gap-2 px-3 py-2 bg-violet-500/8 border-b border-violet-500/15 shrink-0">
-                    <span class="text-[8px] font-bold px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-400 font-mono">TABLE</span>
-                    <span class="font-mono text-[11px] font-semibold text-foreground/90 flex-1 truncate">{{ activeCteGroup.sourceLabel }}</span>
-                    <button @click="selectAllFromCteGroup(activeCteGroup)"
-                      class="text-[9px] text-violet-400 hover:underline shrink-0 font-medium">ทั้งหมด</button>
-                    <button @click="clearAllFromCteGroup(activeCteGroup)"
-                      class="text-[9px] text-muted-foreground hover:underline shrink-0">ล้าง</button>
-                  </div>
+                <div v-if="(store.modalNode?.data?.conditions ?? []).length" class="flex flex-col gap-2 max-h-[420px] overflow-y-auto pr-1">
+                  <div
+                    v-for="(cond, i) in (store.modalNode?.data?.conditions ?? [])"
+                    :key="i"
+                    class="flex flex-col gap-3 p-3 rounded-xl border bg-violet-500/3 shrink-0"
+                  >
+                    <!-- Header: condition index + delete -->
+                    <div class="flex items-center gap-2">
+                      <span class="text-[10px] font-bold text-violet-500 uppercase tracking-wide flex-1">
+                        Condition {{ Number(i) + 1 }}
+                        <span v-if="cond.column" class="normal-case font-mono text-violet-400 ml-1">
+                          — {{ cond.column }} {{ cond.operator }}
+                        </span>
+                      </span>
+                      <button @click="tn.removeCteCondition(+i)"
+                        class="size-5 flex items-center justify-center rounded hover:bg-destructive/10 hover:text-destructive text-muted-foreground transition-colors">
+                        <X class="size-3.5" />
+                      </button>
+                    </div>
 
-                  <!-- Search -->
-                  <div class="relative shrink-0 border-b border-border/30">
-                    <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground/40 pointer-events-none" />
-                    <input
-                      v-model="cteColSearch"
-                      class="w-full h-8 pl-7 pr-3 bg-transparent text-[11px] focus:outline-none"
-                      placeholder="ค้นหา column…"
-                    />
-                  </div>
-
-                  <!-- No columns -->
-                  <div v-if="!activeCteGroup?.cols.length" class="flex-1 flex items-center justify-center text-[10px] text-muted-foreground/50 italic">
-                    ไม่มีข้อมูล column
-                  </div>
-
-                  <!-- Column list -->
-                  <div v-else class="flex-1 overflow-y-auto">
-                    <p v-if="!filteredActiveCols.length && cteColSearch" class="text-[10px] text-muted-foreground/60 italic px-3 py-3">
-                      ไม่พบ "{{ cteColSearch }}"
-                    </p>
+                    <!-- Column picker -->
                     <button
-                      v-for="c in filteredActiveCols" :key="c.name"
-                      @click="tn.toggleCteCol(c.name)"
+                      @click="toggleCteCondColDropdown(+i, $event)"
                       :class="[
-                        'w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors border-b border-border/15 last:border-b-0',
-                        (store.modalNode?.data?.selectedCols ?? []).includes(c.name)
-                          ? 'bg-violet-500/10 hover:bg-violet-500/15'
-                          : 'hover:bg-accent/40',
+                        'w-full flex items-center gap-2 text-xs border rounded-lg px-2.5 py-2 bg-background text-left transition-colors',
+                        cond.column ? 'border-violet-400/40' : 'border-border hover:border-violet-400/30',
+                        openCteCondColIdx === +i ? 'ring-2 ring-violet-400/50 border-violet-400/40' : '',
                       ]"
                     >
-                      <!-- Checkbox -->
-                      <div :class="[
-                        'size-3.5 rounded border-2 flex items-center justify-center shrink-0 transition-colors',
-                        (store.modalNode?.data?.selectedCols ?? []).includes(c.name)
-                          ? 'bg-violet-500 border-violet-500'
-                          : 'border-border/60 bg-background',
-                      ]">
-                        <svg v-if="(store.modalNode?.data?.selectedCols ?? []).includes(c.name)"
-                          class="size-2 text-white" fill="none" viewBox="0 0 10 10">
-                          <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                        </svg>
-                      </div>
-                      <!-- PK icon -->
-                      <Key v-if="c.isPk" class="size-3 text-amber-400 shrink-0" />
-                      <!-- Type badge -->
-                      <span :class="['text-[8px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(c.type).cls]">
-                        {{ getColTypeBadge(c.type).label }}
-                      </span>
-                      <!-- Name -->
-                      <span :class="['font-mono text-[11px] flex-1 truncate', c.isPk ? 'text-amber-400 font-semibold' : '']">
-                        {{ c.name }}
-                      </span>
-                      <!-- Remark -->
-                      <span v-if="c.remark" class="text-[9px] text-muted-foreground/55 truncate max-w-[140px] shrink-0">
-                        {{ c.remark }}
-                      </span>
-                      <!-- Data type -->
-                      <span class="text-[9px] text-muted-foreground/35 font-mono shrink-0">{{ c.type }}</span>
+                      <template v-if="cond.column">
+                        <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(upstreamCols.find(c => c.name === cond.column)?.type ?? '').cls]">
+                          {{ getColTypeBadge(upstreamCols.find(c => c.name === cond.column)?.type ?? '').label }}
+                        </span>
+                        <div class="flex-1 min-w-0">
+                          <p class="text-[11px] truncate">{{ upstreamCols.find(c => c.name === cond.column)?.remark || cond.column }}</p>
+                          <p v-if="upstreamCols.find(c => c.name === cond.column)?.remark" class="font-mono text-[9px] text-muted-foreground/60 truncate">{{ cond.column }}</p>
+                        </div>
+                      </template>
+                      <span v-else class="text-muted-foreground text-[11px] flex-1">— เลือก Column —</span>
+                      <ChevronDown :class="['size-3 shrink-0 text-muted-foreground transition-transform', openCteCondColIdx === +i ? 'rotate-180' : '']" />
                     </button>
+
+                    <!-- Operator pills (grouped by type, color-coded) -->
+                    <div class="flex flex-col gap-1.5">
+                      <label class="text-[10px] font-semibold text-muted-foreground">เงื่อนไข</label>
+                      <div v-for="group in WHERE_OP_GROUPS" :key="group.color" class="flex flex-wrap gap-1">
+                        <button
+                          v-for="op in group.ops" :key="op"
+                          @click="tn.setCteCondition(+i, { operator: op })"
+                          :class="['text-[10px] px-2.5 py-1 rounded-lg border font-mono font-bold transition-colors whitespace-nowrap', whereOpClass(cond.operator, op)]"
+                        >{{ op }}</button>
+                      </div>
+                    </div>
+
+                    <!-- Value input: date picker or text, hidden for IS NULL / IS NOT NULL -->
+                    <div v-if="cond.operator && !['IS NULL', 'IS NOT NULL'].includes(cond.operator)" class="flex items-center gap-2">
+                      <label class="text-[10px] font-semibold text-muted-foreground w-8 shrink-0">ค่า</label>
+                      <!-- Date picker for date columns -->
+                      <div v-if="isDateCol(cond.column)" class="flex-1 relative flex items-center">
+                        <input
+                          :ref="(el) => setCteDateRef(Number(i), el)"
+                          type="date"
+                          :value="cond.value"
+                          @input="tn.setCteCondition(+i, { value: ($event.target as HTMLInputElement).value })"
+                          class="flex-1 text-xs border rounded-lg pl-2.5 pr-9 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-violet-400/50 font-mono"
+                          :class="cond.value ? 'border-violet-400/40' : ''"
+                        />
+                        <button type="button" @click="openCteDatePicker(Number(i))"
+                          class="absolute right-2 size-5 flex items-center justify-center rounded text-violet-500 hover:bg-violet-500/15 transition-colors">
+                          <Calendar class="size-3.5" />
+                        </button>
+                      </div>
+                      <!-- Text input for int / varchar / other -->
+                      <input
+                        v-else
+                        :value="cond.value"
+                        @input="tn.setCteCondition(+i, { value: ($event.target as HTMLInputElement).value })"
+                        :placeholder="cond.operator === 'LIKE' ? 'เช่น %keyword%' : cond.operator === 'IN' ? 'เช่น 1,2,3' : 'ค่าที่ต้องการ'"
+                        class="flex-1 text-xs border rounded-lg px-2.5 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-violet-400/50 font-mono"
+                        :class="cond.value ? 'border-violet-400/40' : ''"
+                      />
+                    </div>
+
+                    <!-- Condition SQL preview -->
+                    <div v-if="cond.column && cond.operator"
+                      class="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-violet-500/5 border border-violet-400/20">
+                      <span class="text-[9px] font-bold text-violet-500 shrink-0">SQL</span>
+                      <code class="text-[9px] font-mono text-violet-300/80 truncate">
+                        {{ cond.column }} {{ cond.operator }}{{ !['IS NULL','IS NOT NULL'].includes(cond.operator) ? ` '${cond.value || '?'}'` : '' }}
+                      </code>
+                    </div>
+                  </div>
+                </div>
+                <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">ไม่มี filter = ดึงข้อมูลทั้งหมด</p>
+              </div>
+
+            </div><!-- /LEFT COLUMN -->
+
+            <!-- ── RIGHT COLUMN ────────────────────────────────────── -->
+            <div class="flex flex-col gap-4">
+
+              <!-- Column picker -->
+              <div class="flex flex-col gap-3 border rounded-xl p-4 bg-violet-500/3">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <p class="text-xs font-bold text-violet-500">SELECT Columns</p>
+                    <p class="text-[10px] text-muted-foreground mt-0.5">ไม่เลือก = SELECT * (ทุก columns)</p>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <span class="text-[10px] font-semibold text-violet-500 bg-violet-500/10 px-2 py-0.5 rounded-full">
+                      {{ (store.modalNode?.data?.selectedCols ?? []).length || '*' }}
+                    </span>
+                    <button @click="tn.selectAllCteCols(upstreamCols.map((c: any) => c.name))"
+                      class="text-[10px] text-violet-500 hover:underline font-semibold">ทั้งหมด</button>
+                    <span class="text-muted-foreground text-[10px]">/</span>
+                    <button @click="tn.clearCteCols()"
+                      class="text-[10px] text-muted-foreground hover:underline">SELECT *</button>
                   </div>
                 </div>
 
-              </div>
-
-              <!-- Footer hint -->
-              <p v-if="!(store.modalNode?.data?.selectedCols ?? []).length" class="text-[10px] text-muted-foreground/50 italic shrink-0">
-                ไม่เลือก = SELECT * (ทุก columns)
-              </p>
-            </div>
-
-            <!-- WHERE conditions -->
-            <div class="flex flex-col gap-2">
-              <div class="flex items-center justify-between">
-                <label class="text-[11px] font-semibold text-violet-500 uppercase tracking-wide">
-                  WHERE Filter
-                  <span v-if="(store.modalNode?.data?.conditions ?? []).filter((c: any) => c.column).length"
-                    class="ml-1 text-[10px] font-normal text-muted-foreground normal-case">
-                    {{ (store.modalNode?.data?.conditions ?? []).filter((c: any) => c.column).length }} conditions
-                  </span>
-                </label>
-                <button @click="tn.addCteCondition()"
-                  class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-violet-500/30 text-violet-400 hover:bg-violet-500/10 transition-colors">
-                  <Plus class="size-2.5" /> เพิ่ม
-                </button>
-              </div>
-              <div v-if="(store.modalNode?.data?.conditions ?? []).length" class="flex flex-col gap-2">
-                <div
-                  v-for="(cond, i) in (store.modalNode?.data?.conditions ?? [])"
-                  :key="i"
-                  class="flex items-center gap-2 p-2.5 rounded-xl border bg-muted/20"
-                >
-                  <!-- Column dropdown -->
-                  <button
-                    @click="toggleCteCondColDropdown(+i, $event)"
-                    :class="[
-                      'flex-1 h-7 px-2 rounded-lg border text-left text-[11px] font-mono flex items-center gap-1.5 min-w-0 transition-colors',
-                      openCteCondColIdx === +i ? 'border-violet-500/60 bg-violet-500/5' : 'border-border bg-background hover:border-violet-400/40',
-                    ]"
-                  >
-                    <template v-if="cond.column">
-                      <span :class="['text-[9px] px-1 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(cteAvailableCols.find(c => c.name === cond.column)?.type ?? '').cls]">
-                        {{ getColTypeBadge(cteAvailableCols.find(c => c.name === cond.column)?.type ?? '').label }}
-                      </span>
-                      <span class="truncate">{{ cond.column }}</span>
-                    </template>
-                    <span v-else class="text-muted-foreground/50 truncate">column</span>
-                    <ChevronDown class="size-3 text-muted-foreground/50 ml-auto shrink-0" />
-                  </button>
-                  <!-- Operator -->
-                  <select
-                    :value="cond.operator"
-                    @change="tn.setCteCondition(+i, { operator: ($event.target as HTMLSelectElement).value })"
-                    class="h-7 px-1.5 rounded-lg border bg-background text-[11px] focus:outline-none focus:ring-1 focus:ring-violet-500/40 shrink-0"
-                  >
-                    <option v-for="op in ['=','!=','>','<','>=','<=','LIKE','IN','IS NULL','IS NOT NULL']" :key="op" :value="op">{{ op }}</option>
-                  </select>
-                  <!-- Value -->
+                <!-- Search -->
+                <div class="relative">
+                  <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground/50" />
                   <input
-                    v-if="!['IS NULL','IS NOT NULL'].includes(cond.operator)"
-                    :value="cond.value"
-                    @input="tn.setCteCondition(+i, { value: ($event.target as HTMLInputElement).value })"
-                    class="w-24 h-7 px-2 rounded-lg border bg-background text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-violet-500/40 shrink-0"
-                    placeholder="value"
+                    v-model="cteColSearch"
+                    placeholder="ค้นหา column..."
+                    class="w-full text-xs border rounded-lg pl-7 pr-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-violet-400/50 font-mono"
                   />
-                  <button @click="tn.removeCteCondition(+i)"
-                    class="size-6 flex items-center justify-center rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors shrink-0">
-                    <X class="size-3" />
-                  </button>
+                </div>
+
+                <!-- No upstream cols -->
+                <div v-if="!upstreamCols.length"
+                  class="flex items-center gap-2 px-3 py-3 rounded-lg bg-muted/30 text-[10px] text-muted-foreground italic">
+                  ลาก table / GROUP BY node เข้ามาก่อนเพื่อดู columns
+                </div>
+
+                <!-- Grouped column picker: one card per source table (Union style) -->
+                <div v-else class="flex flex-col gap-3 max-h-[380px] overflow-y-auto pr-0.5">
+                  <div
+                    v-for="group in filteredGroupedCteCols" :key="group.tableId"
+                    class="border border-violet-500/20 rounded-xl overflow-hidden"
+                  >
+                    <!-- Group header -->
+                    <div class="flex items-center gap-2 px-3 py-2 bg-violet-500/8 border-b border-violet-500/15">
+                      <span :class="[
+                        'text-[8px] font-bold px-1.5 py-0.5 rounded font-mono uppercase shrink-0',
+                        group.tableId === 'GROUP BY' ? 'bg-orange-500/20 text-orange-400' : 'bg-sky-500/20 text-sky-400',
+                      ]">{{ group.tableId === 'GROUP BY' ? 'GROUP' : 'TABLE' }}</span>
+                      <span class="font-mono text-[11px] font-semibold text-foreground/90 flex-1 truncate">{{ group.tableLabel }}</span>
+                      <span v-if="(store.modalNode?.data?.selectedCols ?? []).filter((s: string) => group.cols.some(c => c.name === s)).length"
+                        class="text-[9px] px-1.5 py-0 rounded bg-violet-500/20 text-violet-400 font-bold font-mono shrink-0">
+                        ✓{{ (store.modalNode?.data?.selectedCols ?? []).filter((s: string) => group.cols.some(c => c.name === s)).length }}
+                      </span>
+                      <div class="flex items-center gap-1.5 shrink-0 ml-1">
+                        <button @click="selectAllFromCteGroup(group)"
+                          class="text-[9px] font-semibold text-violet-400 hover:underline">ทั้งหมด</button>
+                        <span class="text-muted-foreground text-[9px]">/</span>
+                        <button @click="clearAllFromCteGroup(group)"
+                          class="text-[9px] text-muted-foreground hover:underline">ล้าง</button>
+                      </div>
+                    </div>
+
+                    <!-- Columns -->
+                    <div class="divide-y divide-border/30">
+                      <label
+                        v-for="col in group.cols" :key="col.name"
+                        class="flex items-center gap-2.5 px-3 py-1.5 cursor-pointer select-none transition-colors hover:bg-violet-500/5"
+                        :class="(store.modalNode?.data?.selectedCols ?? []).includes(col.name) ? 'bg-violet-500/5' : ''"
+                      >
+                        <div :class="[
+                          'size-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors',
+                          (store.modalNode?.data?.selectedCols ?? []).includes(col.name)
+                            ? 'bg-violet-500 border-violet-500'
+                            : 'border-border/60 bg-background',
+                        ]">
+                          <svg v-if="(store.modalNode?.data?.selectedCols ?? []).includes(col.name)"
+                            class="size-2.5 text-white" fill="none" viewBox="0 0 10 10">
+                            <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                          </svg>
+                          <input type="checkbox" class="sr-only"
+                            :checked="(store.modalNode?.data?.selectedCols ?? []).includes(col.name)"
+                            @change="tn.toggleCteCol(col.name)"
+                          />
+                        </div>
+                        <Key v-if="col.isPk" class="size-3 text-amber-400 shrink-0" />
+                        <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(col.type).cls]">
+                          {{ getColTypeBadge(col.type).label }}
+                        </span>
+                        <span class="font-mono text-[11px] flex-1 truncate" :class="col.isPk ? 'text-amber-500 font-semibold' : ''">
+                          {{ col.name }}
+                        </span>
+                        <span v-if="col.remark" class="text-[9px] text-muted-foreground/50 truncate max-w-[80px] ml-1">
+                          {{ col.remark }}
+                        </span>
+                      </label>
+                      <div v-if="group.cols.length === 0 && cteColSearch"
+                        class="px-3 py-2 text-[10px] text-muted-foreground/60 italic">
+                        ไม่พบ column ที่ตรงกับ "{{ cteColSearch }}"
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
-              <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">ไม่มี filter = ดึงข้อมูลทั้งหมด</p>
-            </div>
+
+              <!-- SQL Preview -->
+              <div v-if="upstreamCols.length"
+                class="flex items-start gap-1.5 px-3 py-2 rounded-lg bg-violet-500/5 border border-violet-400/20">
+                <span class="text-[9px] font-bold text-violet-500 shrink-0 mt-0.5">SQL</span>
+                <code class="text-[9px] font-mono text-violet-300/80 break-all leading-relaxed whitespace-pre-wrap">{{ cteSqlPreview }}</code>
+              </div>
+
+            </div><!-- /RIGHT COLUMN -->
+            </div><!-- /grid -->
 
           </template>
 
