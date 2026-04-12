@@ -234,7 +234,7 @@ function colDetail(details: typeof sourceDetails.value, colName: string) {
         class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
         @click.self="close"
       >
-        <div class="bg-background border rounded-2xl shadow-2xl w-full max-w-xl mx-4 overflow-hidden flex flex-col max-h-[90vh]" @click.stop>
+        <div class="bg-background border rounded-2xl shadow-2xl w-full max-w-xl mx-4 overflow-hidden flex flex-col h-[80vh]" @click.stop>
 
           <!-- Header -->
           <div class="flex items-center gap-3 px-5 py-4 border-b shrink-0"

@@ -8,7 +8,7 @@ import { useKeyboardShortcuts } from '~/composables/sql-builder/useKeyboardShort
 import { useSqlGenerator } from '~/composables/sql-builder/useSqlGenerator'
 
 definePageMeta({ layout: 'workspace', auth: true })
-useHead({ title: 'SQL Builder | MangoBI' })
+useHead({ title: 'SQL Builder | MangoBI', bodyAttrs: { class: 'sql-builder-active' } })
 
 const store    = useSqlBuilderStore()
 const erpData  = useErpData()
@@ -40,10 +40,19 @@ onUnmounted(() => {
   shortcuts.uninstall()
 })
 
-// Auto-record history on changes
-watch(() => [store.nodes, store.edges], () => {
-  history.recordHistory()
-}, { deep: true })
+// Auto-record history on structural/data changes.
+// ⚡ Intentionally does NOT watch n.position — drag updates position 60×/sec
+//    and would flood the history debouncer. Positions are saved via onNodeDragStop in Canvas.
+watch(
+  () => store.nodes.map((n: any) => ({ id: n.id, type: n.type, data: n.data })),
+  () => history.recordHistory(),
+  { deep: true }
+)
+watch(
+  () => store.edges.map((e: any) => ({ id: e.id, source: e.source, target: e.target, data: e.data })),
+  () => history.recordHistory(),
+  { deep: true }
+)
 
 // Force Vue Flow to sync node data from store when any modal closes
 function syncNodeToVueFlow(nodeId: string) {

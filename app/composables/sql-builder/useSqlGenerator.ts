@@ -39,7 +39,7 @@ export function useSqlGenerator() {
     }
 
     // CTE pipeline
-    store.generatedSQL = buildCTESQL(nodes, edges, tableNodes, toolNodes, cteFrameNodes)
+    store.generatedSQL = buildCTESQL(nodes, edges, tableNodes, cteFrameNodes)
     store.sqlPanelOpen = true
   }
 
@@ -74,7 +74,7 @@ export function useSqlGenerator() {
   // ── CTE-based SQL ─────────────────────────────────────────────────────
   function buildCTESQL(
     nodes: Node[], edges: Edge[],
-    tableNodes: Node[], toolNodes: Node[], cteFrameNodes: Node[],
+    tableNodes: Node[], cteFrameNodes: Node[],
   ): string {
     const sorted = topologicalSort(nodes, edges)
 
@@ -277,13 +277,24 @@ export function useSqlGenerator() {
 
       const nt = node.data.nodeType as string
 
-      // sort node: not a CTE — just captures ORDER BY for the final SELECT
+      // sort node: ORDER BY goes to final SELECT; WHERE pre-filter (if any) gets its own CTE
       if (nt === 'sort') {
         const items = (node.data.items ?? []).filter((s: any) => s.col)
         if (items.length) {
           sortOrder = items.map((s: any) => `${s.col} ${s.dir}`).join(', ')
         }
-        nodeOutput.set(node.id, upName)  // pass-through
+        const sortConds = (node.data.conditions ?? []).filter((c: any) => c.column && c.operator)
+        if (sortConds.length) {
+          // Pre-filter: create a WHERE CTE so the conditions are actually applied
+          const filterName = nextCteIdx()
+          const filterSql  = `SELECT *\nFROM ${upName}\nWHERE ${sortConds.map(formatCondClause).join('\n  AND ')}`
+          ctes.push({ name: filterName, sql: filterSql })
+          nodeOutput.set(node.id, filterName)
+          lastCTE = filterName
+          cteOutputCols.set(filterName, cteOutputCols.get(upName) ?? [])
+        } else {
+          nodeOutput.set(node.id, upName)  // pass-through
+        }
         continue
       }
 
@@ -296,7 +307,7 @@ export function useSqlGenerator() {
         case 'cte':    cteSql = buildCteToolBlock(node, upName); break
         case 'where':  cteSql = buildWhereBlock(node, upName);   break
         case 'group':  cteSql = buildGroupBlock(node, upName);   break
-        case 'calc':   cteSql = buildCalcBlock(node, upName);    break
+        case 'calc':   cteSql = buildCalcBlock(node, upName, cteOutputCols.get(upName) ?? []);    break
         case 'union': {
           const upPairs = upIds
             .map(id => ({ id, name: nodeOutput.get(id) ?? '' }))
@@ -435,7 +446,26 @@ export function useSqlGenerator() {
           }
         }
       } else {
-        selectCols.push(`  ${tbl}.*`)
+        // No visibleCols — try details metadata to generate explicit cols (avoid ambiguous * when joining)
+        const details = tn.data.details as any[] | undefined
+        if (details?.length) {
+          for (const col of details) {
+            const colName: string = col.column_name
+            if (usedOutputNames.has(colName)) {
+              let aliasName = `${tbl}_${colName}`
+              let idx = 2
+              while (usedOutputNames.has(aliasName)) aliasName = `${tbl}_${colName}_${idx++}`
+              selectCols.push(`  ${tbl}.${colName} AS ${aliasName}`)
+              usedOutputNames.add(aliasName)
+            } else {
+              selectCols.push(`  ${tbl}.${colName}`)
+              usedOutputNames.add(colName)
+            }
+          }
+        } else {
+          // No metadata at all — fall back to wildcard (may cause ambiguity if cols overlap)
+          selectCols.push(`  ${tbl}.*`)
+        }
       }
     }
 
@@ -503,14 +533,7 @@ export function useSqlGenerator() {
     let sql = `SELECT\n${selectPart}\nFROM ${upstream}`
 
     if (conditions.length) {
-      const whereClauses = conditions.map((c: any) => {
-        if (c.operator === 'IS NULL')     return `${c.column} IS NULL`
-        if (c.operator === 'IS NOT NULL') return `${c.column} IS NOT NULL`
-        if (c.operator === 'LIKE')        return `${c.column} LIKE N'${escapeSQL(c.value)}'`
-        if (c.operator === 'IN')          return `${c.column} IN (${c.value})`
-        return `${c.column} ${c.operator} '${escapeSQL(c.value)}'`
-      })
-      sql += `\nWHERE ${whereClauses.join('\n  AND ')}`
+      sql += `\nWHERE ${conditions.map(formatCondClause).join('\n  AND ')}`
     }
 
     return sql
@@ -551,17 +574,14 @@ export function useSqlGenerator() {
       sql = sql.replace(/^SELECT\n[\s\S]*?\nFROM/, `SELECT\n${qualifiedCols.join(',\n')}\nFROM`)
     }
 
-    // Append WHERE conditions
+    // Append WHERE conditions — qualify column with table alias to avoid ambiguity
     const conditions = ((frame.data as any).conditions ?? []).filter((c: any) => c.column && c.operator)
     if (conditions.length) {
+      const colTableMap2 = buildColTableMap(childTables)
       const whereClauses = conditions.map((c: any) => {
-        if (c.operator === 'IS NULL')     return `${c.column} IS NULL`
-        if (c.operator === 'IS NOT NULL') return `${c.column} IS NOT NULL`
-        if (c.operator === 'LIKE')        return `${c.column} LIKE N'${escapeSQL(c.value)}'`
-        if (c.operator === 'IN')          return `${c.column} IN (${c.value})`
-        return `${c.column} ${c.operator} '${escapeSQL(c.value)}'`
+        const tbl = colTableMap2.get(c.column)
+        return formatCondClause({ ...c, column: tbl ? `${tbl}.${c.column}` : c.column })
       })
-      // Append or merge WHERE
       if (sql.includes('\nWHERE ')) {
         sql += `\n  AND ${whereClauses.join('\n  AND ')}`
       } else {
@@ -576,14 +596,7 @@ export function useSqlGenerator() {
   function buildWhereBlock(node: Node, upstream: string): string {
     const conds = (node.data.conditions ?? []).filter((c: any) => c.column && c.operator)
     if (!conds.length) return `SELECT * FROM ${upstream}`
-    const clauses = conds.map((c: any) => {
-      if (c.operator === 'IS NULL')     return `${c.column} IS NULL`
-      if (c.operator === 'IS NOT NULL') return `${c.column} IS NOT NULL`
-      if (c.operator === 'LIKE')        return `${c.column} LIKE N'${escapeSQL(c.value)}'`
-      if (c.operator === 'IN')          return `${c.column} IN (${c.value})`
-      return `${c.column} ${c.operator} '${escapeSQL(c.value)}'`
-    })
-    return `SELECT *\nFROM ${upstream}\nWHERE ${clauses.join('\n  AND ')}`
+    return `SELECT *\nFROM ${upstream}\nWHERE ${conds.map(formatCondClause).join('\n  AND ')}`
   }
 
   // ── GROUP BY CTE block ────────────────────────────────────────────────
@@ -604,43 +617,66 @@ export function useSqlGenerator() {
     ]
 
     let sql = `SELECT\n${selectParts.join(',\n')}\nFROM ${upstream}`
+
+    // WHERE pre-filter (applied before GROUP BY)
+    const preConds = (node.data.conditions ?? []).filter((c: any) => c.column && c.operator)
+    if (preConds.length) sql += `\nWHERE ${preConds.map(formatCondClause).join('\n  AND ')}`
+
     if (groupCols.length) sql += `\nGROUP BY ${groupCols.join(', ')}`
 
     // HAVING from agg filters
     const having = (node.data.filters ?? [])
       .filter((f: any) => f.column && f.operator)
-      .map((f: any) => {
-        if (['IS NULL', 'IS NOT NULL'].includes(f.operator)) return `${f.column} ${f.operator}`
-        if (f.operator === 'LIKE') return `${f.column} LIKE N'${escapeSQL(f.value)}'`
-        if (f.operator === 'IN')   return `${f.column} IN (${f.value})`
-        const val = /^-?\d+(\.\d+)?$/.test(String(f.value ?? '')) ? f.value : `'${escapeSQL(f.value)}'`
-        return `${f.column} ${f.operator} ${val}`
-      })
+      .map(formatCondClause)
     if (having.length) sql += `\nHAVING ${having.join('\n  AND ')}`
 
     return sql
   }
 
   // ── CALC CTE block ────────────────────────────────────────────────────
-  function buildCalcBlock(node: Node, upstream: string): string {
+  // upstreamColNames: actual output column names from the upstream CTE (from cteOutputCols map).
+  // Using this instead of node.data.availableCols ensures we have the complete + accurate list,
+  // including JOIN-aliased columns (e.g. tbl_id), not just the subset stored at node creation.
+  function buildCalcBlock(node: Node, upstream: string, upstreamColNames: string[] = []): string {
     const items = (node.data.items ?? []).filter((c: any) => c.col && c.op)
     if (!items.length) return `SELECT * FROM ${upstream}`
-    const exprs = items.map((c: any) => {
-      const expr = calcExpr(c.op, c.col, c.value ?? '')
-      const as = c.alias || `${c.col}_calc`
-      return `  (${expr}) AS ${as}`
+
+    const calcItems = items.map((c: any) => {
+      const expr  = calcExpr(c.op, c.col, c.value ?? '')
+      const alias = c.alias || `${c.col}_calc`
+      return { col: c.col as string, expr, alias }
     })
-    let sql = `SELECT *,\n${exprs.join(',\n')}\nFROM ${upstream}`
+
+    const aliasSet = new Set(calcItems.map(i => i.alias))
+
+    // Check if any calc alias conflicts with an existing upstream column name.
+    // upstreamColNames comes from cteOutputCols (the generator's own computed col list),
+    // so it reflects JOIN aliases and is always complete.
+    const conflictingAliases = upstreamColNames.length
+      ? new Set(upstreamColNames.filter(n => aliasSet.has(n)))
+      : new Set<string>()
+
+    let sql: string
+    if (conflictingAliases.size > 0 && upstreamColNames.length > 0) {
+      // Build explicit SELECT: list all upstream cols except the ones being replaced,
+      // then append the calc expressions with their aliases.
+      const upCols    = upstreamColNames.filter(n => !conflictingAliases.has(n)).map(n => `  ${n}`)
+      const calcExprs = calcItems.map(i => `  (${i.expr}) AS ${i.alias}`)
+      sql = `SELECT\n${[...upCols, ...calcExprs].join(',\n')}\nFROM ${upstream}`
+    } else {
+      // No known conflicts — use SELECT * and add calculated columns.
+      // Safety: if alias still equals the source col name, auto-suffix to prevent
+      // SQL Server "column specified multiple times" error.
+      const safeExprs = calcItems.map(i => {
+        const safeAlias = i.alias === i.col ? `${i.col}_calc` : i.alias
+        return `  (${i.expr}) AS ${safeAlias}`
+      })
+      sql = `SELECT *,\n${safeExprs.join(',\n')}\nFROM ${upstream}`
+    }
+
     const filters = (node.data.filters ?? []).filter((f: any) => f.column && f.operator)
     if (filters.length) {
-      const clauses = filters.map((f: any) => {
-        if (f.operator === 'IS NULL')     return `${f.column} IS NULL`
-        if (f.operator === 'IS NOT NULL') return `${f.column} IS NOT NULL`
-        if (f.operator === 'LIKE')        return `${f.column} LIKE N'${escapeSQL(f.value)}'`
-        if (f.operator === 'IN')          return `${f.column} IN (${f.value})`
-        return `${f.column} ${f.operator} '${escapeSQL(f.value)}'`
-      })
-      sql += `\nWHERE ${clauses.join('\n  AND ')}`
+      sql += `\nWHERE ${filters.map(formatCondClause).join('\n  AND ')}`
     }
     return sql
   }
@@ -704,35 +740,54 @@ export function useSqlGenerator() {
     const conditions = (node.data.conditions ?? []).filter((c: any) => c.column && c.operator)
     if (!conditions.length) return unionSql
 
-    const whereClauses = conditions.map((c: any) => {
-      if (c.operator === 'IS NULL')     return `${c.column} IS NULL`
-      if (c.operator === 'IS NOT NULL') return `${c.column} IS NOT NULL`
-      if (c.operator === 'LIKE')        return `${c.column} LIKE N'${escapeSQL(c.value)}'`
-      if (c.operator === 'IN')          return `${c.column} IN (${c.value})`
-      return `${c.column} ${c.operator} '${escapeSQL(c.value)}'`
-    })
-
-    return `SELECT * FROM (\n${indent(unionSql)}\n) _u\nWHERE ${whereClauses.join('\n  AND ')}`
+    return `SELECT * FROM (\n${indent(unionSql)}\n) _u\nWHERE ${conditions.map(formatCondClause).join('\n  AND ')}`
   }
 
   // ── Table-level filters ───────────────────────────────────────────────
+  // Always qualify column with table alias to avoid ambiguity when multiple
+  // tables in a JOIN share the same column name (SQL Server error 209).
   function buildTableFilters(tableNodes: Node[]): string[] {
+    // Build a global column→(tableAlias, rawType) map across ALL joined tables.
+    // This way, a filter added on the wrong node (e.g. "itemno" stored on ap_poheader
+    // but actually owned by ap_podetail) still resolves to the correct table alias.
+    const colOwner = new Map<string, { tbl: string; rawType: string }>()
+    for (const tn of tableNodes) {
+      const tbl     = alias(tn)
+      const details = (tn.data.details ?? []) as any[]
+      for (const d of details) {
+        if (!colOwner.has(d.column_name)) {
+          colOwner.set(d.column_name, { tbl, rawType: d.column_type ?? d.data_type ?? '' })
+        }
+      }
+      // Fall back to visibleCols if details missing
+      if (!details.length) {
+        const visible = (tn.data.visibleCols ?? []) as any[]
+        for (const col of visible) {
+          if (!colOwner.has(col.name)) {
+            colOwner.set(col.name, { tbl, rawType: col.type ?? '' })
+          }
+        }
+      }
+    }
+
     const clauses: string[] = []
     for (const tn of tableNodes) {
       const filters = tn.data.filters as any[] | undefined
       if (!filters?.length) continue
+      const fallbackTbl = alias(tn)
+
       for (const f of filters) {
         if (!f.column || !f.operator) continue
-        if (['IS NULL', 'IS NOT NULL'].includes(f.operator)) {
-          clauses.push(`${f.column} ${f.operator}`)
-        } else if (f.operator === 'LIKE') {
-          clauses.push(`${f.column} LIKE N'${escapeSQL(f.value)}'`)
-        } else if (f.operator === 'IN') {
-          clauses.push(`${f.column} IN (${f.value})`)
-        } else {
-          const val = f.type === 'int' ? f.value : `'${escapeSQL(f.value)}'`
-          clauses.push(`${f.column} ${f.operator} ${val}`)
-        }
+        // Look up the actual owning table across all joined tables
+        const owner   = colOwner.get(f.column)
+        const tbl     = owner?.tbl ?? fallbackTbl
+        const rawType = owner?.rawType ?? f.type ?? ''
+        clauses.push(formatCondClause({
+          column: `${tbl}.${f.column}`,
+          operator: f.operator,
+          value: f.value,
+          colType: rawType,
+        }))
       }
     }
     return clauses
@@ -743,6 +798,32 @@ export function useSqlGenerator() {
   function alias(n: Node): string     { return tableName(n) }  // can extend to t1/t2 aliases
   function escapeSQL(v: string): string { return String(v ?? '').replace(/'/g, "''") }
   function indent(sql: string): string  { return sql.split('\n').map(l => `    ${l}`).join('\n') }
+
+  // ── Shared condition clause formatter ─────────────────────────────────
+  // Handles IS NULL, IS NOT NULL, LIKE (N'...'), IN (...), and smart numeric quoting.
+  // colType (e.g. 'int', 'decimal') → no quotes for numeric types.
+  // Falls back to regex detection when colType is unknown.
+  const NUMERIC_TYPES = /^(int|integer|bigint|smallint|tinyint|decimal|numeric|float|double|real|money|smallmoney|number|bit)(\s|\(|$)/i
+  const DATE_TYPES    = /^(datetime2|datetimeoffset|smalldatetime|datetime|date|time|timestamp)(\s|\(|$)/i
+  const STRING_TYPES  = /^(varchar|nvarchar|char|nchar|text|ntext|xml|uniqueidentifier)/i
+  function formatCondClause(c: { column: string; operator: string; value?: any; colType?: string }): string {
+    const col = c.column
+    const op  = c.operator
+    const val = String(c.value ?? '')
+    if (op === 'IS NULL')     return `${col} IS NULL`
+    if (op === 'IS NOT NULL') return `${col} IS NOT NULL`
+    if (op === 'LIKE')        return `${col} LIKE N'${escapeSQL(val)}'`
+    if (op === 'IN')          return `${col} IN (${val})`
+    const ct = c.colType ?? ''
+    // Explicit numeric type → no quotes
+    if (ct && NUMERIC_TYPES.test(ct))  return `${col} ${op} ${val}`
+    // Explicit date/string type → always quote
+    if (ct && (DATE_TYPES.test(ct) || STRING_TYPES.test(ct))) return `${col} ${op} '${escapeSQL(val)}'`
+    // No type info → use regex on value: pure integer/decimal → no quotes
+    return /^-?\d+(\.\d+)?$/.test(val)
+      ? `${col} ${op} ${val}`
+      : `${col} ${op} '${escapeSQL(val)}'`
+  }
   function sanitizeCteName(name: string): string {
     return name.trim().replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '').replace(/^([0-9])/, '_$1') || 'cte_group'
   }

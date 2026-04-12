@@ -7,6 +7,7 @@
  *   2. Addspec_Table_Read   → actual DB column types (merged into columns)
  *   3. Auto-create related nodes (grid layout) + edges with mappings
  */
+import { nextTick } from 'vue'
 import { MarkerType, useVueFlow } from '@vue-flow/core'
 import {
   TOOL_NODE_DEFAULTS, getEdgeStyle,
@@ -25,7 +26,7 @@ const RELATED_USE_TYPES = new Set(['H', 'D', 'M'])
 export function useDragDrop() {
   const store   = useSqlBuilderStore()
   const erpData = useErpData()
-  const { screenToFlowCoordinate } = useVueFlow('sql-builder')
+  const { screenToFlowCoordinate, updateNodeInternals } = useVueFlow('sql-builder')
 
   // ── Drag start from left panel ──────────────────────────────────────────
   function onDragStart(e: DragEvent, obj: any) {
@@ -342,41 +343,154 @@ export function useDragDrop() {
       return
     }
 
-    // Resolve selected parent node
-    const parentNode = store.selectedNodeId
-      ? store.nodes.find((n: any) => n.id === store.selectedNodeId) ?? null
+    // ── Find anchor node (selected or last-selected) ────────────────────────
+    const anchorId = store.selectedNodeId
+      ?? store.selectedNodeIds[store.selectedNodeIds.length - 1]
+      ?? null
+    const anchorNode = anchorId
+      ? store.nodes.find((n: any) => n.id === anchorId) ?? null
       : null
 
-    // Position: right of parent (offset 340px) or centre of viewport
-    const position = parentNode
-      ? { x: parentNode.position.x + 340, y: parentNode.position.y }
-      : { x: (-viewportX + 400) / zoom, y: (-viewportY + 200) / zoom }
+    // ── Collect source nodes ───────────────────────────────────────────────
+    // 1. If anchor is a sqlTable → flood-fill all JOIN-connected tables
+    // 2. If anchor is a toolNode → use it directly
+    // 3. No selection → connect to ALL sqlTable nodes on canvas (fallback)
+    const sourceNodes: any[] = []
+
+    function floodFillJoinCluster(startNode: any) {
+      const visited = new Set<string>()
+      const q: any[] = [startNode]
+      while (q.length) {
+        const n = q.shift()!
+        if (visited.has(n.id)) continue
+        visited.add(n.id)
+        sourceNodes.push(n)
+        for (const e of store.edges) {
+          if ((e as any).data?.isTool) continue
+          if ((e as any).source === n.id) {
+            const tgt = store.nodes.find((x: any) => x.id === (e as any).target)
+            if (tgt?.type === 'sqlTable' && !visited.has(tgt.id)) q.push(tgt)
+          }
+          if ((e as any).target === n.id) {
+            const src2 = store.nodes.find((x: any) => x.id === (e as any).source)
+            if (src2?.type === 'sqlTable' && !visited.has(src2.id)) q.push(src2)
+          }
+        }
+      }
+    }
+
+    if (anchorNode?.type === 'sqlTable') {
+      floodFillJoinCluster(anchorNode)
+    } else if (anchorNode?.type === 'toolNode') {
+      sourceNodes.push(anchorNode)
+    } else {
+      // No selection — auto-connect to all sqlTable nodes on canvas
+      // Group by JOIN cluster: pick the largest cluster
+      const allTables = store.nodes.filter((n: any) => n.type === 'sqlTable')
+      if (allTables.length > 0) {
+        // Find the biggest JOIN cluster among canvas tables
+        const seen = new Set<string>()
+        let biggestCluster: any[] = []
+        for (const tbl of allTables) {
+          if (seen.has(tbl.id)) continue
+          const cluster: any[] = []
+          const q: any[] = [tbl]
+          while (q.length) {
+            const n = q.shift()!
+            if (seen.has(n.id)) continue
+            seen.add(n.id)
+            cluster.push(n)
+            for (const e of store.edges) {
+              if ((e as any).data?.isTool) continue
+              if ((e as any).source === n.id) {
+                const tgt = store.nodes.find((x: any) => x.id === (e as any).target)
+                if (tgt?.type === 'sqlTable' && !seen.has(tgt.id)) q.push(tgt)
+              }
+              if ((e as any).target === n.id) {
+                const src2 = store.nodes.find((x: any) => x.id === (e as any).source)
+                if (src2?.type === 'sqlTable' && !seen.has(src2.id)) q.push(src2)
+              }
+            }
+          }
+          if (cluster.length > biggestCluster.length) biggestCluster = cluster
+        }
+        sourceNodes.push(...biggestCluster)
+      }
+    }
+
+    // ── Position: right of rightmost source, or viewport centre ───────────
+    let position: { x: number; y: number }
+    if (sourceNodes.length) {
+      const maxX = Math.max(...sourceNodes.map((n: any) => n.position.x))
+      const ref   = sourceNodes.find((n: any) => n.position.x === maxX) ?? sourceNodes[0]!
+      position = { x: ref.position.x + 360, y: ref.position.y }
+    } else {
+      position = { x: (-viewportX + 400) / zoom, y: (-viewportY + 200) / zoom }
+    }
+
+    // Collect upstream columns from source nodes so the tool node and the SQL
+    // generator can detect alias conflicts (e.g. CALC col alias = existing col name).
+    const upstreamCols: any[] = []
+    const seenColNames = new Set<string>()
+    for (const src of sourceNodes) {
+      const srcCols: any[] = src.type === 'sqlTable'
+        ? (src.data.visibleCols ?? [])
+        : (src.data.availableCols ?? [])
+      for (const col of srcCols) {
+        if (!seenColNames.has(col.name)) {
+          seenColNames.add(col.name)
+          upstreamCols.push(col)
+        }
+      }
+    }
 
     store.addNode({
       id,
       type: 'toolNode',
       position,
-      data: { ...JSON.parse(JSON.stringify(defaults)) },
+      data: {
+        ...JSON.parse(JSON.stringify(defaults)),
+        ...(upstreamCols.length ? { availableCols: upstreamCols } : {}),
+      },
     })
 
-    // Auto-connect parent → tool node with a neutral dashed edge
-    if (parentNode) {
-      const edgeId = `e-${parentNode.id}-${id}`
-      if (!store.edges.some((e: any) => e.id === edgeId)) {
-        store.edges = [...store.edges, {
-          id:        edgeId,
-          source:    parentNode.id,
-          target:    id,
-          type:      'sqlEdge',
-          animated:  false,
-          style:     { stroke: 'hsl(var(--muted-foreground) / 0.4)', strokeWidth: 1.5, strokeDasharray: '5 4' },
-          markerEnd: MarkerType.ArrowClosed,
-          data:      { joinType: 'LEFT JOIN', mappings: [], isTool: true },
-        } as any]
-      }
+    // Track this as an unsaved (new) node so cancel can delete it
+    store.newToolNodeId = id
+
+    // ── Connect every source → new tool node ──────────────────────────────
+    // Build the edge objects now (before nextTick so IDs are captured)
+    const edgesToAdd: any[] = []
+    for (const src of sourceNodes) {
+      const edgeId = `e-${src.id}-${id}`
+      if (store.edges.some((e: any) => e.id === edgeId)) continue
+      edgesToAdd.push({
+        id:        edgeId,
+        source:    src.id,
+        target:    id,
+        type:      'sqlEdge',
+        animated:  false,
+        style:     { stroke: 'hsl(var(--muted-foreground) / 0.4)', strokeWidth: 1.5, strokeDasharray: '5 4' },
+        markerEnd: MarkerType.ArrowClosed,
+        data:      {
+          joinType: 'LEFT JOIN', mappings: [], isTool: true,
+          srcCat: src.type === 'toolNode' ? 'other' : 'table',
+        },
+      })
     }
 
+    // Open modal immediately
     store.modalNodeId = id
+
+    // Add edges AFTER the node is mounted (nextTick #1 = Vue DOM update,
+    // nextTick #2 = VueFlow internal layout that measures handle positions).
+    // Without this delay the new node's handles are unmeasured and VueFlow
+    // cannot calculate edge paths, so edges are invisible.
+    if (edgesToAdd.length) {
+      nextTick(() => {
+        store.edges = [...store.edges, ...edgesToAdd]
+        nextTick(() => updateNodeInternals([id]))
+      })
+    }
   }
 
   // ── Manual expand: fetch Addspec_Object_Read for an existing canvas node ─
