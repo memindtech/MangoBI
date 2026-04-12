@@ -459,16 +459,19 @@ export function useDragDrop() {
       })
     }
 
-    // Add edges synchronously so they're in the store immediately.
-    // Then force VueFlow to measure the new node's handles, which allows
-    // it to calculate edge paths (without this, edges render as invisible
-    // because handle positions are unknown for a just-mounted node).
-    if (edgesToAdd.length) {
-      store.edges = [...store.edges, ...edgesToAdd]
-      nextTick(() => updateNodeInternals([id]))
-    }
-
+    // Open modal immediately
     store.modalNodeId = id
+
+    // Add edges AFTER the node is mounted (nextTick #1 = Vue DOM update,
+    // nextTick #2 = VueFlow internal layout that measures handle positions).
+    // Without this delay the new node's handles are unmeasured and VueFlow
+    // cannot calculate edge paths, so edges are invisible.
+    if (edgesToAdd.length) {
+      nextTick(() => {
+        store.edges = [...store.edges, ...edgesToAdd]
+        nextTick(() => updateNodeInternals([id]))
+      })
+    }
   }
 
   // ── Manual expand: fetch Addspec_Object_Read for an existing canvas node ─
