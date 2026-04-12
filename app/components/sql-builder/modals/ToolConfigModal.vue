@@ -133,6 +133,10 @@ interface CteColGroup {
   cols:        VisibleCol[]
 }
 
+const cteChildTableNodes = computed(() =>
+  store.modalNode ? getCteFrameChildren(store.modalNode) : []
+)
+
 const cteGroupedCols = computed((): CteColGroup[] => {
   const groups: CteColGroup[] = []
   const visited = new Set<string>()
@@ -152,32 +156,6 @@ const cteGroupedCols = computed((): CteColGroup[] => {
     // Fallback to visibleCols if details not loaded yet
     const visible = node.data.visibleCols as VisibleCol[] | undefined
     return visible ?? []
-  }
-
-  // Walk upstream from CTE modal node, group cols by sqlTable source
-  function walk(nodeId: string, parentLabel?: string) {
-    if (visited.has(nodeId)) return
-    visited.add(nodeId)
-    const node = store.nodes.find((n: any) => n.id === nodeId)
-    if (!node) return
-
-    if (node.type === 'sqlTable') {
-      const cols = getTableCols(node)
-      if (cols.length) {
-        groups.push({
-          sourceId:    node.id as string,
-          sourceLabel: (node.data.tableName || node.data.label || node.id) as string,
-          cteLabel:    parentLabel,
-          cols,
-        })
-      }
-    } else {
-      // tool node — use its label as parent context, then recurse
-      const lbl = (node.data.name || node.data.label || node.data.nodeType) as string | undefined
-      store.edges
-        .filter((e: any) => e.target === nodeId)
-        .forEach((e: any) => walk(e.source as string, lbl ?? parentLabel))
-    }
   }
 
   // Show ONLY nodes inside this CTE frame — header table first
@@ -580,6 +558,85 @@ const unionSqlPreview = computed(() => {
   if (!conds.length) return unionPart
   const wherePart = conds.map((c: any) => condPreview(c)).join('\n  AND ')
   return `SELECT * FROM (\n  ${unionPart.replace(/\n/g, '\n  ')}\n) _u\nWHERE ${wherePart}`
+})
+
+// ── CTE SQL preview ───────────────────────────────────────────────────────
+const cteSqlPreview = computed(() => {
+  const rawCols  = (store.modalNode?.data?.selectedCols ?? []) as string[]
+  const conds    = ((store.modalNode?.data?.conditions ?? []) as any[]).filter(c => c.column && c.operator)
+  const srcLabel = cteGroupedCols.value[0]?.sourceLabel ?? 'cte_source'
+  const selectParts = rawCols.map((raw: string) => {
+    const dotIdx = raw.indexOf('.')
+    return `  ${dotIdx > -1 ? raw.slice(dotIdx + 1) : raw}`
+  })
+  const selectPart = selectParts.length ? selectParts.join(',\n') : '  *'
+  let sql = `SELECT\n${selectPart}\nFROM ${srcLabel}`
+  if (conds.length) {
+    const normConds = conds.map((c: any) => ({
+      ...c,
+      column: String(c.column ?? '').includes('.') ? String(c.column).slice(String(c.column).indexOf('.') + 1) : c.column,
+    }))
+    sql += `\nWHERE ${normConds.map((c: any) => condPreview(c)).join('\n  AND ')}`
+  }
+  return sql
+})
+
+// ── Calc SQL preview ──────────────────────────────────────────────────────
+const calcSqlPreview = computed(() => {
+  const items   = ((store.modalNode?.data?.items ?? []) as any[]).filter((c: any) => c.col && c.op)
+  const filters = ((store.modalNode?.data?.filters ?? []) as any[]).filter((f: any) => f.column && f.operator)
+  const src     = upstreamCols.value[0]?.sourceTable ?? 'upstream'
+  if (!items.length) return `SELECT *\nFROM ${src}`
+  const exprs = items.map((c: any) => {
+    const expr  = calcExprPreview(c.op, c.col, c.value ?? '')
+    const alias = c.alias || `${c.col}_calc`
+    return `  (${expr}) AS ${alias}`
+  })
+  let sql = `SELECT *,\n${exprs.join(',\n')}\nFROM ${src}`
+  if (filters.length) sql += `\nWHERE ${filters.map((f: any) => condPreview(f)).join('\n  AND ')}`
+  return sql
+})
+
+// ── Group SQL preview ─────────────────────────────────────────────────────
+const groupSqlPreview = computed(() => {
+  const groupCols = ((store.modalNode?.data?.groupCols ?? []) as string[]).filter(Boolean)
+  const aggs      = ((store.modalNode?.data?.aggs ?? []) as any[]).filter((a: any) => a.col && a.func)
+  const preConds  = ((store.modalNode?.data?.conditions ?? []) as any[]).filter((c: any) => c.column && c.operator)
+  const having    = ((store.modalNode?.data?.filters ?? []) as any[]).filter((f: any) => f.column && f.operator)
+  const src       = upstreamCols.value[0]?.sourceTable ?? 'upstream'
+  if (!groupCols.length && !aggs.length) return `SELECT *\nFROM ${src}`
+  const selectParts = [
+    ...groupCols.map((c: string) => `  ${c}`),
+    ...aggs.map((a: any) => {
+      const fn = a.func === 'COUNT DISTINCT' ? `COUNT(DISTINCT ${a.col})` : `${a.func}(${a.col})`
+      return a.alias ? `  ${fn} AS ${a.alias}` : `  ${fn}`
+    }),
+  ]
+  let sql = `SELECT\n${selectParts.join(',\n')}\nFROM ${src}`
+  if (preConds.length) sql += `\nWHERE ${preConds.map((c: any) => condPreview(c)).join('\n  AND ')}`
+  if (groupCols.length) sql += `\nGROUP BY ${groupCols.join(', ')}`
+  if (having.length) sql += `\nHAVING ${having.map((f: any) => condPreview(f)).join('\n  AND ')}`
+  return sql
+})
+
+// ── Sort SQL preview ──────────────────────────────────────────────────────
+const sortSqlPreview = computed(() => {
+  const items = ((store.modalNode?.data?.items ?? []) as any[]).filter((s: any) => s.col)
+  const conds = ((store.modalNode?.data?.conditions ?? []) as any[]).filter((c: any) => c.column && c.operator)
+  const src   = upstreamCols.value[0]?.sourceTable ?? 'upstream'
+  let sql = `SELECT *\nFROM ${src}`
+  if (conds.length) sql += `\nWHERE ${conds.map((c: any) => condPreview(c)).join('\n  AND ')}`
+  if (items.length) sql += `\nORDER BY ${items.map((s: any) => `${s.col} ${s.dir}`).join(', ')}`
+  return sql
+})
+
+// ── Where SQL preview ────────────────────────────────────────────────────
+const whereSqlPreview = computed(() => {
+  const conds = ((store.modalNode?.data?.conditions ?? []) as any[]).filter(c => c.column && c.operator)
+  const srcLabel = upstreamCols.value[0]?.sourceTable ?? 'source'
+  if (!conds.length) return `SELECT *\nFROM ${srcLabel}`
+  const wherePart = conds.map((c: any) => condPreview(c)).join('\n  AND ')
+  return `SELECT *\nFROM ${srcLabel}\nWHERE ${wherePart}`
 })
 
 // ── Group By / Sort: field search ────────────────────────────────────────
@@ -1374,7 +1431,7 @@ const finishBtnStyle = computed(() => {
                   <span class="text-[10px] font-semibold text-violet-500 bg-violet-500/10 px-2 py-0.5 rounded-full">
                     {{ (store.modalNode?.data?.selectedCols ?? []).length || '*' }}
                   </span>
-                </label>
+                </div>
                 <div class="flex gap-1">
                   <button @click="cteGroupedCols.forEach(g => selectAllFromCteGroup(g))"
                     class="text-[10px] px-2.5 py-1 rounded-lg border border-violet-500/30 text-violet-400 hover:bg-violet-500/10 transition-colors font-medium">ทั้งหมด</button>
@@ -1391,7 +1448,7 @@ const finishBtnStyle = computed(() => {
               </div>
 
               <!-- 2-panel: table list | column list -->
-              <div v-else class="flex gap-0 flex-1 min-h-0 rounded-xl border border-violet-500/20 overflow-hidden">
+              <div class="flex gap-0 flex-1 min-h-0 rounded-xl border border-violet-500/20 overflow-hidden">
 
                 <!-- LEFT: table tabs -->
                 <div class="w-44 shrink-0 flex flex-col border-r border-violet-500/15 bg-muted/20 overflow-y-auto">
@@ -1508,6 +1565,9 @@ const finishBtnStyle = computed(() => {
                 ไม่เลือก = SELECT * (ทุก columns)
               </p>
             </div>
+
+            <!-- ── RIGHT: WHERE Filter + SQL Preview ────────────────── -->
+            <div class="flex flex-col gap-4 min-w-0">
 
               <!-- WHERE filter -->
               <div class="flex flex-col gap-2">
