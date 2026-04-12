@@ -8,7 +8,7 @@ import { useKeyboardShortcuts } from '~/composables/sql-builder/useKeyboardShort
 import { useSqlGenerator } from '~/composables/sql-builder/useSqlGenerator'
 
 definePageMeta({ layout: 'workspace', auth: true })
-useHead({ title: 'SQL Builder | MangoBI' })
+useHead({ title: 'SQL Builder | MangoBI', bodyAttrs: { class: 'sql-builder-active' } })
 
 const store    = useSqlBuilderStore()
 const erpData  = useErpData()

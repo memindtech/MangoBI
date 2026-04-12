@@ -277,13 +277,24 @@ export function useSqlGenerator() {
 
       const nt = node.data.nodeType as string
 
-      // sort node: not a CTE — just captures ORDER BY for the final SELECT
+      // sort node: ORDER BY goes to final SELECT; WHERE pre-filter (if any) gets its own CTE
       if (nt === 'sort') {
         const items = (node.data.items ?? []).filter((s: any) => s.col)
         if (items.length) {
           sortOrder = items.map((s: any) => `${s.col} ${s.dir}`).join(', ')
         }
-        nodeOutput.set(node.id, upName)  // pass-through
+        const sortConds = (node.data.conditions ?? []).filter((c: any) => c.column && c.operator)
+        if (sortConds.length) {
+          // Pre-filter: create a WHERE CTE so the conditions are actually applied
+          const filterName = nextCteIdx()
+          const filterSql  = `SELECT *\nFROM ${upName}\nWHERE ${sortConds.map(formatCondClause).join('\n  AND ')}`
+          ctes.push({ name: filterName, sql: filterSql })
+          nodeOutput.set(node.id, filterName)
+          lastCTE = filterName
+          cteOutputCols.set(filterName, cteOutputCols.get(upName) ?? [])
+        } else {
+          nodeOutput.set(node.id, upName)  // pass-through
+        }
         continue
       }
 
@@ -296,7 +307,7 @@ export function useSqlGenerator() {
         case 'cte':    cteSql = buildCteToolBlock(node, upName); break
         case 'where':  cteSql = buildWhereBlock(node, upName);   break
         case 'group':  cteSql = buildGroupBlock(node, upName);   break
-        case 'calc':   cteSql = buildCalcBlock(node, upName);    break
+        case 'calc':   cteSql = buildCalcBlock(node, upName, cteOutputCols.get(upName) ?? []);    break
         case 'union': {
           const upPairs = upIds
             .map(id => ({ id, name: nodeOutput.get(id) ?? '' }))
@@ -606,6 +617,11 @@ export function useSqlGenerator() {
     ]
 
     let sql = `SELECT\n${selectParts.join(',\n')}\nFROM ${upstream}`
+
+    // WHERE pre-filter (applied before GROUP BY)
+    const preConds = (node.data.conditions ?? []).filter((c: any) => c.column && c.operator)
+    if (preConds.length) sql += `\nWHERE ${preConds.map(formatCondClause).join('\n  AND ')}`
+
     if (groupCols.length) sql += `\nGROUP BY ${groupCols.join(', ')}`
 
     // HAVING from agg filters
@@ -618,15 +634,46 @@ export function useSqlGenerator() {
   }
 
   // ── CALC CTE block ────────────────────────────────────────────────────
-  function buildCalcBlock(node: Node, upstream: string): string {
+  // upstreamColNames: actual output column names from the upstream CTE (from cteOutputCols map).
+  // Using this instead of node.data.availableCols ensures we have the complete + accurate list,
+  // including JOIN-aliased columns (e.g. tbl_id), not just the subset stored at node creation.
+  function buildCalcBlock(node: Node, upstream: string, upstreamColNames: string[] = []): string {
     const items = (node.data.items ?? []).filter((c: any) => c.col && c.op)
     if (!items.length) return `SELECT * FROM ${upstream}`
-    const exprs = items.map((c: any) => {
-      const expr = calcExpr(c.op, c.col, c.value ?? '')
-      const as = c.alias || `${c.col}_calc`
-      return `  (${expr}) AS ${as}`
+
+    const calcItems = items.map((c: any) => {
+      const expr  = calcExpr(c.op, c.col, c.value ?? '')
+      const alias = c.alias || `${c.col}_calc`
+      return { col: c.col as string, expr, alias }
     })
-    let sql = `SELECT *,\n${exprs.join(',\n')}\nFROM ${upstream}`
+
+    const aliasSet = new Set(calcItems.map(i => i.alias))
+
+    // Check if any calc alias conflicts with an existing upstream column name.
+    // upstreamColNames comes from cteOutputCols (the generator's own computed col list),
+    // so it reflects JOIN aliases and is always complete.
+    const conflictingAliases = upstreamColNames.length
+      ? new Set(upstreamColNames.filter(n => aliasSet.has(n)))
+      : new Set<string>()
+
+    let sql: string
+    if (conflictingAliases.size > 0 && upstreamColNames.length > 0) {
+      // Build explicit SELECT: list all upstream cols except the ones being replaced,
+      // then append the calc expressions with their aliases.
+      const upCols    = upstreamColNames.filter(n => !conflictingAliases.has(n)).map(n => `  ${n}`)
+      const calcExprs = calcItems.map(i => `  (${i.expr}) AS ${i.alias}`)
+      sql = `SELECT\n${[...upCols, ...calcExprs].join(',\n')}\nFROM ${upstream}`
+    } else {
+      // No known conflicts — use SELECT * and add calculated columns.
+      // Safety: if alias still equals the source col name, auto-suffix to prevent
+      // SQL Server "column specified multiple times" error.
+      const safeExprs = calcItems.map(i => {
+        const safeAlias = i.alias === i.col ? `${i.col}_calc` : i.alias
+        return `  (${i.expr}) AS ${safeAlias}`
+      })
+      sql = `SELECT *,\n${safeExprs.join(',\n')}\nFROM ${upstream}`
+    }
+
     const filters = (node.data.filters ?? []).filter((f: any) => f.column && f.operator)
     if (filters.length) {
       sql += `\nWHERE ${filters.map(formatCondClause).join('\n  AND ')}`
@@ -700,20 +747,41 @@ export function useSqlGenerator() {
   // Always qualify column with table alias to avoid ambiguity when multiple
   // tables in a JOIN share the same column name (SQL Server error 209).
   function buildTableFilters(tableNodes: Node[]): string[] {
+    // Build a global column→(tableAlias, rawType) map across ALL joined tables.
+    // This way, a filter added on the wrong node (e.g. "itemno" stored on ap_poheader
+    // but actually owned by ap_podetail) still resolves to the correct table alias.
+    const colOwner = new Map<string, { tbl: string; rawType: string }>()
+    for (const tn of tableNodes) {
+      const tbl     = alias(tn)
+      const details = (tn.data.details ?? []) as any[]
+      for (const d of details) {
+        if (!colOwner.has(d.column_name)) {
+          colOwner.set(d.column_name, { tbl, rawType: d.column_type ?? d.data_type ?? '' })
+        }
+      }
+      // Fall back to visibleCols if details missing
+      if (!details.length) {
+        const visible = (tn.data.visibleCols ?? []) as any[]
+        for (const col of visible) {
+          if (!colOwner.has(col.name)) {
+            colOwner.set(col.name, { tbl, rawType: col.type ?? '' })
+          }
+        }
+      }
+    }
+
     const clauses: string[] = []
     for (const tn of tableNodes) {
       const filters = tn.data.filters as any[] | undefined
       if (!filters?.length) continue
-      const tbl = alias(tn)   // table name / alias used in FROM clause
-      // Build column→raw-type lookup from details (authoritative schema)
-      const details = (tn.data.details ?? []) as any[]
-      const rawTypeOf = new Map<string, string>()
-      for (const d of details) rawTypeOf.set(d.column_name, d.column_type ?? d.data_type ?? '')
+      const fallbackTbl = alias(tn)
 
       for (const f of filters) {
         if (!f.column || !f.operator) continue
-        // Prefer raw DB type (from details) over stored f.type which may be stale
-        const rawType = rawTypeOf.get(f.column) || f.type || ''
+        // Look up the actual owning table across all joined tables
+        const owner   = colOwner.get(f.column)
+        const tbl     = owner?.tbl ?? fallbackTbl
+        const rawType = owner?.rawType ?? f.type ?? ''
         clauses.push(formatCondClause({
           column: `${tbl}.${f.column}`,
           operator: f.operator,

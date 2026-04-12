@@ -428,11 +428,30 @@ export function useDragDrop() {
       position = { x: (-viewportX + 400) / zoom, y: (-viewportY + 200) / zoom }
     }
 
+    // Collect upstream columns from source nodes so the tool node and the SQL
+    // generator can detect alias conflicts (e.g. CALC col alias = existing col name).
+    const upstreamCols: any[] = []
+    const seenColNames = new Set<string>()
+    for (const src of sourceNodes) {
+      const srcCols: any[] = src.type === 'sqlTable'
+        ? (src.data.visibleCols ?? [])
+        : (src.data.availableCols ?? [])
+      for (const col of srcCols) {
+        if (!seenColNames.has(col.name)) {
+          seenColNames.add(col.name)
+          upstreamCols.push(col)
+        }
+      }
+    }
+
     store.addNode({
       id,
       type: 'toolNode',
       position,
-      data: { ...JSON.parse(JSON.stringify(defaults)) },
+      data: {
+        ...JSON.parse(JSON.stringify(defaults)),
+        ...(upstreamCols.length ? { availableCols: upstreamCols } : {}),
+      },
     })
 
     // Track this as an unsaved (new) node so cancel can delete it

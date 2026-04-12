@@ -164,6 +164,33 @@ export const useSqlBuilderStore = defineStore('sql-builder', () => {
       }
     }
 
+    // Collect output columns of a GROUP BY node (groupCols + agg aliases)
+    // These are the only columns visible to nodes downstream of a GROUP BY.
+    function collectGroupOutputCols(groupNode: Node) {
+      const label     = 'GROUP BY'
+      const groupCols = (groupNode.data.groupCols ?? []) as string[]
+      const aggs      = ((groupNode.data.aggs ?? []) as any[]).filter((a: any) => a.col && a.func)
+      for (const col of groupCols) {
+        const key = `grp:${col}`
+        if (!seen.has(key)) {
+          seen.add(key)
+          cols.push({ name: col, type: '', remark: '', isPk: false, alias: '',
+            sourceTable: label, sourceTableLabel: label })
+        }
+      }
+      for (const agg of aggs) {
+        const alias = agg.alias || `${agg.func}_${agg.col}`
+        const key   = `grp:${alias}`
+        if (!seen.has(key)) {
+          seen.add(key)
+          cols.push({ name: alias, type: 'numeric',
+            remark: `${agg.func}(${agg.col})`,
+            isPk: false, alias: '',
+            sourceTable: label, sourceTableLabel: label })
+        }
+      }
+    }
+
     function collect(nodeId: string) {
       if (visited.has(nodeId)) return
       visited.add(nodeId)
@@ -180,10 +207,21 @@ export const useSqlBuilderStore = defineStore('sql-builder', () => {
               collectTableCols(child)
             }
           }
+        } else if (src.type === 'toolNode' && (src.data?.nodeType as string) === 'group') {
+          // GROUP BY is a column boundary — downstream nodes see only its output
+          collectGroupOutputCols(src)
         } else {
           collect(src.id)
         }
       }
+    }
+
+    // cteFrame has no edges — child tables are detected by spatial bounds
+    if (node.type === 'cteFrame') {
+      for (const child of getCteChildren(node)) {
+        collectTableCols(child)
+      }
+      return cols
     }
 
     collect(node.id)

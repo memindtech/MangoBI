@@ -121,161 +121,97 @@ const nodeType = computed(() => store.modalNode?.data?.nodeType as string | unde
 // ── Upstream columns (from connected table nodes) ─────────────────────────
 const upstreamCols = computed((): VisibleCol[] => store.modalNodeUpstreamCols)
 
-// ── CTE child nodes: sqlTable nodes inside the cteFrame bounds ───────────
-const cteChildTableNodes = computed(() => {
-  const frame = store.nodes.find((n: any) => n.id === store.modalNodeId)
-  if (!frame) return []
-  const fw = parseFloat(String(frame.style?.width  ?? '420'))
-  const fh = parseFloat(String(frame.style?.height ?? '280'))
-  const fx = frame.position.x
-  const fy = frame.position.y
-  const NW = 112, NH = 80
-  return store.nodes.filter((n: any) =>
-    n.type === 'sqlTable' &&
-    (n.position.x + NW) >= fx && (n.position.x + NW) <= fx + fw &&
-    (n.position.y + NH) >= fy && (n.position.y + NH) <= fy + fh
-  )
-})
-
-// ── CTE column source: ONLY child nodes inside this frame (no fallback) ──
-const cteAvailableCols = computed((): VisibleCol[] => {
-  const seen = new Set<string>()
-  const cols: VisibleCol[] = []
-  for (const node of cteChildTableNodes.value) {
-    const details = node.data.details as any[] | undefined
-    const visible = node.data.visibleCols as VisibleCol[] | undefined
-    const src: VisibleCol[] = details?.length
-      ? details.map((c: any) => ({
-          name:   c.column_name,
-          type:   c.column_type || c.data_type,
-          remark: c.remark ?? '',
-          isPk:   c.data_pk === 'Y',
-          alias:  '',
-        }))
-      : (visible ?? [])
-    for (const col of src) {
-      if (!seen.has(col.name)) { seen.add(col.name); cols.push(col) }
-    }
-  }
-  return cols
-})
-
 // ── CTE: column search ────────────────────────────────────────────────────
-const cteColSearch     = ref('')
-const selectedCteGroup = ref<string | null>(null)
-
-// ── CTE: grouped cols by source table (for hierarchical picker) ───────────
-interface CteColGroup {
-  sourceId:    string
-  sourceLabel: string   // table name
-  cteLabel?:   string   // upstream CTE/tool label if any
-  cols:        VisibleCol[]
-}
-
-const cteGroupedCols = computed((): CteColGroup[] => {
-  const groups: CteColGroup[] = []
-  const visited = new Set<string>()
-
-  function getTableCols(node: any): VisibleCol[] {
-    // Always use full details list — so all columns are available to pick
-    const details = node.data.details as any[] | undefined
-    if (details?.length) {
-      return details.map((c: any) => ({
-        name:   c.column_name,
-        type:   c.column_type || c.data_type,
-        remark: c.remark ?? '',
-        isPk:   c.data_pk === 'Y',
-        alias:  '',
-      }))
-    }
-    // Fallback to visibleCols if details not loaded yet
-    const visible = node.data.visibleCols as VisibleCol[] | undefined
-    return visible ?? []
-  }
-
-  // Walk upstream from CTE modal node, group cols by sqlTable source
-  function walk(nodeId: string, parentLabel?: string) {
-    if (visited.has(nodeId)) return
-    visited.add(nodeId)
-    const node = store.nodes.find((n: any) => n.id === nodeId)
-    if (!node) return
-
-    if (node.type === 'sqlTable') {
-      const cols = getTableCols(node)
-      if (cols.length) {
-        groups.push({
-          sourceId:    node.id as string,
-          sourceLabel: (node.data.tableName || node.data.label || node.id) as string,
-          cteLabel:    parentLabel,
-          cols,
-        })
-      }
-    } else {
-      // tool node — use its label as parent context, then recurse
-      const lbl = (node.data.name || node.data.label || node.data.nodeType) as string | undefined
-      store.edges
-        .filter((e: any) => e.target === nodeId)
-        .forEach((e: any) => walk(e.source as string, lbl ?? parentLabel))
-    }
-  }
-
-  // Show ONLY nodes inside this CTE frame — no fallback to all canvas tables
-  for (const node of cteChildTableNodes.value) {
-    if (visited.has(node.id as string)) continue
-    visited.add(node.id as string)
-    const cols = getTableCols(node)
-    if (cols.length) {
-      groups.push({
-        sourceId:    node.id as string,
-        sourceLabel: (node.data.tableName || node.data.label || node.id) as string,
-        cols,
-      })
-    }
-  }
-
-  return groups
-})
-
-// ── CTE: filtered groups (by search) ─────────────────────────────────────
-const cteFilteredGroups = computed((): CteColGroup[] => {
-  const q = cteColSearch.value.toLowerCase().trim()
-  if (!q) return cteGroupedCols.value
-  return cteGroupedCols.value
-    .map(g => ({ ...g, cols: g.cols.filter(c => c.name.toLowerCase().includes(q) || (c.remark ?? '').toLowerCase().includes(q)) }))
-    .filter(g => g.cols.length)
-})
-
-// ── CTE: active group selection (after cteGroupedCols is declared) ────────
-watch(() => store.modalNodeId, () => { selectedCteGroup.value = null })
-watch(cteGroupedCols, (groups) => {
-  if (!selectedCteGroup.value && groups.length) {
-    selectedCteGroup.value = groups[0]!.sourceId
-  }
-}, { immediate: true })
-
-const activeCteGroup = computed(() =>
-  cteGroupedCols.value.find(g => g.sourceId === selectedCteGroup.value) ?? cteGroupedCols.value[0] ?? null
-)
-
-const filteredActiveCols = computed(() => {
-  const q = cteColSearch.value.toLowerCase().trim()
-  if (!activeCteGroup.value) return []
-  return q
-    ? activeCteGroup.value.cols.filter(c => c.name.toLowerCase().includes(q) || (c.remark ?? '').toLowerCase().includes(q))
-    : activeCteGroup.value.cols
-})
+const cteColSearch = ref('')
 
 // ── CTE: select / clear all cols from a specific group ───────────────────
-function selectAllFromCteGroup(group: CteColGroup) {
+// Accepts both CteColGroup and ColGroup (both have cols: VisibleCol[])
+function selectAllFromCteGroup(group: { cols: VisibleCol[] }) {
   const current = new Set((store.modalNode?.data?.selectedCols ?? []) as string[])
   group.cols.forEach(c => current.add(c.name))
   tn.setModalData({ selectedCols: [...current] })
 }
-function clearAllFromCteGroup(group: CteColGroup) {
+function clearAllFromCteGroup(group: { cols: VisibleCol[] }) {
   const toRemove = new Set(group.cols.map(c => c.name))
   const current  = ((store.modalNode?.data?.selectedCols ?? []) as string[]).filter(n => !toRemove.has(n))
   tn.setModalData({ selectedCols: current })
 }
+
+// ── CTE: grouped column list (uses same groupedUpstreamCols as GROUP BY) ─
+const filteredGroupedCteCols = computed((): ColGroup[] => {
+  const q = cteColSearch.value.toLowerCase().trim()
+  if (!q) return groupedUpstreamCols.value
+  return groupedUpstreamCols.value
+    .map(g => ({ ...g, cols: g.cols.filter(c => c.name.toLowerCase().includes(q) || (c.remark ?? '').toLowerCase().includes(q)) }))
+    .filter(g => g.cols.length > 0)
+})
+
+// ── CTE: SQL preview ─────────────────────────────────────────────────────
+const cteSqlPreview = computed(() => {
+  const selectedCols = (store.modalNode?.data?.selectedCols ?? []) as string[]
+  const conditions   = ((store.modalNode?.data?.conditions ?? []) as any[]).filter((c: any) => c.column && c.operator)
+  const sel = selectedCols.length
+    ? `SELECT\n  ${selectedCols.join(',\n  ')}`
+    : 'SELECT *'
+  let sql = `${sel}\nFROM _upstream`
+  if (conditions.length) {
+    sql += `\nWHERE ${conditions.map((c: any) => condPreview(c)).join('\n  AND ')}`
+  }
+  return sql
+})
+
+// ── Calc SQL preview ──────────────────────────────────────────────────────
+const calcSqlPreview = computed(() => {
+  const items   = ((store.modalNode?.data?.items ?? []) as any[]).filter((i: any) => i.col && i.op)
+  const filters = ((store.modalNode?.data?.filters ?? []) as any[]).filter((f: any) => f.column && f.operator)
+  if (!items.length) return 'SELECT *,\n  ...\nFROM _upstream'
+  const calcExprs = items.map((i: any) => {
+    const alias = i.alias || `${i.col}_calc`
+    return `  (${calcExprPreview(i.op, i.col, i.value)}) AS ${alias}`
+  })
+  let sql = `SELECT *,\n${calcExprs.join(',\n')}\nFROM _upstream`
+  if (filters.length) sql += `\nWHERE ${filters.map(condPreview).join('\n  AND ')}`
+  return sql
+})
+
+// ── Group SQL preview ─────────────────────────────────────────────────────
+const groupSqlPreview = computed(() => {
+  const groupCols = ((store.modalNode?.data?.groupCols ?? []) as string[]).filter(Boolean)
+  const aggs      = ((store.modalNode?.data?.aggs ?? []) as any[]).filter((a: any) => a.col && a.func)
+  const having    = ((store.modalNode?.data?.filters ?? []) as any[]).filter((f: any) => f.column && f.operator)
+  const conds     = ((store.modalNode?.data?.conditions ?? []) as any[]).filter((c: any) => c.column && c.operator)
+  const selectParts = [
+    ...groupCols.map((c: string) => `  ${c}`),
+    ...aggs.map((a: any) => {
+      const fn = a.func === 'COUNT DISTINCT' ? `COUNT(DISTINCT ${a.col})` : `${a.func}(${a.col})`
+      return `  ${fn}${a.alias ? ` AS ${a.alias}` : ''}`
+    }),
+  ]
+  let sql = selectParts.length
+    ? `SELECT\n${selectParts.join(',\n')}\nFROM _upstream`
+    : 'SELECT * FROM _upstream'
+  if (conds.length)   sql += `\nWHERE ${conds.map(condPreview).join('\n  AND ')}`
+  if (groupCols.length) sql += `\nGROUP BY ${groupCols.join(', ')}`
+  if (having.length)  sql += `\nHAVING ${having.map(condPreview).join('\n  AND ')}`
+  return sql
+})
+
+// ── Sort SQL preview ──────────────────────────────────────────────────────
+const sortSqlPreview = computed(() => {
+  const items = ((store.modalNode?.data?.items ?? []) as Array<{ col: string; dir: string }>).filter(i => i.col)
+  const conds = ((store.modalNode?.data?.conditions ?? []) as any[]).filter((c: any) => c.column && c.operator)
+  let sql = 'SELECT *\nFROM _upstream'
+  if (conds.length) sql += `\nWHERE ${conds.map(condPreview).join('\n  AND ')}`
+  if (items.length) sql += `\nORDER BY ${items.map(i => `${i.col} ${i.dir}`).join(', ')}`
+  return sql
+})
+
+// ── Where SQL preview ─────────────────────────────────────────────────────
+const whereSqlPreview = computed(() => {
+  const conds = ((store.modalNode?.data?.conditions ?? []) as any[]).filter((c: any) => c.column && c.operator)
+  if (!conds.length) return 'SELECT *\nFROM _upstream'
+  return `SELECT *\nFROM _upstream\nWHERE ${conds.map(condPreview).join('\n  AND ')}`
+})
 
 // ── Union: get sqlTable nodes inside a cteFrame by bounds ─────────────────
 function getCteFrameChildren(frame: any): any[] {
@@ -589,7 +525,7 @@ const unionSqlPreview = computed(() => {
   })
   const unionPart = parts.join(`\n${uType}\n`)
   if (!conds.length) return unionPart
-  const wherePart = conds.map((c: any) => `${c.column} ${c.operator}${!['IS NULL','IS NOT NULL'].includes(c.operator) ? ` '${c.value}'` : ''}`).join('\n  AND ')
+  const wherePart = conds.map((c: any) => condPreview(c)).join('\n  AND ')
   return `SELECT * FROM (\n  ${unionPart.replace(/\n/g, '\n  ')}\n) _u\nWHERE ${wherePart}`
 })
 
@@ -823,6 +759,30 @@ function openCalcFilterDatePicker(i: number) {
   try { input.showPicker() } catch { input.click() }
 }
 
+// Date input refs — HAVING filters
+const groupFilterDateRefs = ref<Map<number, HTMLInputElement>>(new Map())
+function setGroupFilterDateRef(i: number, el: any) {
+  if (el) groupFilterDateRefs.value.set(i, el as HTMLInputElement)
+  else groupFilterDateRefs.value.delete(i)
+}
+function openGroupFilterDatePicker(i: number) {
+  const input = groupFilterDateRefs.value.get(i)
+  if (!input) return
+  try { input.showPicker() } catch { input.click() }
+}
+
+// Date input refs — CTE conditions
+const cteDateRefs = ref<Map<number, HTMLInputElement>>(new Map())
+function setCteDateRef(i: number, el: any) {
+  if (el) cteDateRefs.value.set(i, el as HTMLInputElement)
+  else cteDateRefs.value.delete(i)
+}
+function openCteDatePicker(i: number) {
+  const input = cteDateRefs.value.get(i)
+  if (!input) return
+  try { input.showPicker() } catch { input.click() }
+}
+
 // Calc filters
 const calcFilters = computed(() =>
   (store.modalNode?.data?.filters ?? []) as Array<{ column: string; operator: string; value: string }>
@@ -866,7 +826,8 @@ function toggleGroupFilterColDropdown(i: number, e: MouseEvent) {
 }
 function closeGroupFilterColDropdown() { openGroupFilterColIdx.value = null; groupFilterColDropPos.value = null }
 function selectGroupFilterCol(i: number, colName: string) {
-  tn.setGroupFilter(i, { column: colName })
+  const col = havingCols.value.find(c => c.name === colName)
+  tn.setGroupFilter(i, { column: colName, colType: col?.type ?? '' })
   closeGroupFilterColDropdown()
 }
 
@@ -884,7 +845,8 @@ function toggleCalcFilterColDropdown(i: number, e: MouseEvent) {
 function closeCalcFilterColDropdown() { openCalcFilterColIdx.value = null; calcFilterColDropPos.value = null }
 
 function selectCalcFilterCol(i: number, colName: string) {
-  tn.setCalcFilter(i, { column: colName })
+  const col = upstreamCols.value.find(c => c.name === colName)
+  tn.setCalcFilter(i, { column: colName, colType: col?.type ?? '' })
   closeCalcFilterColDropdown()
 }
 
@@ -1130,7 +1092,7 @@ const finishBtnStyle = computed(() => {
     >
       <div class="overflow-y-auto max-h-[240px]">
         <button
-          v-for="c in cteAvailableCols" :key="c.name"
+          v-for="c in upstreamCols" :key="c.name"
           @click="selectCteCondCol(openCteCondColIdx!, c)"
           :class="['w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-violet-500/8 transition-colors',
             store.modalNode?.data?.conditions?.[openCteCondColIdx!]?.column === c.name ? 'bg-violet-500/10' : '']"
@@ -1142,7 +1104,7 @@ const finishBtnStyle = computed(() => {
             <span v-if="c.remark" class="text-[9px] text-muted-foreground/55 truncate">{{ c.remark }}</span>
           </div>
         </button>
-        <div v-if="!cteAvailableCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">ลาก table node ลง canvas ก่อน</div>
+        <div v-if="!upstreamCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">เชื่อมต่อ table node เข้ากับ CTE node ก่อน</div>
       </div>
     </div>
   </Teleport>
@@ -1299,11 +1261,11 @@ const finishBtnStyle = computed(() => {
       <div
         :class="[
           'bg-background rounded-2xl border shadow-2xl flex flex-col overflow-hidden',
-          nodeType === 'union' ? 'w-full max-w-[960px]' :
-          nodeType === 'cte' ? 'w-full max-w-[720px]' :
-          (nodeType === 'group' || nodeType === 'sort' || nodeType === 'calc' || nodeType === 'where') ? 'w-full max-w-[640px]' : 'w-[440px]',
+          nodeType === 'union' ? 'w-full max-w-[1000px]' :
+          nodeType === 'cte'   ? 'w-full max-w-[900px]' :
+          (nodeType === 'group' || nodeType === 'sort' || nodeType === 'calc' || nodeType === 'where') ? 'w-full max-w-[960px]' : 'w-[440px]',
         ]"
-        style="max-height: 92vh"
+        style="height: 85vh"
         @click.stop
       >
         <!-- Header -->
@@ -1341,744 +1303,760 @@ const finishBtnStyle = computed(() => {
         </datalist>
 
         <!-- Body -->
-        <div :class="['flex-1 flex flex-col gap-5', nodeType === 'cte' ? 'overflow-hidden p-5' : 'overflow-y-auto p-5']">
+        <div class="flex-1 flex flex-col gap-5 overflow-y-auto overflow-x-hidden p-5">
 
           <!-- ── Named CTE ──────────────────────────────────────────── -->
           <template v-if="nodeType === 'cte'">
 
-            <!-- CTE name -->
-            <div class="flex flex-col gap-1.5">
-              <label class="text-[11px] font-semibold text-violet-500 uppercase tracking-wide">CTE Name</label>
-              <input
-                :value="store.modalNode?.data?.name ?? 'my_cte'"
-                @input="tn.setModalData({ name: ($event.target as HTMLInputElement).value })"
-                class="w-full h-9 px-3 rounded-lg border bg-background text-sm font-mono focus:outline-none focus:ring-2 focus:ring-violet-500/40"
-                placeholder="my_cte"
-                spellcheck="false"
-              />
-              <p class="text-[10px] text-muted-foreground">ชื่อที่ใช้ใน WITH <span class="font-mono text-violet-400">{{ store.modalNode?.data?.name || 'my_cte' }}</span> AS (...)</p>
-            </div>
+            <div class="grid grid-cols-[1fr_1fr] gap-5 items-start">
 
-            <!-- Column picker — 2-panel layout -->
-            <div class="flex flex-col gap-2 flex-1 min-h-0">
-              <!-- Header row -->
-              <div class="flex items-center justify-between shrink-0">
-                <label class="text-[11px] font-semibold text-violet-500 uppercase tracking-wide">
-                  SELECT COLUMNS
-                  <span class="ml-1.5 px-1.5 py-0.5 rounded-full bg-violet-500/15 text-violet-400 text-[9px] font-bold">
+            <!-- ── LEFT: SELECT Columns ────────────────────────────── -->
+            <div class="flex flex-col gap-3 min-w-0">
+              <div class="flex items-center justify-between">
+                <div>
+                  <p class="text-xs font-bold text-violet-500">SELECT Columns</p>
+                  <p class="text-[10px] text-muted-foreground mt-0.5">ไม่เลือก = SELECT * (ทุก columns)</p>
+                </div>
+                <div class="flex items-center gap-2">
+                  <span class="text-[10px] font-semibold text-violet-500 bg-violet-500/10 px-2 py-0.5 rounded-full">
                     {{ (store.modalNode?.data?.selectedCols ?? []).length || '*' }}
                   </span>
-                </label>
-                <div class="flex gap-1">
-                  <button @click="tn.selectAllCteCols(cteAvailableCols.map(c => c.name))"
-                    class="text-[10px] px-2.5 py-1 rounded-lg border border-violet-500/30 text-violet-400 hover:bg-violet-500/10 transition-colors font-medium">ทั้งหมด</button>
-                  <button @click="tn.clearCteCols()"
-                    class="text-[10px] px-2.5 py-1 rounded-lg border border-border text-muted-foreground hover:bg-accent transition-colors">ล้าง</button>
-                </div>
-              </div>
-
-              <!-- No tables -->
-              <p v-if="!cteGroupedCols.length" class="text-[11px] text-muted-foreground italic px-1 py-4 text-center">
-                ยังไม่มี table อยู่ในกรอบ CTE — ลาก Table node เข้ากรอบก่อน
-              </p>
-
-              <!-- 2-panel: table list | column list -->
-              <div v-else class="flex gap-0 flex-1 min-h-0 rounded-xl border border-violet-500/20 overflow-hidden">
-
-                <!-- LEFT: table tabs -->
-                <div class="w-44 shrink-0 flex flex-col border-r border-violet-500/15 bg-muted/20 overflow-y-auto">
-                  <button
-                    v-for="group in cteGroupedCols" :key="group.sourceId"
-                    @click="selectedCteGroup = group.sourceId"
-                    :class="[
-                      'flex flex-col items-start px-3 py-2.5 text-left transition-colors border-b border-border/20 last:border-b-0 gap-0.5',
-                      selectedCteGroup === group.sourceId
-                        ? 'bg-violet-500/15 border-l-2 border-l-violet-500'
-                        : 'hover:bg-accent/50 border-l-2 border-l-transparent',
-                    ]"
-                  >
-                    <span class="font-mono text-[10px] font-semibold truncate w-full"
-                      :class="selectedCteGroup === group.sourceId ? 'text-violet-300' : 'text-foreground/80'">
-                      {{ group.sourceLabel }}
-                    </span>
-                    <div class="flex items-center gap-1.5 w-full">
-                      <span class="text-[8px] text-muted-foreground/60">
-                        {{ group.cols.length }} cols
-                      </span>
-                      <span v-if="(store.modalNode?.data?.selectedCols ?? []).filter((s: string) => group.cols.some(c => c.name === s)).length"
-                        class="text-[8px] px-1 py-0 rounded bg-violet-500/20 text-violet-400 font-bold font-mono">
-                        ✓{{ (store.modalNode?.data?.selectedCols ?? []).filter((s: string) => group.cols.some(c => c.name === s)).length }}
-                      </span>
-                    </div>
-                  </button>
-                </div>
-
-                <!-- RIGHT: columns of selected table -->
-                <div class="flex-1 flex flex-col min-w-0 min-h-0">
-                  <!-- Table header bar -->
-                  <div v-if="activeCteGroup" class="flex items-center gap-2 px-3 py-2 bg-violet-500/8 border-b border-violet-500/15 shrink-0">
-                    <span class="text-[8px] font-bold px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-400 font-mono">TABLE</span>
-                    <span class="font-mono text-[11px] font-semibold text-foreground/90 flex-1 truncate">{{ activeCteGroup.sourceLabel }}</span>
-                    <button @click="selectAllFromCteGroup(activeCteGroup)"
-                      class="text-[9px] text-violet-400 hover:underline shrink-0 font-medium">ทั้งหมด</button>
-                    <button @click="clearAllFromCteGroup(activeCteGroup)"
-                      class="text-[9px] text-muted-foreground hover:underline shrink-0">ล้าง</button>
-                  </div>
-
-                  <!-- Search -->
-                  <div class="relative shrink-0 border-b border-border/30">
-                    <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground/40 pointer-events-none" />
-                    <input
-                      v-model="cteColSearch"
-                      class="w-full h-8 pl-7 pr-3 bg-transparent text-[11px] focus:outline-none"
-                      placeholder="ค้นหา column…"
-                    />
-                  </div>
-
-                  <!-- No columns -->
-                  <div v-if="!activeCteGroup?.cols.length" class="flex-1 flex items-center justify-center text-[10px] text-muted-foreground/50 italic">
-                    ไม่มีข้อมูล column
-                  </div>
-
-                  <!-- Column list -->
-                  <div v-else class="flex-1 overflow-y-auto">
-                    <p v-if="!filteredActiveCols.length && cteColSearch" class="text-[10px] text-muted-foreground/60 italic px-3 py-3">
-                      ไม่พบ "{{ cteColSearch }}"
-                    </p>
-                    <button
-                      v-for="c in filteredActiveCols" :key="c.name"
-                      @click="tn.toggleCteCol(c.name)"
-                      :class="[
-                        'w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors border-b border-border/15 last:border-b-0',
-                        (store.modalNode?.data?.selectedCols ?? []).includes(c.name)
-                          ? 'bg-violet-500/10 hover:bg-violet-500/15'
-                          : 'hover:bg-accent/40',
-                      ]"
-                    >
-                      <!-- Checkbox -->
-                      <div :class="[
-                        'size-3.5 rounded border-2 flex items-center justify-center shrink-0 transition-colors',
-                        (store.modalNode?.data?.selectedCols ?? []).includes(c.name)
-                          ? 'bg-violet-500 border-violet-500'
-                          : 'border-border/60 bg-background',
-                      ]">
-                        <svg v-if="(store.modalNode?.data?.selectedCols ?? []).includes(c.name)"
-                          class="size-2 text-white" fill="none" viewBox="0 0 10 10">
-                          <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                        </svg>
-                      </div>
-                      <!-- PK icon -->
-                      <Key v-if="c.isPk" class="size-3 text-amber-400 shrink-0" />
-                      <!-- Type badge -->
-                      <span :class="['text-[8px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(c.type).cls]">
-                        {{ getColTypeBadge(c.type).label }}
-                      </span>
-                      <!-- Name -->
-                      <span :class="['font-mono text-[11px] flex-1 truncate', c.isPk ? 'text-amber-400 font-semibold' : '']">
-                        {{ c.name }}
-                      </span>
-                      <!-- Remark -->
-                      <span v-if="c.remark" class="text-[9px] text-muted-foreground/55 truncate max-w-[140px] shrink-0">
-                        {{ c.remark }}
-                      </span>
-                      <!-- Data type -->
-                      <span class="text-[9px] text-muted-foreground/35 font-mono shrink-0">{{ c.type }}</span>
-                    </button>
-                  </div>
-                </div>
-
-              </div>
-
-              <!-- Footer hint -->
-              <p v-if="!(store.modalNode?.data?.selectedCols ?? []).length" class="text-[10px] text-muted-foreground/50 italic shrink-0">
-                ไม่เลือก = SELECT * (ทุก columns)
-              </p>
-            </div>
-
-            <!-- WHERE conditions -->
-            <div class="flex flex-col gap-2">
-              <div class="flex items-center justify-between">
-                <label class="text-[11px] font-semibold text-violet-500 uppercase tracking-wide">
-                  WHERE Filter
-                  <span v-if="(store.modalNode?.data?.conditions ?? []).filter((c: any) => c.column).length"
-                    class="ml-1 text-[10px] font-normal text-muted-foreground normal-case">
-                    {{ (store.modalNode?.data?.conditions ?? []).filter((c: any) => c.column).length }} conditions
-                  </span>
-                </label>
-                <button @click="tn.addCteCondition()"
-                  class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-violet-500/30 text-violet-400 hover:bg-violet-500/10 transition-colors">
-                  <Plus class="size-2.5" /> เพิ่ม
-                </button>
-              </div>
-              <div v-if="(store.modalNode?.data?.conditions ?? []).length" class="flex flex-col gap-2">
-                <div
-                  v-for="(cond, i) in (store.modalNode?.data?.conditions ?? [])"
-                  :key="i"
-                  class="flex items-center gap-2 p-2.5 rounded-xl border bg-muted/20"
-                >
-                  <!-- Column dropdown -->
-                  <button
-                    @click="toggleCteCondColDropdown(+i, $event)"
-                    :class="[
-                      'flex-1 h-7 px-2 rounded-lg border text-left text-[11px] font-mono flex items-center gap-1.5 min-w-0 transition-colors',
-                      openCteCondColIdx === +i ? 'border-violet-500/60 bg-violet-500/5' : 'border-border bg-background hover:border-violet-400/40',
-                    ]"
-                  >
-                    <template v-if="cond.column">
-                      <span :class="['text-[9px] px-1 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(cteAvailableCols.find(c => c.name === cond.column)?.type ?? '').cls]">
-                        {{ getColTypeBadge(cteAvailableCols.find(c => c.name === cond.column)?.type ?? '').label }}
-                      </span>
-                      <span class="truncate">{{ cond.column }}</span>
-                    </template>
-                    <span v-else class="text-muted-foreground/50 truncate">column</span>
-                    <ChevronDown class="size-3 text-muted-foreground/50 ml-auto shrink-0" />
-                  </button>
-                  <!-- Operator -->
-                  <select
-                    :value="cond.operator"
-                    @change="tn.setCteCondition(+i, { operator: ($event.target as HTMLSelectElement).value })"
-                    class="h-7 px-1.5 rounded-lg border bg-background text-[11px] focus:outline-none focus:ring-1 focus:ring-violet-500/40 shrink-0"
-                  >
-                    <option v-for="op in ['=','!=','>','<','>=','<=','LIKE','IN','IS NULL','IS NOT NULL']" :key="op" :value="op">{{ op }}</option>
-                  </select>
-                  <!-- Value -->
-                  <input
-                    v-if="!['IS NULL','IS NOT NULL'].includes(cond.operator)"
-                    :value="cond.value"
-                    @input="tn.setCteCondition(+i, { value: ($event.target as HTMLInputElement).value })"
-                    class="w-24 h-7 px-2 rounded-lg border bg-background text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-violet-500/40 shrink-0"
-                    placeholder="value"
-                  />
-                  <button @click="tn.removeCteCondition(+i)"
-                    class="size-6 flex items-center justify-center rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors shrink-0">
-                    <X class="size-3" />
-                  </button>
-                </div>
-              </div>
-              <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">ไม่มี filter = ดึงข้อมูลทั้งหมด</p>
-            </div>
-
-          </template>
-
-          <!-- ── Calculator ──────────────────────────────────────────── -->
-          <template v-else-if="nodeType === 'calc'">
-
-            <!-- Calc items -->
-            <div
-              v-for="(item, i) in store.modalNode.data.items" :key="i"
-              class="flex flex-col gap-3 border rounded-xl p-4 bg-teal-500/3"
-            >
-              <!-- Header -->
-              <div class="flex items-center gap-2">
-                <span class="text-[10px] font-bold text-teal-600 uppercase tracking-wide flex-1">
-                  Column {{ Number(i) + 1 }}
-                  <span v-if="item.alias" class="normal-case font-mono text-teal-400 ml-1">— {{ item.alias }}</span>
-                </span>
-                <button @click="tn.removeCalcItem(Number(i))"
-                  class="size-5 flex items-center justify-center rounded hover:bg-destructive/10 hover:text-destructive text-muted-foreground transition-colors">
-                  <X class="size-3.5" />
-                </button>
-              </div>
-
-              <!-- Row: Column picker + alias -->
-              <div class="flex items-center gap-2">
-                <!-- Column dropdown trigger -->
-                <button
-                  @click="toggleCalcColDropdown(Number(i), $event)"
-                  :class="[
-                    'flex-1 flex items-center gap-2 text-xs border rounded-lg px-2.5 py-2 bg-background text-left transition-colors',
-                    item.col ? 'border-teal-400/40' : 'border-border hover:border-teal-400/30',
-                    openCalcColIdx === Number(i) ? 'ring-2 ring-teal-400/50 border-teal-400/40' : '',
-                  ]"
-                >
-                  <template v-if="item.col">
-                    <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0',
-                      getColTypeBadge(upstreamCols.find(c => c.name === item.col)?.type ?? '').cls]">
-                      {{ getColTypeBadge(upstreamCols.find(c => c.name === item.col)?.type ?? '').label }}
-                    </span>
-                    <div class="flex-1 min-w-0">
-                      <p class="text-[11px] truncate">{{ upstreamCols.find(c => c.name === item.col)?.remark || item.col }}</p>
-                      <p v-if="upstreamCols.find(c => c.name === item.col)?.remark" class="font-mono text-[9px] text-muted-foreground/60 truncate">{{ item.col }}</p>
-                    </div>
-                  </template>
-                  <span v-else class="text-muted-foreground text-[11px] flex-1">— เลือก Column —</span>
-                  <ChevronDown :class="['size-3 shrink-0 text-muted-foreground transition-transform', openCalcColIdx === Number(i) ? 'rotate-180' : '']" />
-                </button>
-
-                <!-- Alias input -->
-                <input
-                  :value="item.alias"
-                  @input="tn.setCalcItem(Number(i), { alias: ($event.target as HTMLInputElement).value })"
-                  placeholder="ชื่อ output"
-                  class="w-32 text-xs border rounded-lg px-2.5 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-teal-400/50 font-mono"
-                  :class="item.alias ? 'border-teal-400/40' : ''"
-                />
-              </div>
-
-              <!-- Operation pills grouped by category -->
-              <div class="flex flex-col gap-1.5">
-                <p class="text-[10px] font-semibold text-muted-foreground">การคำนวณ</p>
-
-                <!-- Math -->
-                <div class="flex flex-wrap gap-1">
-                  <span class="text-[9px] text-muted-foreground/50 self-center w-12 shrink-0">Math</span>
-                  <button v-for="op in CALC_OPS.filter(o => o.group === 'math')" :key="op.id"
-                    @click="tn.setCalcItem(Number(i), { op: op.id })"
-                    :class="['text-[10px] px-2.5 py-1 rounded-lg border font-bold transition-colors', opClass(item.op, op)]">
-                    {{ op.label }}
-                  </button>
-                </div>
-
-                <!-- NULL handling -->
-                <div class="flex flex-wrap gap-1">
-                  <span class="text-[9px] text-muted-foreground/50 self-center w-12 shrink-0">NULL</span>
-                  <button v-for="op in CALC_OPS.filter(o => o.group === 'null')" :key="op.id"
-                    @click="tn.setCalcItem(Number(i), { op: op.id })"
-                    :class="['text-[10px] px-2.5 py-1 rounded-lg border font-mono font-bold transition-colors', opClass(item.op, op)]">
-                    {{ op.label }}
-                  </button>
-                </div>
-
-                <!-- Cast -->
-                <div class="flex flex-wrap gap-1">
-                  <span class="text-[9px] text-muted-foreground/50 self-center w-12 shrink-0">Cast</span>
-                  <button v-for="op in CALC_OPS.filter(o => o.group === 'cast')" :key="op.id"
-                    @click="tn.setCalcItem(Number(i), { op: op.id })"
-                    :class="['text-[10px] px-2.5 py-1 rounded-lg border font-mono font-bold transition-colors', opClass(item.op, op)]">
-                    {{ op.label }}
-                  </button>
-                </div>
-
-                <!-- String -->
-                <div class="flex flex-wrap gap-1">
-                  <span class="text-[9px] text-muted-foreground/50 self-center w-12 shrink-0">String</span>
-                  <button v-for="op in CALC_OPS.filter(o => o.group === 'string')" :key="op.id"
-                    @click="tn.setCalcItem(Number(i), { op: op.id })"
-                    :class="['text-[10px] px-2.5 py-1 rounded-lg border font-mono font-bold transition-colors', opClass(item.op, op)]">
-                    {{ op.label }}
-                  </button>
-                </div>
-
-                <!-- Date -->
-                <div class="flex flex-wrap gap-1">
-                  <span class="text-[9px] text-muted-foreground/50 self-center w-12 shrink-0">Date</span>
-                  <button v-for="op in CALC_OPS.filter(o => o.group === 'date')" :key="op.id"
-                    @click="tn.setCalcItem(Number(i), { op: op.id })"
-                    :class="['text-[10px] px-2.5 py-1 rounded-lg border font-mono font-bold transition-colors', opClass(item.op, op)]">
-                    {{ op.label }}
-                  </button>
-                </div>
-              </div>
-
-              <!-- Value input (shown only when op needs a second operand) -->
-              <div v-if="item.op && calcNeedsValue(item.op)" class="flex items-center gap-2">
-                <label class="text-[10px] font-semibold text-muted-foreground w-12 shrink-0">ค่า</label>
-                <input
-                  :value="item.value"
-                  @input="tn.setCalcItem(Number(i), { value: ($event.target as HTMLInputElement).value })"
-                  :placeholder="calcValuePlaceholder(item.op)"
-                  class="flex-1 text-xs border rounded-lg px-2.5 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-teal-400/50 font-mono"
-                  :class="item.value ? 'border-teal-400/40' : ''"
-                />
-              </div>
-
-              <!-- SQL Preview -->
-              <div v-if="item.col && item.op"
-                class="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-teal-500/5 border border-teal-400/20">
-                <span class="text-[9px] font-bold text-teal-500 shrink-0">SQL</span>
-                <code class="text-[9px] font-mono text-teal-300/80 truncate">
-                  ({{ calcExprPreview(item.op, item.col, item.value) }}) AS {{ item.alias || '?' }}
-                </code>
-              </div>
-            </div>
-
-            <button @click="tn.addCalcItem"
-              class="text-xs w-full py-2 rounded-xl border border-dashed border-teal-500/40 text-teal-600 hover:bg-teal-500/10 font-semibold transition-colors flex items-center justify-center gap-1.5">
-              <Plus class="size-3.5" /> เพิ่ม Calculated Column
-            </button>
-
-            <!-- ── WHERE Filters for Calc ──────────────────────────────── -->
-            <div class="flex flex-col gap-3 border-t pt-4 mt-1">
-              <div class="flex items-center justify-between">
-                <div>
-                  <p class="text-xs font-bold text-rose-500">WHERE Filters <span class="font-normal text-muted-foreground text-[10px]">(optional)</span></p>
-                  <p class="text-[10px] text-muted-foreground mt-0.5">กรองข้อมูลก่อนคำนวณ</p>
-                </div>
-                <span v-if="calcFilterCount" class="text-[10px] font-semibold text-rose-500 bg-rose-500/10 px-2 py-0.5 rounded-full">
-                  {{ calcFilterCount }}
-                </span>
-              </div>
-
-              <div
-                v-for="(f, i) in store.modalNode.data.filters" :key="'cf-' + i"
-                class="flex flex-col gap-3 border rounded-xl p-4 bg-rose-500/3"
-              >
-                <!-- Header -->
-                <div class="flex items-center gap-2">
-                  <span class="text-[10px] font-bold text-rose-500 uppercase tracking-wide flex-1">
-                    Filter {{ Number(i) + 1 }}
-                    <span v-if="f.column" class="normal-case font-mono text-rose-400 ml-1">— {{ f.column }} {{ f.operator }}</span>
-                  </span>
-                  <button @click="tn.removeCalcFilter(Number(i))"
-                    class="size-5 flex items-center justify-center rounded hover:bg-destructive/10 hover:text-destructive text-muted-foreground transition-colors">
-                    <X class="size-3.5" />
-                  </button>
-                </div>
-
-                <!-- Column picker -->
-                <div class="flex items-center gap-2">
-                  <label class="text-[10px] font-semibold text-muted-foreground w-16 shrink-0">Column</label>
-                  <button
-                    @click="toggleCalcFilterColDropdown(Number(i), $event)"
-                    :class="[
-                      'flex-1 flex items-center gap-2 text-xs border rounded-lg px-2.5 py-2 bg-background text-left transition-colors',
-                      f.column ? 'border-rose-400/40' : 'border-border hover:border-rose-400/30',
-                      openCalcFilterColIdx === Number(i) ? 'ring-2 ring-rose-400/50 border-rose-400/40' : '',
-                    ]"
-                  >
-                    <template v-if="f.column">
-                      <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0',
-                        getColTypeBadge(upstreamCols.find(c => c.name === f.column)?.type ?? '').cls]">
-                        {{ getColTypeBadge(upstreamCols.find(c => c.name === f.column)?.type ?? '').label }}
-                      </span>
-                      <span class="font-mono text-[11px] flex-1 truncate">{{ f.column }}</span>
-                    </template>
-                    <span v-else class="text-muted-foreground text-[11px] flex-1">— เลือก Column —</span>
-                    <ChevronDown :class="['size-3 shrink-0 text-muted-foreground transition-transform', openCalcFilterColIdx === Number(i) ? 'rotate-180' : '']" />
-                  </button>
-                </div>
-
-                <!-- Operator pills -->
-                <div class="flex flex-col gap-1.5">
-                  <label class="text-[10px] font-semibold text-muted-foreground">เงื่อนไข</label>
-                  <div v-for="group in WHERE_OP_GROUPS" :key="group.color" class="flex flex-wrap gap-1">
-                    <button
-                      v-for="op in group.ops" :key="op"
-                      @click="tn.setCalcFilter(Number(i), { operator: op })"
-                      :class="['text-[10px] px-2.5 py-1 rounded-lg border font-mono font-bold transition-colors whitespace-nowrap', whereOpClass(f.operator, op)]"
-                    >{{ op }}</button>
-                  </div>
-                </div>
-
-                <!-- Value input (date picker or text) -->
-                <div v-if="f.operator && !['IS NULL', 'IS NOT NULL'].includes(f.operator)" class="flex items-center gap-2">
-                  <label class="text-[10px] font-semibold text-muted-foreground w-16 shrink-0">ค่า</label>
-                  <div v-if="isDateCol(f.column)" class="flex-1 relative flex items-center">
-                    <input
-                      :ref="(el) => setCalcFilterDateRef(Number(i), el)"
-                      type="date"
-                      :value="f.value"
-                      @input="tn.setCalcFilter(Number(i), { value: ($event.target as HTMLInputElement).value })"
-                      class="flex-1 text-xs border rounded-lg pl-2.5 pr-9 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-rose-400/50 font-mono"
-                      :class="f.value ? 'border-rose-400/40' : ''"
-                    />
-                    <button type="button" @click="openCalcFilterDatePicker(Number(i))"
-                      class="absolute right-2 size-5 flex items-center justify-center rounded text-rose-500 hover:bg-rose-500/15 transition-colors">
-                      <Calendar class="size-3.5" />
-                    </button>
-                  </div>
-                  <input
-                    v-else
-                    :value="f.value"
-                    @input="tn.setCalcFilter(Number(i), { value: ($event.target as HTMLInputElement).value })"
-                    :placeholder="f.operator === 'LIKE' ? 'เช่น %keyword%' : f.operator === 'IN' ? 'เช่น 1,2,3' : 'ค่าที่ต้องการ'"
-                    class="flex-1 text-xs border rounded-lg px-2.5 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-rose-400/50 font-mono"
-                    :class="f.value ? 'border-rose-400/40' : ''"
-                  />
-                </div>
-
-                <!-- Preview -->
-                <div v-if="f.column && f.operator"
-                  class="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-rose-500/5 border border-rose-400/20">
-                  <span class="text-[9px] font-bold text-rose-500 shrink-0">SQL</span>
-                  <code class="text-[9px] font-mono text-rose-300/80 truncate">
-                    {{ f.column }} {{ f.operator }}{{ !['IS NULL','IS NOT NULL'].includes(f.operator) ? ` '${f.value || '?'}'` : '' }}
-                  </code>
-                </div>
-              </div>
-
-              <button @click="tn.addCalcFilter"
-                class="text-xs w-full py-2 rounded-xl border border-dashed border-rose-500/40 text-rose-600 hover:bg-rose-500/10 font-semibold transition-colors flex items-center justify-center gap-1.5">
-                <Filter class="size-3.5" /> เพิ่ม Filter
-              </button>
-            </div>
-          </template>
-
-          <!-- ── GROUP BY ────────────────────────────────────────────── -->
-          <template v-else-if="nodeType === 'group'">
-
-            <!-- Section 1: Field Selection -->
-            <div class="flex flex-col gap-3 border rounded-xl p-4 bg-orange-500/3">
-              <!-- Section header -->
-              <div class="flex items-center justify-between">
-                <div>
-                  <p class="text-xs font-bold text-orange-500">GROUP BY Fields</p>
-                  <p class="text-[10px] text-muted-foreground mt-0.5">เลือก columns ที่จะใช้ใน GROUP BY clause</p>
-                </div>
-                <div class="flex items-center gap-2">
-                  <span class="text-[10px] font-semibold text-orange-500 bg-orange-500/10 px-2 py-0.5 rounded-full">
-                    {{ groupColCount }}/{{ upstreamCols.length }}
-                  </span>
-                  <button @click="selectAllGroupCols"
-                    class="text-[10px] text-orange-500 hover:underline font-semibold">ทั้งหมด</button>
+                  <button @click="tn.selectAllCteCols(upstreamCols.map((c: any) => c.name))"
+                    class="text-[10px] text-violet-500 hover:underline font-semibold">ทั้งหมด</button>
                   <span class="text-muted-foreground text-[10px]">/</span>
-                  <button @click="clearGroupCols"
-                    class="text-[10px] text-muted-foreground hover:underline">ล้าง</button>
+                  <button @click="tn.clearCteCols()"
+                    class="text-[10px] text-muted-foreground hover:underline">SELECT *</button>
                 </div>
               </div>
 
               <!-- Search -->
               <div class="relative">
                 <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground/50" />
-                <input
-                  v-model="colSearch"
-                  placeholder="ค้นหา column..."
-                  class="w-full text-xs border rounded-lg pl-7 pr-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-orange-400/50 font-mono"
-                />
+                <input v-model="cteColSearch" placeholder="ค้นหา column..."
+                  class="w-full text-xs border rounded-lg pl-7 pr-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-violet-400/50 font-mono" />
               </div>
 
-              <!-- No upstream cols message -->
+              <!-- No upstream cols -->
               <div v-if="!upstreamCols.length"
                 class="flex items-center gap-2 px-3 py-3 rounded-lg bg-muted/30 text-[10px] text-muted-foreground italic">
-                ยังไม่มี columns — เชื่อมต่อ table node เข้ากับ GROUP BY node ก่อน
+                ลาก table / GROUP BY node เข้ามาก่อนเพื่อดู columns
               </div>
 
-              <!-- Column list grouped by table -->
-              <div v-else class="border rounded-lg overflow-hidden max-h-[280px] overflow-y-auto">
-                <template v-for="group in filteredGroupedCols" :key="group.tableId">
-                  <!-- Table group header -->
+              <!-- Grouped column picker -->
+              <div v-else class="border rounded-lg overflow-hidden max-h-[460px] overflow-y-auto">
+                <template v-for="group in filteredGroupedCteCols" :key="group.tableId">
+                  <!-- Group header -->
                   <div class="sticky top-0 z-10 flex items-center gap-2 px-3 py-1.5 bg-muted border-b border-border/50">
-                    <Database class="size-3 text-orange-400 shrink-0" />
-                    <span class="text-[10px] font-semibold text-foreground truncate flex-1">{{ group.tableLabel }}</span>
-                    <span class="text-[9px] text-muted-foreground shrink-0">{{ group.cols.length }}</span>
+                    <span :class="[
+                      'text-[8px] font-bold px-1.5 py-0.5 rounded font-mono uppercase shrink-0',
+                      group.tableId === 'GROUP BY' ? 'bg-orange-500/20 text-orange-400' : 'bg-sky-500/20 text-sky-400',
+                    ]">{{ group.tableId === 'GROUP BY' ? 'GROUP' : 'TABLE' }}</span>
+                    <span class="font-mono text-[11px] font-semibold text-foreground truncate flex-1">{{ group.tableLabel }}</span>
+                    <span v-if="(store.modalNode?.data?.selectedCols ?? []).filter((s: string) => group.cols.some(c => c.name === s)).length"
+                      class="text-[9px] px-1.5 py-0 rounded bg-violet-500/20 text-violet-400 font-bold font-mono shrink-0">
+                      ✓{{ (store.modalNode?.data?.selectedCols ?? []).filter((s: string) => group.cols.some(c => c.name === s)).length }}
+                    </span>
+                    <div class="flex items-center gap-1.5 shrink-0 ml-1">
+                      <button @click="selectAllFromCteGroup(group)"
+                        class="text-[9px] font-semibold text-violet-400 hover:underline">ทั้งหมด</button>
+                      <span class="text-muted-foreground text-[9px]">/</span>
+                      <button @click="clearAllFromCteGroup(group)"
+                        class="text-[9px] text-muted-foreground hover:underline">ล้าง</button>
+                    </div>
                   </div>
                   <!-- Columns -->
-                  <label
-                    v-for="col in group.cols"
-                    :key="col.name"
-                    class="flex items-center gap-2.5 px-3 py-2 pl-5 cursor-pointer select-none transition-colors border-b border-border/30 last:border-0 hover:bg-orange-500/5"
-                    :class="(store.modalNode.data.groupCols ?? []).includes(col.name) ? 'bg-orange-500/5' : ''"
-                  >
-                    <!-- Checkbox -->
-                    <div :class="[
-                      'size-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors',
-                      (store.modalNode.data.groupCols ?? []).includes(col.name)
-                        ? 'bg-orange-500 border-orange-500'
-                        : 'border-border/60 bg-background',
-                    ]">
-                      <svg v-if="(store.modalNode.data.groupCols ?? []).includes(col.name)"
+                  <label v-for="col in group.cols" :key="col.name"
+                    class="flex items-center gap-2.5 px-3 py-1.5 pl-5 cursor-pointer select-none transition-colors border-b border-border/30 last:border-0 hover:bg-violet-500/5"
+                    :class="(store.modalNode?.data?.selectedCols ?? []).includes(col.name) ? 'bg-violet-500/5' : ''">
+                    <div :class="['size-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors',
+                      (store.modalNode?.data?.selectedCols ?? []).includes(col.name) ? 'bg-violet-500 border-violet-500' : 'border-border/60 bg-background']">
+                      <svg v-if="(store.modalNode?.data?.selectedCols ?? []).includes(col.name)"
                         class="size-2.5 text-white" fill="none" viewBox="0 0 10 10">
                         <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
                       </svg>
                       <input type="checkbox" class="sr-only"
-                        :checked="(store.modalNode.data.groupCols ?? []).includes(col.name)"
-                        @change="toggleGroupCol(col.name, ($event.target as HTMLInputElement).checked)"
-                      />
+                        :checked="(store.modalNode?.data?.selectedCols ?? []).includes(col.name)"
+                        @change="tn.toggleCteCol(col.name)" />
                     </div>
-                    <!-- PK icon -->
                     <Key v-if="col.isPk" class="size-3 text-amber-400 shrink-0" />
-                    <!-- Type badge -->
                     <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(col.type).cls]">
                       {{ getColTypeBadge(col.type).label }}
                     </span>
-                    <!-- Remark (primary) + column name (secondary) -->
                     <div class="flex-1 min-w-0">
-                      <p class="text-[11px] truncate" :class="col.isPk ? 'text-amber-500 font-semibold' : 'text-foreground'">
-                        {{ col.remark || col.name }}
-                      </p>
+                      <p class="text-[11px] truncate font-mono" :class="col.isPk ? 'text-amber-500 font-semibold' : ''">{{ col.remark || col.name }}</p>
                       <p v-if="col.remark" class="font-mono text-[9px] text-muted-foreground/60 truncate">{{ col.name }}</p>
                     </div>
                   </label>
+                  <div v-if="group.cols.length === 0 && cteColSearch"
+                    class="px-3 py-2 text-[10px] text-muted-foreground/60 italic">
+                    ไม่พบ column ที่ตรงกับ "{{ cteColSearch }}"
+                  </div>
                 </template>
-
-                <div v-if="filteredGroupedCols.length === 0"
+                <div v-if="filteredGroupedCteCols.length === 0"
                   class="px-3 py-3 text-[10px] text-muted-foreground/60 italic text-center">
-                  {{ colSearch ? `ไม่พบ column ที่ตรงกับ "${colSearch}"` : 'กำลังโหลด columns...' }}
+                  {{ cteColSearch ? `ไม่พบ column ที่ตรงกับ "${cteColSearch}"` : 'กำลังโหลด columns...' }}
                 </div>
               </div>
-            </div>
+            </div><!-- /LEFT -->
 
-            <!-- Section 2: Aggregations -->
-            <div class="flex flex-col gap-3 border rounded-xl p-4 bg-orange-500/3">
-              <div>
-                <p class="text-xs font-bold text-orange-500">Aggregate Functions</p>
-                <p class="text-[10px] text-muted-foreground mt-0.5">SQL Server standard — SUM, AVG, COUNT, MIN, MAX, COUNT DISTINCT</p>
+            <!-- ── RIGHT: CTE Name + WHERE Filter + SQL Preview ───── -->
+            <div class="flex flex-col gap-4 min-w-0">
+
+              <!-- CTE name -->
+              <div class="flex flex-col gap-1.5">
+                <label class="text-[11px] font-semibold text-violet-500 uppercase tracking-wide">CTE Name</label>
+                <input
+                  :value="store.modalNode?.data?.name ?? 'my_cte'"
+                  @input="tn.setModalData({ name: ($event.target as HTMLInputElement).value })"
+                  class="w-full h-9 px-3 rounded-lg border bg-background text-sm font-mono focus:outline-none focus:ring-2 focus:ring-violet-500/40"
+                  placeholder="my_cte"
+                  spellcheck="false"
+                />
+                <p class="text-[10px] text-muted-foreground">
+                  ชื่อที่ใช้ใน WITH <span class="font-mono text-violet-400">{{ store.modalNode?.data?.name || 'my_cte' }}</span> AS (...)
+                </p>
               </div>
 
-              <!-- Agg rows -->
-              <div
-                v-for="(agg, i) in store.modalNode.data.aggs"
-                :key="'agg-' + i"
-                class="flex flex-col gap-2 border rounded-xl p-3 bg-background/60"
-              >
-                <!-- Row header -->
+              <!-- WHERE filter -->
+              <div class="flex flex-col gap-2">
                 <div class="flex items-center justify-between">
-                  <span class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
-                    Aggregation {{ Number(i) + 1 }}
-                    <span v-if="agg.col" class="normal-case font-mono text-orange-500 ml-1">
-                      — {{ agg.func }}({{ agg.col }})
+                  <label class="text-[11px] font-semibold text-rose-500 uppercase tracking-wide">
+                    WHERE Filter
+                    <span v-if="(store.modalNode?.data?.conditions ?? []).filter((c: any) => c.column).length"
+                      class="ml-1 text-[10px] font-normal text-muted-foreground normal-case">
+                      {{ (store.modalNode?.data?.conditions ?? []).filter((c: any) => c.column).length }} conditions
                     </span>
-                  </span>
-                  <button @click="tn.removeAgg(Number(i))"
-                    class="size-5 flex items-center justify-center rounded hover:bg-destructive/10 hover:text-destructive text-muted-foreground transition-colors">
-                    <X class="size-3.5" />
+                  </label>
+                  <button @click="tn.addCteCondition()"
+                    class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-rose-500/30 text-rose-400 hover:bg-rose-500/10 transition-colors">
+                    <Plus class="size-2.5" /> เพิ่ม
                   </button>
                 </div>
 
-                <!-- Function pill buttons -->
-                <div class="flex flex-wrap gap-1.5">
-                  <button
-                    v-for="fn in AGG_FUNCS"
-                    :key="fn"
-                    @click="tn.setAgg(Number(i), { func: fn })"
-                    :class="[
-                      'text-[10px] px-2.5 py-1.5 rounded-lg border font-mono font-bold transition-colors whitespace-nowrap',
-                      agg.func === fn
-                        ? AGG_COLORS[fn] ?? 'bg-orange-500 text-white border-orange-500'
-                        : 'border-border hover:border-orange-400/50 text-muted-foreground hover:text-orange-500 hover:bg-orange-500/8',
-                    ]"
-                  >{{ fn }}</button>
-                </div>
-
-                <!-- Column + Alias row -->
-                <div class="flex items-center gap-2">
-                  <!-- Custom column dropdown trigger -->
-                  <button
-                    @click="toggleAggColDropdown(Number(i), $event)"
-                    :class="[
-                      'flex-1 flex items-center gap-2 text-xs border rounded-lg px-2.5 py-2 bg-background focus:outline-none text-left transition-colors',
-                      agg.col ? 'border-orange-400/40' : 'border-border hover:border-orange-400/30',
-                      openAggColIdx === Number(i) ? 'ring-2 ring-orange-400/50 border-orange-400/40' : '',
-                    ]"
-                  >
-                    <template v-if="agg.col">
-                      <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0',
-                        getColTypeBadge(upstreamCols.find(c => c.name === agg.col)?.type ?? '').cls]">
-                        {{ getColTypeBadge(upstreamCols.find(c => c.name === agg.col)?.type ?? '').label }}
+                <div v-if="(store.modalNode?.data?.conditions ?? []).length" class="flex flex-col gap-2 max-h-[300px] overflow-y-auto pr-0.5">
+                  <div v-for="(cond, i) in (store.modalNode?.data?.conditions ?? [])" :key="i"
+                    class="flex flex-col gap-3 p-3 rounded-xl border bg-rose-500/3 shrink-0">
+                    <div class="flex items-center gap-2">
+                      <span class="text-[10px] font-bold text-rose-500 uppercase tracking-wide flex-1">
+                        Condition {{ Number(i) + 1 }}
+                        <span v-if="cond.column" class="normal-case font-mono text-rose-400 ml-1">— {{ condPreview(cond) }}</span>
                       </span>
-                      <div class="flex-1 min-w-0">
-                        <p class="text-[11px] truncate">{{ upstreamCols.find(c => c.name === agg.col)?.remark || agg.col }}</p>
-                        <p v-if="upstreamCols.find(c => c.name === agg.col)?.remark" class="font-mono text-[9px] text-muted-foreground/60 truncate">{{ agg.col }}</p>
+                      <button @click="tn.removeCteCondition(+i)"
+                        class="size-5 flex items-center justify-center rounded hover:bg-destructive/10 hover:text-destructive text-muted-foreground transition-colors">
+                        <X class="size-3.5" />
+                      </button>
+                    </div>
+                    <button @click="toggleCteCondColDropdown(+i, $event)"
+                      :class="['w-full flex items-center gap-2 text-xs border rounded-lg px-2.5 py-2 bg-background text-left transition-colors',
+                        cond.column ? 'border-rose-400/40' : 'border-border hover:border-rose-400/30',
+                        openCteCondColIdx === +i ? 'ring-2 ring-rose-400/50 border-rose-400/40' : '']">
+                      <template v-if="cond.column">
+                        <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(upstreamCols.find(c => c.name === cond.column)?.type ?? '').cls]">
+                          {{ getColTypeBadge(upstreamCols.find(c => c.name === cond.column)?.type ?? '').label }}
+                        </span>
+                        <div class="flex-1 min-w-0">
+                          <p class="text-[11px] truncate">{{ upstreamCols.find(c => c.name === cond.column)?.remark || cond.column }}</p>
+                          <p v-if="upstreamCols.find(c => c.name === cond.column)?.remark" class="font-mono text-[9px] text-muted-foreground/60 truncate">{{ cond.column }}</p>
+                        </div>
+                      </template>
+                      <span v-else class="text-muted-foreground text-[11px] flex-1">— เลือก Column —</span>
+                      <ChevronDown :class="['size-3 shrink-0 text-muted-foreground transition-transform', openCteCondColIdx === +i ? 'rotate-180' : '']" />
+                    </button>
+                    <div class="flex flex-col gap-1.5">
+                      <div v-for="group in WHERE_OP_GROUPS" :key="group.color" class="flex flex-wrap gap-1">
+                        <button v-for="op in group.ops" :key="op"
+                          @click="tn.setCteCondition(+i, { operator: op })"
+                          :class="['text-[10px] px-2.5 py-1 rounded-lg border font-mono font-bold transition-colors whitespace-nowrap', whereOpClass(cond.operator, op)]">{{ op }}</button>
                       </div>
-                    </template>
-                    <span v-else class="text-muted-foreground text-[11px] flex-1">— เลือก Column —</span>
-                    <ChevronDown :class="['size-3 shrink-0 text-muted-foreground transition-transform', openAggColIdx === Number(i) ? 'rotate-180' : '']" />
-                  </button>
+                    </div>
+                    <div v-if="cond.operator && !['IS NULL', 'IS NOT NULL'].includes(cond.operator)" class="flex items-center gap-2">
+                      <label class="text-[10px] font-semibold text-muted-foreground w-8 shrink-0">ค่า</label>
+                      <div v-if="isDateCol(cond.column)" class="flex-1 relative flex items-center">
+                        <input :ref="(el) => setCteDateRef(Number(i), el)" type="date" :value="cond.value"
+                          @input="tn.setCteCondition(+i, { value: ($event.target as HTMLInputElement).value })"
+                          class="flex-1 text-xs border rounded-lg pl-2.5 pr-9 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-rose-400/50 font-mono"
+                          :class="cond.value ? 'border-rose-400/40' : ''" />
+                        <button type="button" @click="openCteDatePicker(Number(i))"
+                          class="absolute right-2 size-5 flex items-center justify-center rounded text-rose-500 hover:bg-rose-500/15 transition-colors">
+                          <Calendar class="size-3.5" />
+                        </button>
+                      </div>
+                      <input v-else :value="cond.value"
+                        @input="tn.setCteCondition(+i, { value: ($event.target as HTMLInputElement).value })"
+                        :placeholder="cond.operator === 'LIKE' ? 'เช่น %keyword%' : cond.operator === 'IN' ? 'เช่น 1,2,3' : 'ค่าที่ต้องการ'"
+                        class="flex-1 text-xs border rounded-lg px-2.5 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-rose-400/50 font-mono"
+                        :class="cond.value ? 'border-rose-400/40' : ''" />
+                    </div>
+                    <div v-if="cond.column && cond.operator"
+                      class="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-rose-500/5 border border-rose-400/20">
+                      <span class="text-[9px] font-bold text-rose-500 shrink-0">SQL</span>
+                      <code class="text-[9px] font-mono text-rose-300/80 truncate">{{ condPreview(cond) }}</code>
+                    </div>
+                  </div>
+                </div>
+                <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">ไม่มี filter = ดึงข้อมูลทั้งหมด</p>
+              </div>
 
-                  <!-- Alias input -->
-                  <input
-                    :value="agg.alias"
-                    @input="tn.setAgg(Number(i), { alias: ($event.target as HTMLInputElement).value })"
-                    placeholder="AS alias"
-                    class="w-32 text-xs border rounded-lg px-2.5 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-orange-400/50 font-mono"
-                    :class="agg.alias ? 'border-orange-400/40' : ''"
-                  />
+              <!-- SQL Preview -->
+              <div v-if="upstreamCols.length"
+                class="px-3 py-2 rounded-lg bg-violet-500/5 border border-violet-400/20 max-h-[120px] overflow-y-auto overflow-x-auto">
+                <div class="flex items-start gap-1.5">
+                  <span class="text-[9px] font-bold text-violet-500 shrink-0 mt-0.5">SQL</span>
+                  <code class="text-[9px] font-mono text-violet-300/80 leading-relaxed whitespace-pre">{{ cteSqlPreview }}</code>
                 </div>
               </div>
 
-              <button @click="tn.addAgg"
-                class="text-xs w-full py-2 rounded-xl border border-dashed border-orange-500/40 text-orange-600 hover:bg-orange-500/8 font-semibold transition-colors flex items-center justify-center gap-1.5">
-                <Plus class="size-3.5" /> เพิ่ม Aggregation
-              </button>
-            </div>
+            </div><!-- /RIGHT -->
+            </div><!-- /grid -->
 
-            <!-- Section 3: HAVING Filters -->
-            <div class="flex flex-col gap-3 border rounded-xl p-4 bg-amber-500/3">
+          </template>
+
+          <!-- ── Calculator ──────────────────────────────────────────── -->
+          <template v-else-if="nodeType === 'calc'">
+            <div class="grid grid-cols-[1fr_1fr] gap-5 items-start">
+
+            <!-- ── LEFT: Calculated Columns ──────────────────────────── -->
+            <div class="flex flex-col gap-3 min-w-0">
               <div class="flex items-center justify-between">
                 <div>
-                  <p class="text-xs font-bold text-amber-600">HAVING <span class="font-normal text-muted-foreground text-[10px]">(optional)</span></p>
-                  <p class="text-[10px] text-muted-foreground mt-0.5">กรองผลลัพธ์หลัง GROUP BY ด้วย aggregate conditions</p>
+                  <p class="text-xs font-bold text-teal-500">Calculated Columns</p>
+                  <p class="text-[10px] text-muted-foreground mt-0.5">สร้าง calculated columns ด้วย SQL expressions</p>
                 </div>
-                <span v-if="groupFilterCount" class="text-[10px] font-semibold text-amber-600 bg-amber-500/10 px-2 py-0.5 rounded-full">
-                  {{ groupFilterCount }}
+                <span class="text-[10px] font-semibold text-teal-500 bg-teal-500/10 px-2 py-0.5 rounded-full">
+                  {{ calcItemCount }}
                 </span>
               </div>
 
-              <div
-                v-for="(f, i) in store.modalNode.data.filters" :key="'hf-' + i"
-                class="flex flex-col gap-3 border rounded-xl p-4 bg-background/60"
-              >
-                <!-- Header -->
-                <div class="flex items-center gap-2">
-                  <span class="text-[10px] font-bold text-amber-600 uppercase tracking-wide flex-1">
-                    HAVING {{ Number(i) + 1 }}
-                    <span v-if="f.column" class="normal-case font-mono text-amber-500 ml-1">— {{ f.column }} {{ f.operator }}</span>
-                  </span>
-                  <button @click="tn.removeGroupFilter(Number(i))"
-                    class="size-5 flex items-center justify-center rounded hover:bg-destructive/10 hover:text-destructive text-muted-foreground transition-colors">
-                    <X class="size-3.5" />
-                  </button>
-                </div>
-
-                <!-- Column picker -->
-                <div class="flex items-center gap-2">
-                  <label class="text-[10px] font-semibold text-muted-foreground w-16 shrink-0">Column</label>
-                  <button
-                    @click="toggleGroupFilterColDropdown(Number(i), $event)"
-                    :class="[
-                      'flex-1 flex items-center gap-2 text-xs border rounded-lg px-2.5 py-2 bg-background text-left transition-colors',
-                      f.column ? 'border-amber-400/40' : 'border-border hover:border-amber-400/30',
-                      openGroupFilterColIdx === Number(i) ? 'ring-2 ring-amber-400/50 border-amber-400/40' : '',
-                    ]"
-                  >
-                    <template v-if="f.column">
-                      <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0',
-                        getColTypeBadge(havingCols.find(c => c.name === f.column)?.type ?? '').cls]">
-                        {{ getColTypeBadge(havingCols.find(c => c.name === f.column)?.type ?? '').label }}
-                      </span>
-                      <span class="font-mono text-[11px] flex-1 truncate">{{ f.column }}</span>
-                    </template>
-                    <span v-else class="text-muted-foreground text-[11px] flex-1">— เลือก Aggregate / Column —</span>
-                    <ChevronDown :class="['size-3 shrink-0 text-muted-foreground transition-transform', openGroupFilterColIdx === Number(i) ? 'rotate-180' : '']" />
-                  </button>
-                </div>
-
-                <!-- Operator pills -->
-                <div class="flex flex-col gap-1.5">
-                  <label class="text-[10px] font-semibold text-muted-foreground">เงื่อนไข</label>
-                  <div v-for="group in WHERE_OP_GROUPS" :key="group.color" class="flex flex-wrap gap-1">
-                    <button
-                      v-for="op in group.ops" :key="op"
-                      @click="tn.setGroupFilter(Number(i), { operator: op })"
-                      :class="['text-[10px] px-2.5 py-1 rounded-lg border font-mono font-bold transition-colors whitespace-nowrap', whereOpClass(f.operator, op)]"
-                    >{{ op }}</button>
+              <div class="flex flex-col gap-3 max-h-[460px] overflow-y-auto pr-0.5">
+                <div
+                  v-for="(item, i) in store.modalNode.data.items" :key="i"
+                  class="flex flex-col gap-3 border rounded-xl p-4 bg-teal-500/3 shrink-0"
+                >
+                  <!-- Header -->
+                  <div class="flex items-center gap-2">
+                    <span class="text-[10px] font-bold text-teal-600 uppercase tracking-wide flex-1">
+                      Column {{ Number(i) + 1 }}
+                      <span v-if="item.alias" class="normal-case font-mono text-teal-400 ml-1">— {{ item.alias }}</span>
+                    </span>
+                    <button @click="tn.removeCalcItem(Number(i))"
+                      class="size-5 flex items-center justify-center rounded hover:bg-destructive/10 hover:text-destructive text-muted-foreground transition-colors">
+                      <X class="size-3.5" />
+                    </button>
                   </div>
-                </div>
 
-                <!-- Value input -->
-                <div v-if="f.operator && !['IS NULL', 'IS NOT NULL'].includes(f.operator)" class="flex items-center gap-2">
-                  <label class="text-[10px] font-semibold text-muted-foreground w-16 shrink-0">ค่า</label>
-                  <input
-                    :value="f.value"
-                    @input="tn.setGroupFilter(Number(i), { value: ($event.target as HTMLInputElement).value })"
-                    :placeholder="f.operator === 'LIKE' ? 'เช่น %keyword%' : f.operator === 'IN' ? 'เช่น 1,2,3' : 'ค่าที่ต้องการ'"
-                    class="flex-1 text-xs border rounded-lg px-2.5 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-amber-400/50 font-mono"
-                    :class="f.value ? 'border-amber-400/40' : ''"
-                  />
-                </div>
+                  <!-- Row: Column picker + alias -->
+                  <div class="flex items-center gap-2">
+                    <button
+                      @click="toggleCalcColDropdown(Number(i), $event)"
+                      :class="[
+                        'flex-1 flex items-center gap-2 text-xs border rounded-lg px-2.5 py-2 bg-background text-left transition-colors',
+                        item.col ? 'border-teal-400/40' : 'border-border hover:border-teal-400/30',
+                        openCalcColIdx === Number(i) ? 'ring-2 ring-teal-400/50 border-teal-400/40' : '',
+                      ]"
+                    >
+                      <template v-if="item.col">
+                        <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0',
+                          getColTypeBadge(upstreamCols.find(c => c.name === item.col)?.type ?? '').cls]">
+                          {{ getColTypeBadge(upstreamCols.find(c => c.name === item.col)?.type ?? '').label }}
+                        </span>
+                        <div class="flex-1 min-w-0">
+                          <p class="text-[11px] truncate">{{ upstreamCols.find(c => c.name === item.col)?.remark || item.col }}</p>
+                          <p v-if="upstreamCols.find(c => c.name === item.col)?.remark" class="font-mono text-[9px] text-muted-foreground/60 truncate">{{ item.col }}</p>
+                        </div>
+                      </template>
+                      <span v-else class="text-muted-foreground text-[11px] flex-1">— เลือก Column —</span>
+                      <ChevronDown :class="['size-3 shrink-0 text-muted-foreground transition-transform', openCalcColIdx === Number(i) ? 'rotate-180' : '']" />
+                    </button>
+                    <input
+                      :value="item.alias"
+                      @input="tn.setCalcItem(Number(i), { alias: ($event.target as HTMLInputElement).value })"
+                      placeholder="ชื่อ output"
+                      class="w-28 text-xs border rounded-lg px-2.5 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-teal-400/50 font-mono"
+                      :class="item.alias ? 'border-teal-400/40' : ''"
+                    />
+                  </div>
 
-                <!-- Preview -->
-                <div v-if="f.column && f.operator"
-                  class="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-amber-500/5 border border-amber-400/20">
-                  <span class="text-[9px] font-bold text-amber-600 shrink-0">HAVING</span>
-                  <code class="text-[9px] font-mono text-amber-400/80 truncate">
-                    {{ f.column }} {{ f.operator }}{{ !['IS NULL','IS NOT NULL'].includes(f.operator) ? ` '${f.value || '?'}'` : '' }}
-                  </code>
+                  <!-- Operation pills grouped by category -->
+                  <div class="flex flex-col gap-1.5">
+                    <p class="text-[10px] font-semibold text-muted-foreground">การคำนวณ</p>
+                    <div class="flex flex-wrap gap-1">
+                      <span class="text-[9px] text-muted-foreground/50 self-center w-12 shrink-0">Math</span>
+                      <button v-for="op in CALC_OPS.filter(o => o.group === 'math')" :key="op.id"
+                        @click="tn.setCalcItem(Number(i), { op: op.id })"
+                        :class="['text-[10px] px-2.5 py-1 rounded-lg border font-bold transition-colors', opClass(item.op, op)]">{{ op.label }}</button>
+                    </div>
+                    <div class="flex flex-wrap gap-1">
+                      <span class="text-[9px] text-muted-foreground/50 self-center w-12 shrink-0">NULL</span>
+                      <button v-for="op in CALC_OPS.filter(o => o.group === 'null')" :key="op.id"
+                        @click="tn.setCalcItem(Number(i), { op: op.id })"
+                        :class="['text-[10px] px-2.5 py-1 rounded-lg border font-mono font-bold transition-colors', opClass(item.op, op)]">{{ op.label }}</button>
+                    </div>
+                    <div class="flex flex-wrap gap-1">
+                      <span class="text-[9px] text-muted-foreground/50 self-center w-12 shrink-0">Cast</span>
+                      <button v-for="op in CALC_OPS.filter(o => o.group === 'cast')" :key="op.id"
+                        @click="tn.setCalcItem(Number(i), { op: op.id })"
+                        :class="['text-[10px] px-2.5 py-1 rounded-lg border font-mono font-bold transition-colors', opClass(item.op, op)]">{{ op.label }}</button>
+                    </div>
+                    <div class="flex flex-wrap gap-1">
+                      <span class="text-[9px] text-muted-foreground/50 self-center w-12 shrink-0">String</span>
+                      <button v-for="op in CALC_OPS.filter(o => o.group === 'string')" :key="op.id"
+                        @click="tn.setCalcItem(Number(i), { op: op.id })"
+                        :class="['text-[10px] px-2.5 py-1 rounded-lg border font-mono font-bold transition-colors', opClass(item.op, op)]">{{ op.label }}</button>
+                    </div>
+                    <div class="flex flex-wrap gap-1">
+                      <span class="text-[9px] text-muted-foreground/50 self-center w-12 shrink-0">Date</span>
+                      <button v-for="op in CALC_OPS.filter(o => o.group === 'date')" :key="op.id"
+                        @click="tn.setCalcItem(Number(i), { op: op.id })"
+                        :class="['text-[10px] px-2.5 py-1 rounded-lg border font-mono font-bold transition-colors', opClass(item.op, op)]">{{ op.label }}</button>
+                    </div>
+                  </div>
+
+                  <!-- Value input -->
+                  <div v-if="item.op && calcNeedsValue(item.op)" class="flex items-center gap-2">
+                    <label class="text-[10px] font-semibold text-muted-foreground w-12 shrink-0">ค่า</label>
+                    <input
+                      :value="item.value"
+                      @input="tn.setCalcItem(Number(i), { value: ($event.target as HTMLInputElement).value })"
+                      :placeholder="calcValuePlaceholder(item.op)"
+                      class="flex-1 text-xs border rounded-lg px-2.5 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-teal-400/50 font-mono"
+                      :class="item.value ? 'border-teal-400/40' : ''"
+                    />
+                  </div>
+
+                  <!-- SQL Preview per item -->
+                  <div v-if="item.col && item.op"
+                    class="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-teal-500/5 border border-teal-400/20">
+                    <span class="text-[9px] font-bold text-teal-500 shrink-0">SQL</span>
+                    <code class="text-[9px] font-mono text-teal-300/80 truncate">
+                      ({{ calcExprPreview(item.op, item.col, item.value) }}) AS {{ item.alias || '?' }}
+                    </code>
+                  </div>
                 </div>
               </div>
 
-              <button @click="tn.addGroupFilter"
-                class="text-xs w-full py-2 rounded-xl border border-dashed border-amber-500/40 text-amber-600 hover:bg-amber-500/8 font-semibold transition-colors flex items-center justify-center gap-1.5">
-                <Filter class="size-3.5" /> เพิ่ม HAVING Condition
+              <button @click="tn.addCalcItem"
+                class="text-xs w-full py-2 rounded-xl border border-dashed border-teal-500/40 text-teal-600 hover:bg-teal-500/10 font-semibold transition-colors flex items-center justify-center gap-1.5">
+                <Plus class="size-3.5" /> เพิ่ม Calculated Column
               </button>
-            </div>
+            </div><!-- /LEFT -->
 
+            <!-- ── RIGHT: WHERE filter + SQL preview ──────────────────── -->
+            <div class="flex flex-col gap-4 min-w-0">
+
+              <!-- WHERE filter -->
+              <div class="flex flex-col gap-2">
+                <div class="flex items-center justify-between">
+                  <label class="text-[11px] font-semibold text-rose-500 uppercase tracking-wide">
+                    WHERE Filter
+                    <span v-if="calcFilterCount" class="ml-1 text-[10px] font-normal text-muted-foreground normal-case">
+                      {{ calcFilterCount }} filters
+                    </span>
+                  </label>
+                  <button @click="tn.addCalcFilter()"
+                    class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-rose-500/30 text-rose-400 hover:bg-rose-500/10 transition-colors">
+                    <Plus class="size-2.5" /> เพิ่ม
+                  </button>
+                </div>
+
+                <div v-if="(store.modalNode?.data?.filters ?? []).length" class="flex flex-col gap-2 max-h-[300px] overflow-y-auto pr-0.5">
+                  <div
+                    v-for="(f, i) in store.modalNode.data.filters" :key="'cf-' + i"
+                    class="flex flex-col gap-3 p-3 rounded-xl border bg-rose-500/3 shrink-0"
+                  >
+                    <!-- Header -->
+                    <div class="flex items-center gap-2">
+                      <span class="text-[10px] font-bold text-rose-500 uppercase tracking-wide flex-1">
+                        Filter {{ Number(i) + 1 }}
+                        <span v-if="f.column" class="normal-case font-mono text-rose-400 ml-1">— {{ condPreview(f) }}</span>
+                      </span>
+                      <button @click="tn.removeCalcFilter(Number(i))"
+                        class="size-5 flex items-center justify-center rounded hover:bg-destructive/10 hover:text-destructive text-muted-foreground transition-colors">
+                        <X class="size-3.5" />
+                      </button>
+                    </div>
+
+                    <!-- Column picker -->
+                    <button
+                      @click="toggleCalcFilterColDropdown(Number(i), $event)"
+                      :class="[
+                        'w-full flex items-center gap-2 text-xs border rounded-lg px-2.5 py-2 bg-background text-left transition-colors',
+                        f.column ? 'border-rose-400/40' : 'border-border hover:border-rose-400/30',
+                        openCalcFilterColIdx === Number(i) ? 'ring-2 ring-rose-400/50 border-rose-400/40' : '',
+                      ]"
+                    >
+                      <template v-if="f.column">
+                        <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0',
+                          getColTypeBadge(upstreamCols.find(c => c.name === f.column)?.type ?? '').cls]">
+                          {{ getColTypeBadge(upstreamCols.find(c => c.name === f.column)?.type ?? '').label }}
+                        </span>
+                        <div class="flex-1 min-w-0">
+                          <p class="text-[11px] truncate">{{ upstreamCols.find(c => c.name === f.column)?.remark || f.column }}</p>
+                          <p v-if="upstreamCols.find(c => c.name === f.column)?.remark" class="font-mono text-[9px] text-muted-foreground/60 truncate">{{ f.column }}</p>
+                        </div>
+                      </template>
+                      <span v-else class="text-muted-foreground text-[11px] flex-1">— เลือก Column —</span>
+                      <ChevronDown :class="['size-3 shrink-0 text-muted-foreground transition-transform', openCalcFilterColIdx === Number(i) ? 'rotate-180' : '']" />
+                    </button>
+
+                    <!-- Operator pills -->
+                    <div class="flex flex-col gap-1.5">
+                      <div v-for="group in WHERE_OP_GROUPS" :key="group.color" class="flex flex-wrap gap-1">
+                        <button v-for="op in group.ops" :key="op"
+                          @click="tn.setCalcFilter(Number(i), { operator: op })"
+                          :class="['text-[10px] px-2.5 py-1 rounded-lg border font-mono font-bold transition-colors whitespace-nowrap', whereOpClass(f.operator, op)]">{{ op }}</button>
+                      </div>
+                    </div>
+
+                    <!-- Value input -->
+                    <div v-if="f.operator && !['IS NULL', 'IS NOT NULL'].includes(f.operator)" class="flex items-center gap-2">
+                      <label class="text-[10px] font-semibold text-muted-foreground w-8 shrink-0">ค่า</label>
+                      <div v-if="isDateCol(f.column)" class="flex-1 relative flex items-center">
+                        <input
+                          :ref="(el) => setCalcFilterDateRef(Number(i), el)"
+                          type="date" :value="f.value"
+                          @input="tn.setCalcFilter(Number(i), { value: ($event.target as HTMLInputElement).value })"
+                          class="flex-1 text-xs border rounded-lg pl-2.5 pr-9 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-rose-400/50 font-mono"
+                          :class="f.value ? 'border-rose-400/40' : ''"
+                        />
+                        <button type="button" @click="openCalcFilterDatePicker(Number(i))"
+                          class="absolute right-2 size-5 flex items-center justify-center rounded text-rose-500 hover:bg-rose-500/15 transition-colors">
+                          <Calendar class="size-3.5" />
+                        </button>
+                      </div>
+                      <input v-else :value="f.value"
+                        @input="tn.setCalcFilter(Number(i), { value: ($event.target as HTMLInputElement).value })"
+                        :placeholder="f.operator === 'LIKE' ? 'เช่น %keyword%' : f.operator === 'IN' ? 'เช่น 1,2,3' : 'ค่าที่ต้องการ'"
+                        class="flex-1 text-xs border rounded-lg px-2.5 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-rose-400/50 font-mono"
+                        :class="f.value ? 'border-rose-400/40' : ''"
+                      />
+                    </div>
+
+                    <!-- Preview -->
+                    <div v-if="f.column && f.operator"
+                      class="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-rose-500/5 border border-rose-400/20">
+                      <span class="text-[9px] font-bold text-rose-500 shrink-0">SQL</span>
+                      <code class="text-[9px] font-mono text-rose-300/80 truncate">{{ condPreview(f) }}</code>
+                    </div>
+                  </div>
+                </div>
+                <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">ไม่มี filter = นำข้อมูลทั้งหมดมาคำนวณ</p>
+              </div>
+
+              <!-- SQL Preview -->
+              <div class="px-3 py-2 rounded-lg bg-teal-500/5 border border-teal-400/20 max-h-[120px] overflow-y-auto overflow-x-auto">
+                <div class="flex items-start gap-1.5">
+                  <span class="text-[9px] font-bold text-teal-500 shrink-0 mt-0.5">SQL</span>
+                  <code class="text-[9px] font-mono text-teal-300/80 leading-relaxed whitespace-pre">{{ calcSqlPreview }}</code>
+                </div>
+              </div>
+
+            </div><!-- /RIGHT -->
+            </div><!-- /grid -->
+          </template>
+
+          <!-- ── GROUP BY ────────────────────────────────────────────── -->
+          <template v-else-if="nodeType === 'group'">
+            <div class="grid grid-cols-[1fr_1fr] gap-5 items-start">
+
+            <!-- ── LEFT: GROUP BY Fields + Aggregations ───────────────── -->
+            <div class="flex flex-col gap-4 min-w-0">
+
+              <!-- Section 1: GROUP BY Fields -->
+              <div class="flex flex-col gap-3 border rounded-xl p-4 bg-orange-500/3">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <p class="text-xs font-bold text-orange-500">GROUP BY Fields</p>
+                    <p class="text-[10px] text-muted-foreground mt-0.5">เลือก columns ที่จะใช้ใน GROUP BY clause</p>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <span class="text-[10px] font-semibold text-orange-500 bg-orange-500/10 px-2 py-0.5 rounded-full">
+                      {{ groupColCount }}/{{ upstreamCols.length }}
+                    </span>
+                    <button @click="selectAllGroupCols"
+                      class="text-[10px] text-orange-500 hover:underline font-semibold">ทั้งหมด</button>
+                    <span class="text-muted-foreground text-[10px]">/</span>
+                    <button @click="clearGroupCols"
+                      class="text-[10px] text-muted-foreground hover:underline">ล้าง</button>
+                  </div>
+                </div>
+
+                <div class="relative">
+                  <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground/50" />
+                  <input v-model="colSearch" placeholder="ค้นหา column..."
+                    class="w-full text-xs border rounded-lg pl-7 pr-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-orange-400/50 font-mono" />
+                </div>
+
+                <div v-if="!upstreamCols.length"
+                  class="flex items-center gap-2 px-3 py-3 rounded-lg bg-muted/30 text-[10px] text-muted-foreground italic">
+                  ยังไม่มี columns — เชื่อมต่อ table node เข้ากับ GROUP BY node ก่อน
+                </div>
+
+                <div v-else class="border rounded-lg overflow-hidden max-h-[300px] overflow-y-auto">
+                  <template v-for="group in filteredGroupedCols" :key="group.tableId">
+                    <div class="sticky top-0 z-10 flex items-center gap-2 px-3 py-1.5 bg-muted border-b border-border/50">
+                      <Database class="size-3 text-orange-400 shrink-0" />
+                      <span class="text-[10px] font-semibold text-foreground truncate flex-1">{{ group.tableLabel }}</span>
+                      <span class="text-[9px] text-muted-foreground shrink-0">{{ group.cols.length }}</span>
+                    </div>
+                    <label v-for="col in group.cols" :key="col.name"
+                      class="flex items-center gap-2.5 px-3 py-2 pl-5 cursor-pointer select-none transition-colors border-b border-border/30 last:border-0 hover:bg-orange-500/5"
+                      :class="(store.modalNode.data.groupCols ?? []).includes(col.name) ? 'bg-orange-500/5' : ''">
+                      <div :class="['size-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors',
+                        (store.modalNode.data.groupCols ?? []).includes(col.name) ? 'bg-orange-500 border-orange-500' : 'border-border/60 bg-background']">
+                        <svg v-if="(store.modalNode.data.groupCols ?? []).includes(col.name)" class="size-2.5 text-white" fill="none" viewBox="0 0 10 10">
+                          <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                        </svg>
+                        <input type="checkbox" class="sr-only"
+                          :checked="(store.modalNode.data.groupCols ?? []).includes(col.name)"
+                          @change="toggleGroupCol(col.name, ($event.target as HTMLInputElement).checked)" />
+                      </div>
+                      <Key v-if="col.isPk" class="size-3 text-amber-400 shrink-0" />
+                      <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(col.type).cls]">
+                        {{ getColTypeBadge(col.type).label }}
+                      </span>
+                      <div class="flex-1 min-w-0">
+                        <p class="text-[11px] truncate" :class="col.isPk ? 'text-amber-500 font-semibold' : 'text-foreground'">{{ col.remark || col.name }}</p>
+                        <p v-if="col.remark" class="font-mono text-[9px] text-muted-foreground/60 truncate">{{ col.name }}</p>
+                      </div>
+                    </label>
+                  </template>
+                  <div v-if="filteredGroupedCols.length === 0"
+                    class="px-3 py-3 text-[10px] text-muted-foreground/60 italic text-center">
+                    {{ colSearch ? `ไม่พบ column ที่ตรงกับ "${colSearch}"` : 'กำลังโหลด columns...' }}
+                  </div>
+                </div>
+              </div>
+
+              <!-- Section 2: Aggregations -->
+              <div class="flex flex-col gap-3 border rounded-xl p-4 bg-orange-500/3">
+                <div>
+                  <p class="text-xs font-bold text-orange-500">Aggregate Functions</p>
+                  <p class="text-[10px] text-muted-foreground mt-0.5">SUM, AVG, COUNT, MIN, MAX, COUNT DISTINCT</p>
+                </div>
+
+                <div class="flex flex-col gap-3 max-h-[260px] overflow-y-auto">
+                  <div v-for="(agg, i) in store.modalNode.data.aggs" :key="'agg-' + i"
+                    class="flex flex-col gap-2 border rounded-xl p-3 bg-background/60 shrink-0">
+                    <div class="flex items-center justify-between">
+                      <span class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+                        Aggregation {{ Number(i) + 1 }}
+                        <span v-if="agg.col" class="normal-case font-mono text-orange-500 ml-1">— {{ agg.func }}({{ agg.col }})</span>
+                      </span>
+                      <button @click="tn.removeAgg(Number(i))"
+                        class="size-5 flex items-center justify-center rounded hover:bg-destructive/10 hover:text-destructive text-muted-foreground transition-colors">
+                        <X class="size-3.5" />
+                      </button>
+                    </div>
+                    <div class="flex flex-wrap gap-1.5">
+                      <button v-for="fn in AGG_FUNCS" :key="fn" @click="tn.setAgg(Number(i), { func: fn })"
+                        :class="['text-[10px] px-2.5 py-1.5 rounded-lg border font-mono font-bold transition-colors whitespace-nowrap',
+                          agg.func === fn ? (AGG_COLORS[fn] ?? 'bg-orange-500 text-white border-orange-500')
+                          : 'border-border hover:border-orange-400/50 text-muted-foreground hover:text-orange-500 hover:bg-orange-500/8']">{{ fn }}</button>
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <button @click="toggleAggColDropdown(Number(i), $event)"
+                        :class="['flex-1 flex items-center gap-2 text-xs border rounded-lg px-2.5 py-2 bg-background focus:outline-none text-left transition-colors',
+                          agg.col ? 'border-orange-400/40' : 'border-border hover:border-orange-400/30',
+                          openAggColIdx === Number(i) ? 'ring-2 ring-orange-400/50 border-orange-400/40' : '']">
+                        <template v-if="agg.col">
+                          <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0',
+                            getColTypeBadge(upstreamCols.find(c => c.name === agg.col)?.type ?? '').cls]">
+                            {{ getColTypeBadge(upstreamCols.find(c => c.name === agg.col)?.type ?? '').label }}
+                          </span>
+                          <div class="flex-1 min-w-0">
+                            <p class="text-[11px] truncate">{{ upstreamCols.find(c => c.name === agg.col)?.remark || agg.col }}</p>
+                            <p v-if="upstreamCols.find(c => c.name === agg.col)?.remark" class="font-mono text-[9px] text-muted-foreground/60 truncate">{{ agg.col }}</p>
+                          </div>
+                        </template>
+                        <span v-else class="text-muted-foreground text-[11px] flex-1">— เลือก Column —</span>
+                        <ChevronDown :class="['size-3 shrink-0 text-muted-foreground transition-transform', openAggColIdx === Number(i) ? 'rotate-180' : '']" />
+                      </button>
+                      <input :value="agg.alias" @input="tn.setAgg(Number(i), { alias: ($event.target as HTMLInputElement).value })"
+                        placeholder="AS alias"
+                        class="w-28 text-xs border rounded-lg px-2.5 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-orange-400/50 font-mono"
+                        :class="agg.alias ? 'border-orange-400/40' : ''" />
+                    </div>
+                  </div>
+                </div>
+
+                <button @click="tn.addAgg"
+                  class="text-xs w-full py-2 rounded-xl border border-dashed border-orange-500/40 text-orange-600 hover:bg-orange-500/8 font-semibold transition-colors flex items-center justify-center gap-1.5">
+                  <Plus class="size-3.5" /> เพิ่ม Aggregation
+                </button>
+              </div>
+
+            </div><!-- /LEFT -->
+
+            <!-- ── RIGHT: HAVING + WHERE pre-filter + SQL preview ─────── -->
+            <div class="flex flex-col gap-4 min-w-0">
+
+              <!-- HAVING -->
+              <div class="flex flex-col gap-2">
+                <div class="flex items-center justify-between">
+                  <label class="text-[11px] font-semibold text-amber-600 uppercase tracking-wide">
+                    HAVING
+                    <span v-if="groupFilterCount" class="ml-1 text-[10px] font-normal text-muted-foreground normal-case">{{ groupFilterCount }} conditions</span>
+                  </label>
+                  <button @click="tn.addGroupFilter()"
+                    class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-amber-500/30 text-amber-500 hover:bg-amber-500/10 transition-colors">
+                    <Plus class="size-2.5" /> เพิ่ม
+                  </button>
+                </div>
+
+                <div v-if="(store.modalNode?.data?.filters ?? []).length" class="flex flex-col gap-2 max-h-[260px] overflow-y-auto pr-0.5">
+                  <div v-for="(f, i) in store.modalNode.data.filters" :key="'hf-' + i"
+                    class="flex flex-col gap-3 p-3 rounded-xl border bg-amber-500/3 shrink-0">
+                    <div class="flex items-center gap-2">
+                      <span class="text-[10px] font-bold text-amber-600 uppercase tracking-wide flex-1">
+                        HAVING {{ Number(i) + 1 }}
+                        <span v-if="f.column" class="normal-case font-mono text-amber-500 ml-1">— {{ condPreview(f) }}</span>
+                      </span>
+                      <button @click="tn.removeGroupFilter(Number(i))"
+                        class="size-5 flex items-center justify-center rounded hover:bg-destructive/10 hover:text-destructive text-muted-foreground transition-colors">
+                        <X class="size-3.5" />
+                      </button>
+                    </div>
+                    <button @click="toggleGroupFilterColDropdown(Number(i), $event)"
+                      :class="['w-full flex items-center gap-2 text-xs border rounded-lg px-2.5 py-2 bg-background text-left transition-colors',
+                        f.column ? 'border-amber-400/40' : 'border-border hover:border-amber-400/30',
+                        openGroupFilterColIdx === Number(i) ? 'ring-2 ring-amber-400/50 border-amber-400/40' : '']">
+                      <template v-if="f.column">
+                        <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0',
+                          getColTypeBadge(havingCols.find(c => c.name === f.column)?.type ?? '').cls]">
+                          {{ getColTypeBadge(havingCols.find(c => c.name === f.column)?.type ?? '').label }}
+                        </span>
+                        <span class="font-mono text-[11px] flex-1 truncate">{{ f.column }}</span>
+                      </template>
+                      <span v-else class="text-muted-foreground text-[11px] flex-1">— เลือก Aggregate / Column —</span>
+                      <ChevronDown :class="['size-3 shrink-0 text-muted-foreground transition-transform', openGroupFilterColIdx === Number(i) ? 'rotate-180' : '']" />
+                    </button>
+                    <div class="flex flex-col gap-1.5">
+                      <div v-for="group in WHERE_OP_GROUPS" :key="group.color" class="flex flex-wrap gap-1">
+                        <button v-for="op in group.ops" :key="op" @click="tn.setGroupFilter(Number(i), { operator: op })"
+                          :class="['text-[10px] px-2.5 py-1 rounded-lg border font-mono font-bold transition-colors whitespace-nowrap', whereOpClass(f.operator, op)]">{{ op }}</button>
+                      </div>
+                    </div>
+                    <div v-if="f.operator && !['IS NULL', 'IS NOT NULL'].includes(f.operator)" class="flex items-center gap-2">
+                      <label class="text-[10px] font-semibold text-muted-foreground w-8 shrink-0">ค่า</label>
+                      <div v-if="isDateCol(f.column)" class="flex-1 relative flex items-center">
+                        <input :ref="(el) => setGroupFilterDateRef(Number(i), el)" type="date" :value="f.value"
+                          @input="tn.setGroupFilter(Number(i), { value: ($event.target as HTMLInputElement).value })"
+                          class="flex-1 text-xs border rounded-lg pl-2.5 pr-9 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-amber-400/50 font-mono"
+                          :class="f.value ? 'border-amber-400/40' : ''" />
+                        <button type="button" @click="openGroupFilterDatePicker(Number(i))"
+                          class="absolute right-2 size-5 flex items-center justify-center rounded text-amber-600 hover:bg-amber-500/15 transition-colors">
+                          <Calendar class="size-3.5" />
+                        </button>
+                      </div>
+                      <input v-else :value="f.value" @input="tn.setGroupFilter(Number(i), { value: ($event.target as HTMLInputElement).value })"
+                        :placeholder="f.operator === 'LIKE' ? 'เช่น %keyword%' : f.operator === 'IN' ? 'เช่น 1,2,3' : 'ค่าที่ต้องการ'"
+                        class="flex-1 text-xs border rounded-lg px-2.5 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-amber-400/50 font-mono"
+                        :class="f.value ? 'border-amber-400/40' : ''" />
+                    </div>
+                    <div v-if="f.column && f.operator"
+                      class="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-amber-500/5 border border-amber-400/20">
+                      <span class="text-[9px] font-bold text-amber-600 shrink-0">HAVING</span>
+                      <code class="text-[9px] font-mono text-amber-400/80 truncate">{{ condPreview(f) }}</code>
+                    </div>
+                  </div>
+                </div>
+                <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">ไม่มี HAVING</p>
+              </div>
+
+              <!-- WHERE Pre-filter -->
+              <div class="flex flex-col gap-2">
+                <div class="flex items-center justify-between">
+                  <label class="text-[11px] font-semibold text-rose-500 uppercase tracking-wide">
+                    WHERE Pre-filter
+                    <span v-if="whereCondCount" class="ml-1 text-[10px] font-normal text-muted-foreground normal-case">{{ whereCondCount }} conditions</span>
+                  </label>
+                  <button @click="tn.addWhereCondition()"
+                    class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-rose-500/30 text-rose-400 hover:bg-rose-500/10 transition-colors">
+                    <Plus class="size-2.5" /> เพิ่ม
+                  </button>
+                </div>
+
+                <div v-if="(store.modalNode?.data?.conditions ?? []).length" class="flex flex-col gap-2 max-h-[260px] overflow-y-auto pr-0.5">
+                  <div v-for="(cond, i) in (store.modalNode?.data?.conditions ?? [])" :key="i"
+                    class="flex flex-col gap-3 p-3 rounded-xl border bg-rose-500/3 shrink-0">
+                    <div class="flex items-center gap-2">
+                      <span class="text-[10px] font-bold text-rose-500 uppercase tracking-wide flex-1">
+                        Condition {{ Number(i) + 1 }}
+                        <span v-if="cond.column" class="normal-case font-mono text-rose-400 ml-1">— {{ condPreview(cond) }}</span>
+                      </span>
+                      <button @click="tn.removeWhereCondition(Number(i))"
+                        class="size-5 flex items-center justify-center rounded hover:bg-destructive/10 hover:text-destructive text-muted-foreground transition-colors">
+                        <X class="size-3.5" />
+                      </button>
+                    </div>
+                    <button @click="toggleWhereColDropdown(Number(i), $event)"
+                      :class="['w-full flex items-center gap-2 text-xs border rounded-lg px-2.5 py-2 bg-background text-left transition-colors',
+                        cond.column ? 'border-rose-400/40' : 'border-border hover:border-rose-400/30',
+                        openWhereColIdx === Number(i) ? 'ring-2 ring-rose-400/50 border-rose-400/40' : '']">
+                      <template v-if="cond.column">
+                        <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0',
+                          getColTypeBadge(upstreamCols.find(c => c.name === cond.column)?.type ?? '').cls]">
+                          {{ getColTypeBadge(upstreamCols.find(c => c.name === cond.column)?.type ?? '').label }}
+                        </span>
+                        <div class="flex-1 min-w-0">
+                          <p class="text-[11px] truncate">{{ upstreamCols.find(c => c.name === cond.column)?.remark || cond.column }}</p>
+                          <p v-if="upstreamCols.find(c => c.name === cond.column)?.remark" class="font-mono text-[9px] text-muted-foreground/60 truncate">{{ cond.column }}</p>
+                        </div>
+                      </template>
+                      <span v-else class="text-muted-foreground text-[11px] flex-1">— เลือก Column —</span>
+                      <ChevronDown :class="['size-3 shrink-0 text-muted-foreground transition-transform', openWhereColIdx === Number(i) ? 'rotate-180' : '']" />
+                    </button>
+                    <div class="flex flex-col gap-1.5">
+                      <div v-for="grp in WHERE_OP_GROUPS" :key="grp.color" class="flex flex-wrap gap-1">
+                        <button v-for="op in grp.ops" :key="op" @click="tn.setWhereCondition(Number(i), { operator: op })"
+                          :class="['text-[10px] px-2.5 py-1 rounded-lg border font-mono font-bold transition-colors whitespace-nowrap', whereOpClass(cond.operator, op)]">{{ op }}</button>
+                      </div>
+                    </div>
+                    <div v-if="cond.operator && !['IS NULL', 'IS NOT NULL'].includes(cond.operator)" class="flex items-center gap-2">
+                      <label class="text-[10px] font-semibold text-muted-foreground w-8 shrink-0">ค่า</label>
+                      <div v-if="isDateCol(cond.column)" class="flex-1 relative flex items-center">
+                        <input :ref="(el) => setWhereDateRef(Number(i), el)" type="date" :value="cond.value"
+                          @input="tn.setWhereCondition(Number(i), { value: ($event.target as HTMLInputElement).value })"
+                          class="flex-1 text-xs border rounded-lg pl-2.5 pr-9 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-rose-400/50 font-mono"
+                          :class="cond.value ? 'border-rose-400/40' : ''" />
+                        <button type="button" @click="openWhereDatePicker(Number(i))"
+                          class="absolute right-2 size-5 flex items-center justify-center rounded text-rose-500 hover:bg-rose-500/15 transition-colors">
+                          <Calendar class="size-3.5" />
+                        </button>
+                      </div>
+                      <input v-else :value="cond.value" @input="tn.setWhereCondition(Number(i), { value: ($event.target as HTMLInputElement).value })"
+                        :placeholder="cond.operator === 'LIKE' ? 'เช่น %keyword%' : cond.operator === 'IN' ? 'เช่น 1,2,3' : 'ค่าที่ต้องการ'"
+                        class="flex-1 text-xs border rounded-lg px-2.5 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-rose-400/50 font-mono"
+                        :class="cond.value ? 'border-rose-400/40' : ''" />
+                    </div>
+                    <div v-if="cond.column && cond.operator"
+                      class="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-rose-500/5 border border-rose-400/20">
+                      <span class="text-[9px] font-bold text-rose-500 shrink-0">SQL</span>
+                      <code class="text-[9px] font-mono text-rose-300/80 truncate">{{ condPreview(cond) }}</code>
+                    </div>
+                  </div>
+                </div>
+                <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">ไม่มี pre-filter</p>
+              </div>
+
+              <!-- SQL Preview -->
+              <div class="px-3 py-2 rounded-lg bg-orange-500/5 border border-orange-400/20 max-h-[120px] overflow-y-auto overflow-x-auto">
+                <div class="flex items-start gap-1.5">
+                  <span class="text-[9px] font-bold text-orange-500 shrink-0 mt-0.5">SQL</span>
+                  <code class="text-[9px] font-mono text-orange-300/80 leading-relaxed whitespace-pre">{{ groupSqlPreview }}</code>
+                </div>
+              </div>
+
+            </div><!-- /RIGHT -->
+            </div><!-- /grid -->
           </template>
 
           <!-- ── Sort ────────────────────────────────────────────────── -->
           <template v-else-if="nodeType === 'sort'">
-            <div class="flex flex-col gap-3 border rounded-xl p-4 bg-green-500/3">
-              <!-- Section header -->
+            <div class="grid grid-cols-[1fr_1fr] gap-5 items-start">
+
+            <!-- ── LEFT: ORDER BY Columns ─────────────────────────────── -->
+            <div class="flex flex-col gap-3 border rounded-xl p-4 bg-green-500/3 min-w-0">
               <div class="flex items-center justify-between">
                 <div>
                   <p class="text-xs font-bold text-green-600">ORDER BY Columns</p>
@@ -2088,155 +2066,215 @@ const finishBtnStyle = computed(() => {
                   <span class="text-[10px] font-semibold text-green-600 bg-green-500/10 px-2 py-0.5 rounded-full">
                     {{ sortItemCount }}/{{ upstreamCols.length }}
                   </span>
-                  <button @click="selectAllSortCols"
-                    class="text-[10px] text-green-600 hover:underline font-semibold">ทั้งหมด</button>
+                  <button @click="selectAllSortCols" class="text-[10px] text-green-600 hover:underline font-semibold">ทั้งหมด</button>
                   <span class="text-muted-foreground text-[10px]">/</span>
-                  <button @click="clearSortCols"
-                    class="text-[10px] text-muted-foreground hover:underline">ล้าง</button>
+                  <button @click="clearSortCols" class="text-[10px] text-muted-foreground hover:underline">ล้าง</button>
                 </div>
               </div>
 
-              <!-- Search -->
               <div class="relative">
                 <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground/50" />
-                <input
-                  v-model="sortColSearch"
-                  placeholder="ค้นหา column..."
-                  class="w-full text-xs border rounded-lg pl-7 pr-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-green-400/50 font-mono"
-                />
+                <input v-model="sortColSearch" placeholder="ค้นหา column..."
+                  class="w-full text-xs border rounded-lg pl-7 pr-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-green-400/50 font-mono" />
               </div>
 
-              <!-- No upstream cols -->
               <div v-if="!upstreamCols.length"
                 class="flex items-center gap-2 px-3 py-3 rounded-lg bg-muted/30 text-[10px] text-muted-foreground italic">
                 ยังไม่มี columns — เชื่อมต่อ table node เข้ากับ ORDER BY node ก่อน
               </div>
 
-              <!-- Column list grouped by table + ASC/DESC toggle -->
-              <div v-else class="border rounded-lg overflow-hidden max-h-[280px] overflow-y-auto">
+              <div v-else class="border rounded-lg overflow-hidden max-h-[420px] overflow-y-auto">
                 <template v-for="group in filteredGroupedSortCols" :key="group.tableId">
-                  <!-- Table group header -->
                   <div class="sticky top-0 z-10 flex items-center gap-2 px-3 py-1.5 bg-muted border-b border-border/50">
                     <Database class="size-3 text-green-500 shrink-0" />
                     <span class="text-[10px] font-semibold text-foreground truncate flex-1">{{ group.tableLabel }}</span>
                     <span class="text-[9px] text-muted-foreground shrink-0">{{ group.cols.length }}</span>
                   </div>
-                  <!-- Columns -->
-                  <label
-                    v-for="col in group.cols"
-                    :key="col.name"
+                  <label v-for="col in group.cols" :key="col.name"
                     class="flex items-center gap-2.5 px-3 py-2 pl-5 cursor-pointer select-none transition-colors border-b border-border/30 last:border-0 hover:bg-green-500/5"
-                    :class="isSortSelected(col.name) ? 'bg-green-500/5' : ''"
-                  >
-                    <!-- Checkbox -->
-                    <div :class="[
-                      'size-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors',
-                      isSortSelected(col.name) ? 'bg-green-500 border-green-500' : 'border-border/60 bg-background',
-                    ]">
+                    :class="isSortSelected(col.name) ? 'bg-green-500/5' : ''">
+                    <div :class="['size-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors',
+                      isSortSelected(col.name) ? 'bg-green-500 border-green-500' : 'border-border/60 bg-background']">
                       <svg v-if="isSortSelected(col.name)" class="size-2.5 text-white" fill="none" viewBox="0 0 10 10">
                         <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
                       </svg>
                       <input type="checkbox" class="sr-only"
                         :checked="isSortSelected(col.name)"
-                        @change="toggleSortCol(col.name, ($event.target as HTMLInputElement).checked)"
-                      />
+                        @change="toggleSortCol(col.name, ($event.target as HTMLInputElement).checked)" />
                     </div>
-                    <!-- PK icon -->
                     <Key v-if="col.isPk" class="size-3 text-amber-400 shrink-0" />
-                    <!-- Type badge -->
                     <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(col.type).cls]">
                       {{ getColTypeBadge(col.type).label }}
                     </span>
-                    <!-- Remark (primary) + column name (secondary) -->
                     <div class="flex-1 min-w-0">
-                      <p class="text-[11px] truncate" :class="col.isPk ? 'text-amber-500 font-semibold' : 'text-foreground'">
-                        {{ col.remark || col.name }}
-                      </p>
+                      <p class="text-[11px] truncate" :class="col.isPk ? 'text-amber-500 font-semibold' : 'text-foreground'">{{ col.remark || col.name }}</p>
                       <p v-if="col.remark" class="font-mono text-[9px] text-muted-foreground/60 truncate">{{ col.name }}</p>
                     </div>
-                    <!-- ASC / DESC toggle pills (only when checked) -->
                     <div v-if="isSortSelected(col.name)" class="flex gap-1 shrink-0" @click.stop>
-                      <button @click="setSortDir(col.name, 'ASC')" :class="[
-                        'text-[9px] px-2 py-0.5 rounded-md font-bold border transition-colors',
-                        getSortDir(col.name) === 'ASC' ? 'bg-green-500 border-green-500 text-white' : 'border-border/50 text-muted-foreground hover:border-green-400 hover:text-green-600',
-                      ]">ASC</button>
-                      <button @click="setSortDir(col.name, 'DESC')" :class="[
-                        'text-[9px] px-2 py-0.5 rounded-md font-bold border transition-colors',
-                        getSortDir(col.name) === 'DESC' ? 'bg-rose-500 border-rose-500 text-white' : 'border-border/50 text-muted-foreground hover:border-rose-400 hover:text-rose-600',
-                      ]">DESC</button>
+                      <button @click="setSortDir(col.name, 'ASC')" :class="['text-[9px] px-2 py-0.5 rounded-md font-bold border transition-colors',
+                        getSortDir(col.name) === 'ASC' ? 'bg-green-500 border-green-500 text-white' : 'border-border/50 text-muted-foreground hover:border-green-400 hover:text-green-600']">ASC</button>
+                      <button @click="setSortDir(col.name, 'DESC')" :class="['text-[9px] px-2 py-0.5 rounded-md font-bold border transition-colors',
+                        getSortDir(col.name) === 'DESC' ? 'bg-rose-500 border-rose-500 text-white' : 'border-border/50 text-muted-foreground hover:border-rose-400 hover:text-rose-600']">DESC</button>
                     </div>
                   </label>
                 </template>
-
                 <div v-if="filteredGroupedSortCols.length === 0"
                   class="px-3 py-3 text-[10px] text-muted-foreground/60 italic text-center">
                   {{ sortColSearch ? `ไม่พบ column ที่ตรงกับ "${sortColSearch}"` : 'กำลังโหลด columns...' }}
                 </div>
               </div>
-            </div>
+            </div><!-- /LEFT -->
+
+            <!-- ── RIGHT: WHERE pre-filter + SQL preview ─────────────── -->
+            <div class="flex flex-col gap-4 min-w-0">
+
+              <!-- WHERE pre-filter -->
+              <div class="flex flex-col gap-2">
+                <div class="flex items-center justify-between">
+                  <label class="text-[11px] font-semibold text-rose-500 uppercase tracking-wide">
+                    WHERE Pre-filter
+                    <span v-if="whereCondCount" class="ml-1 text-[10px] font-normal text-muted-foreground normal-case">{{ whereCondCount }} conditions</span>
+                  </label>
+                  <button @click="tn.addWhereCondition()"
+                    class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-rose-500/30 text-rose-400 hover:bg-rose-500/10 transition-colors">
+                    <Plus class="size-2.5" /> เพิ่ม
+                  </button>
+                </div>
+
+                <div v-if="(store.modalNode?.data?.conditions ?? []).length" class="flex flex-col gap-2 max-h-[300px] overflow-y-auto pr-0.5">
+                  <div v-for="(cond, i) in (store.modalNode?.data?.conditions ?? [])" :key="i"
+                    class="flex flex-col gap-3 p-3 rounded-xl border bg-rose-500/3 shrink-0">
+                    <div class="flex items-center gap-2">
+                      <span class="text-[10px] font-bold text-rose-500 uppercase tracking-wide flex-1">
+                        Condition {{ Number(i) + 1 }}
+                        <span v-if="cond.column" class="normal-case font-mono text-rose-400 ml-1">— {{ condPreview(cond) }}</span>
+                      </span>
+                      <button @click="tn.removeWhereCondition(Number(i))"
+                        class="size-5 flex items-center justify-center rounded hover:bg-destructive/10 hover:text-destructive text-muted-foreground transition-colors">
+                        <X class="size-3.5" />
+                      </button>
+                    </div>
+                    <button @click="toggleWhereColDropdown(Number(i), $event)"
+                      :class="['w-full flex items-center gap-2 text-xs border rounded-lg px-2.5 py-2 bg-background text-left transition-colors',
+                        cond.column ? 'border-rose-400/40' : 'border-border hover:border-rose-400/30',
+                        openWhereColIdx === Number(i) ? 'ring-2 ring-rose-400/50 border-rose-400/40' : '']">
+                      <template v-if="cond.column">
+                        <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0',
+                          getColTypeBadge(upstreamCols.find(c => c.name === cond.column)?.type ?? '').cls]">
+                          {{ getColTypeBadge(upstreamCols.find(c => c.name === cond.column)?.type ?? '').label }}
+                        </span>
+                        <div class="flex-1 min-w-0">
+                          <p class="text-[11px] truncate">{{ upstreamCols.find(c => c.name === cond.column)?.remark || cond.column }}</p>
+                          <p v-if="upstreamCols.find(c => c.name === cond.column)?.remark" class="font-mono text-[9px] text-muted-foreground/60 truncate">{{ cond.column }}</p>
+                        </div>
+                      </template>
+                      <span v-else class="text-muted-foreground text-[11px] flex-1">— เลือก Column —</span>
+                      <ChevronDown :class="['size-3 shrink-0 text-muted-foreground transition-transform', openWhereColIdx === Number(i) ? 'rotate-180' : '']" />
+                    </button>
+                    <div class="flex flex-col gap-1.5">
+                      <div v-for="grp in WHERE_OP_GROUPS" :key="grp.color" class="flex flex-wrap gap-1">
+                        <button v-for="op in grp.ops" :key="op" @click="tn.setWhereCondition(Number(i), { operator: op })"
+                          :class="['text-[10px] px-2.5 py-1 rounded-lg border font-mono font-bold transition-colors whitespace-nowrap', whereOpClass(cond.operator, op)]">{{ op }}</button>
+                      </div>
+                    </div>
+                    <div v-if="cond.operator && !['IS NULL', 'IS NOT NULL'].includes(cond.operator)" class="flex items-center gap-2">
+                      <label class="text-[10px] font-semibold text-muted-foreground w-8 shrink-0">ค่า</label>
+                      <div v-if="isDateCol(cond.column)" class="flex-1 relative flex items-center">
+                        <input :ref="(el) => setWhereDateRef(Number(i), el)" type="date" :value="cond.value"
+                          @input="tn.setWhereCondition(Number(i), { value: ($event.target as HTMLInputElement).value })"
+                          class="flex-1 text-xs border rounded-lg pl-2.5 pr-9 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-rose-400/50 font-mono"
+                          :class="cond.value ? 'border-rose-400/40' : ''" />
+                        <button type="button" @click="openWhereDatePicker(Number(i))"
+                          class="absolute right-2 size-5 flex items-center justify-center rounded text-rose-500 hover:bg-rose-500/15 transition-colors">
+                          <Calendar class="size-3.5" />
+                        </button>
+                      </div>
+                      <input v-else :value="cond.value" @input="tn.setWhereCondition(Number(i), { value: ($event.target as HTMLInputElement).value })"
+                        :placeholder="cond.operator === 'LIKE' ? 'เช่น %keyword%' : cond.operator === 'IN' ? 'เช่น 1,2,3' : 'ค่าที่ต้องการ'"
+                        class="flex-1 text-xs border rounded-lg px-2.5 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-rose-400/50 font-mono"
+                        :class="cond.value ? 'border-rose-400/40' : ''" />
+                    </div>
+                    <div v-if="cond.column && cond.operator"
+                      class="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-rose-500/5 border border-rose-400/20">
+                      <span class="text-[9px] font-bold text-rose-500 shrink-0">SQL</span>
+                      <code class="text-[9px] font-mono text-rose-300/80 truncate">{{ condPreview(cond) }}</code>
+                    </div>
+                  </div>
+                </div>
+                <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">ไม่มี pre-filter</p>
+              </div>
+
+              <!-- SQL Preview -->
+              <div class="px-3 py-2 rounded-lg bg-green-500/5 border border-green-400/20 max-h-[120px] overflow-y-auto overflow-x-auto">
+                <div class="flex items-start gap-1.5">
+                  <span class="text-[9px] font-bold text-green-600 shrink-0 mt-0.5">SQL</span>
+                  <code class="text-[9px] font-mono text-green-300/80 leading-relaxed whitespace-pre">{{ sortSqlPreview }}</code>
+                </div>
+              </div>
+
+            </div><!-- /RIGHT -->
+            </div><!-- /grid -->
           </template>
 
           <!-- ── Union ───────────────────────────────────────────────── -->
           <template v-else-if="nodeType === 'union'">
 
-            <!-- 2-column grid: left=sources, right=columns+config -->
-            <div class="grid grid-cols-[1fr_1fr] gap-5 items-start">
-
-            <!-- ── LEFT COLUMN ─────────────────────────────────────── -->
-            <div class="flex flex-col gap-4">
-
-            <!-- UNION / UNION ALL toggle -->
-            <div class="flex gap-2">
-              <button @click="tn.setModalData({ unionType: 'UNION ALL' })"
-                :class="[
-                  'flex-1 flex flex-col items-center py-3 rounded-xl border text-xs font-bold transition-colors',
-                  store.modalNode.data.unionType === 'UNION ALL'
-                    ? 'border-yellow-500 bg-yellow-500/20 text-yellow-600'
-                    : 'border-border text-muted-foreground hover:bg-accent',
-                ]"
-              >
-                UNION ALL
-                <span class="text-[9px] font-normal opacity-60 mt-0.5">รวมทุก rows (มี duplicates)</span>
-              </button>
-              <button @click="tn.setModalData({ unionType: 'UNION' })"
-                :class="[
-                  'flex-1 flex flex-col items-center py-3 rounded-xl border text-xs font-bold transition-colors',
-                  store.modalNode.data.unionType === 'UNION'
-                    ? 'border-yellow-500 bg-yellow-500/20 text-yellow-600'
-                    : 'border-border text-muted-foreground hover:bg-accent',
-                ]"
-              >
-                UNION
-                <span class="text-[9px] font-normal opacity-60 mt-0.5">ตัด duplicates ออก</span>
-              </button>
+            <!-- ── Row 1: UNION type + CTE name ────────────────────── -->
+            <div class="flex items-stretch gap-4">
+              <div class="flex gap-2 shrink-0">
+                <button @click="tn.setModalData({ unionType: 'UNION ALL' })"
+                  :class="[
+                    'flex flex-col items-center px-5 py-2.5 rounded-xl border text-xs font-bold transition-colors',
+                    store.modalNode.data.unionType === 'UNION ALL'
+                      ? 'border-yellow-500 bg-yellow-500/15 text-yellow-600'
+                      : 'border-border text-muted-foreground hover:bg-accent',
+                  ]">
+                  UNION ALL
+                  <span class="text-[9px] font-normal opacity-60 mt-0.5">รวมทุก rows</span>
+                </button>
+                <button @click="tn.setModalData({ unionType: 'UNION' })"
+                  :class="[
+                    'flex flex-col items-center px-5 py-2.5 rounded-xl border text-xs font-bold transition-colors',
+                    store.modalNode.data.unionType === 'UNION'
+                      ? 'border-yellow-500 bg-yellow-500/15 text-yellow-600'
+                      : 'border-border text-muted-foreground hover:bg-accent',
+                  ]">
+                  UNION
+                  <span class="text-[9px] font-normal opacity-60 mt-0.5">ตัด duplicates</span>
+                </button>
+              </div>
+              <div class="flex-1 flex flex-col justify-center gap-1">
+                <label class="text-[10px] font-semibold text-yellow-500 uppercase tracking-wide">
+                  CTE Name <span class="normal-case font-normal text-muted-foreground ml-1">(ไม่บังคับ — ใช้ซ้อน Union ได้)</span>
+                </label>
+                <input
+                  :value="store.modalNode?.data?.name ?? ''"
+                  @input="tn.setModalData({ name: ($event.target as HTMLInputElement).value })"
+                  class="h-9 px-3 rounded-lg border bg-background text-sm font-mono focus:outline-none focus:ring-2 focus:ring-yellow-500/40"
+                  placeholder="เช่น union_ap  (ว่าง = auto)"
+                  spellcheck="false"
+                />
+              </div>
             </div>
 
-            <!-- Sources — picker from all canvas nodes -->
-            <div class="flex flex-col gap-2">
-              <div class="flex items-center justify-between">
-                <p class="text-[11px] font-semibold text-yellow-500 uppercase tracking-wide">
-                  Sources
-                  <span class="ml-1 text-[10px] font-normal text-muted-foreground normal-case">
-                    {{ unionSources.length ? unionSources.length + ' เลือกแล้ว' : 'ยังไม่ได้เลือก' }}
-                  </span>
-                </p>
-              </div>
+            <!-- ── Row 2: Sources | Column picker ───────────────────── -->
+            <div class="grid grid-cols-[minmax(0,260px)_minmax(0,1fr)] gap-4">
 
-              <!-- No canvas nodes available -->
+            <!-- ── LEFT: Sources ──────────────────────────────────── -->
+            <div class="flex flex-col gap-2 min-w-0">
+              <div class="flex items-center gap-2">
+                <p class="text-[11px] font-semibold text-yellow-500 uppercase tracking-wide flex-1">Sources</p>
+                <span class="text-[10px] text-muted-foreground">{{ unionSources.length ? unionSources.length + ' selected' : 'none' }}</span>
+              </div>
               <div v-if="!allUnionSources.length"
-                class="flex items-center gap-2 px-3 py-2.5 rounded-xl bg-yellow-500/5 border border-yellow-500/20 text-[10px] text-muted-foreground">
+                class="flex items-center gap-2 px-3 py-3 rounded-xl bg-yellow-500/5 border border-yellow-500/20 text-[10px] text-muted-foreground">
                 <GitMerge class="size-3.5 text-yellow-500 shrink-0" />
-                วาง Table / CTE / Union node ลง canvas ก่อน
+                วาง Table / CTE node ลง canvas ก่อน
               </div>
-
-              <!-- Checklist of all canvas nodes -->
-              <div v-else class="border border-yellow-500/20 rounded-xl divide-y divide-yellow-500/10 overflow-hidden max-h-[420px] overflow-y-auto">
-                <label
-                  v-for="(src, si) in allUnionSources" :key="src.id"
-                  class="flex items-center gap-2.5 px-3 py-2 cursor-pointer select-none transition-colors hover:bg-yellow-500/5"
-                  :class="isUnionSourceConnected(src.id) ? 'bg-yellow-500/5' : ''"
-                >
-                  <!-- checkbox -->
+              <div v-else class="border border-yellow-500/20 rounded-xl divide-y divide-yellow-500/10 overflow-hidden overflow-y-auto max-h-[340px]">
+                <label v-for="(src, si) in allUnionSources" :key="src.id"
+                  class="flex items-center gap-2 px-3 py-2.5 cursor-pointer select-none transition-colors hover:bg-yellow-500/5"
+                  :class="isUnionSourceConnected(src.id) ? 'bg-yellow-500/8' : ''">
                   <div :class="[
                     'size-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors',
                     isUnionSourceConnected(src.id) ? 'bg-yellow-500 border-yellow-500' : 'border-border/60 bg-background',
@@ -2246,8 +2284,6 @@ const finishBtnStyle = computed(() => {
                     </svg>
                     <input type="checkbox" class="sr-only" :checked="isUnionSourceConnected(src.id)" @change="toggleUnionSource(src.id)" />
                   </div>
-
-                  <!-- tag badge -->
                   <span :class="[
                     'text-[8px] font-bold px-1.5 py-0.5 rounded font-mono uppercase shrink-0',
                     src.tag === 'TABLE'  ? 'bg-sky-500/20 text-sky-400' :
@@ -2257,102 +2293,61 @@ const finishBtnStyle = computed(() => {
                     src.tag === 'CALC'   ? 'bg-teal-500/20 text-teal-400' :
                                            'bg-muted text-muted-foreground'
                   ]">{{ src.tag }}</span>
-
-                  <!-- label -->
-                  <span class="font-mono text-[11px] flex-1 truncate"
-                    :class="isUnionSourceConnected(src.id) ? 'text-yellow-500 font-semibold' : 'text-foreground/80'">
-                    {{ src.label }}
-                  </span>
-
-                  <!-- table pills -->
-                  <div class="flex flex-wrap gap-0.5 max-w-[100px]">
-                    <span
-                      v-for="tbl in src.tables.slice(0,2)" :key="tbl"
-                      class="text-[8px] px-1 py-0 rounded bg-sky-500/10 text-sky-400 font-mono border border-sky-500/15 truncate max-w-[60px]"
-                    >{{ tbl }}</span>
-                    <span v-if="src.tables.length > 2"
-                      class="text-[8px] text-muted-foreground/50 font-mono">+{{ src.tables.length - 2 }}</span>
+                  <div class="flex-1 min-w-0">
+                    <p class="font-mono text-[11px] truncate"
+                      :class="isUnionSourceConnected(src.id) ? 'text-yellow-500 font-semibold' : 'text-foreground/80'">
+                      {{ src.label }}
+                    </p>
+                    <p v-if="src.tables.length" class="text-[9px] text-muted-foreground/50 font-mono truncate">
+                      {{ src.tables.slice(0,2).join(', ') }}{{ src.tables.length > 2 ? ' +' + (src.tables.length-2) : '' }}
+                    </p>
                   </div>
-
-                  <!-- union separator label between connected sources -->
-                  <span v-if="isUnionSourceConnected(src.id) && si < allUnionSources.length - 1 && allUnionSources.slice(si+1).some(s => isUnionSourceConnected(s.id))"
-                    class="text-[8px] font-bold text-yellow-500/40 shrink-0 ml-1">
-                    ▼ {{ store.modalNode.data.unionType ?? 'UNION ALL' }}
-                  </span>
+                  <span v-if="isUnionSourceConnected(src.id) && si < allUnionSources.length-1 && allUnionSources.slice(si+1).some(s => isUnionSourceConnected(s.id))"
+                    class="text-[8px] font-bold text-yellow-500/50 shrink-0">▼</span>
                 </label>
               </div>
-            </div>
+              <div v-if="unionSources.length >= 2" class="text-center text-[9px] text-yellow-600/60 font-mono">
+                ▲ {{ store.modalNode.data.unionType ?? 'UNION ALL' }} ▲
+              </div>
+            </div><!-- /LEFT -->
 
-            </div><!-- /LEFT COLUMN -->
-
-            <!-- ── RIGHT COLUMN ────────────────────────────────────── -->
-            <div class="flex flex-col gap-4">
-
-            <!-- Column selection -->
-            <div class="flex flex-col gap-3 border rounded-xl p-4 bg-yellow-500/3">
-              <div class="flex items-center justify-between">
-                <div>
-                  <p class="text-xs font-bold text-yellow-600">เลือก Columns</p>
-                  <p class="text-[10px] text-muted-foreground mt-0.5">ต้องมีใน source ทั้งหมด — ไม่เลือก = SELECT *</p>
-                </div>
-                <div class="flex items-center gap-2">
-                  <span class="text-[10px] font-semibold text-yellow-600 bg-yellow-500/10 px-2 py-0.5 rounded-full">
-                    {{ unionSelectedCount || '*' }}
-                  </span>
-                  <button
-                    @click="selectUnionCommonCols()"
-                    :disabled="!unionCommonCols.length"
-                    :title="unionCommonCols.length ? 'เลือก ' + unionCommonCols.length + ' cols ที่มีใน source ทุกชุด' : 'ยังไม่มี cols ร่วมกัน'"
-                    :class="[
-                      'text-[10px] font-bold px-2 py-0.5 rounded-md border transition-colors',
-                      unionCommonCols.length
-                        ? 'border-emerald-500/50 text-emerald-600 bg-emerald-500/10 hover:bg-emerald-500/20'
-                        : 'border-border/30 text-muted-foreground/40 cursor-not-allowed',
-                    ]"
-                  >Auto Match</button>
-                  <span class="text-muted-foreground text-[10px]">|</span>
+            <!-- ── RIGHT: Column picker ────────────────────────────── -->
+            <div class="flex flex-col gap-2 min-w-0">
+              <div class="flex items-center gap-2 flex-wrap">
+                <p class="text-[11px] font-semibold text-yellow-500 uppercase tracking-wide">Columns</p>
+                <span class="text-[10px] font-semibold text-yellow-600 bg-yellow-500/10 px-2 py-0.5 rounded-full shrink-0">{{ unionSelectedCount || '*' }}</span>
+                <button @click="selectUnionCommonCols()" :disabled="!unionCommonCols.length"
+                  :title="unionCommonCols.length ? 'เลือก ' + unionCommonCols.length + ' cols ที่มีในทุก source' : 'ยังไม่มี cols ร่วมกัน'"
+                  :class="[
+                    'text-[10px] font-bold px-2 py-0.5 rounded-md border transition-colors shrink-0',
+                    unionCommonCols.length ? 'border-emerald-500/50 text-emerald-600 bg-emerald-500/10 hover:bg-emerald-500/20' : 'border-border/30 text-muted-foreground/40 cursor-not-allowed',
+                  ]">Auto Match</button>
+                <div class="flex items-center gap-1.5 ml-auto">
                   <button @click="tn.selectAllUnionSourcesWithCols(unionGroupedCols.map(g => g.sourceId), unionAvailableCols.map((c: any) => c.name))"
                     class="text-[10px] text-yellow-600 hover:underline font-semibold">ทั้งหมด</button>
                   <span class="text-muted-foreground text-[10px]">/</span>
                   <button @click="unionGroupedCols.forEach(g => tn.clearUnionSourceCols(g.sourceId))"
-                    class="text-[10px] text-muted-foreground hover:underline">SELECT *</button>
+                    class="text-[10px] text-muted-foreground hover:underline">ล้าง</button>
                 </div>
               </div>
-
-              <!-- Warning: selected cols not in all sources -->
               <div v-if="unionColWarnings.size"
                 class="flex items-start gap-2 px-3 py-2 rounded-lg bg-rose-500/8 border border-rose-500/30 text-[10px] text-rose-400">
-                <span class="shrink-0 font-bold mt-0.5">⚠</span>
-                <span>
-                  column <span class="font-mono font-semibold">{{ [...unionColWarnings].join(', ') }}</span>
-                  ไม่มีในบาง source — อาจทำให้ UNION ผิดพลาด
-                </span>
+                <span class="shrink-0 font-bold">⚠</span>
+                <span>column <span class="font-mono font-semibold">{{ [...unionColWarnings].join(', ') }}</span> ไม่มีในบาง source</span>
               </div>
-
-              <!-- Search bar -->
               <div class="relative">
                 <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground/50" />
-                <input
-                  v-model="unionColSearch"
-                  placeholder="ค้นหา column..."
-                  class="w-full text-xs border rounded-lg pl-7 pr-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-yellow-400/50 font-mono"
-                />
+                <input v-model="unionColSearch" placeholder="ค้นหา column..."
+                  class="w-full text-xs border rounded-lg pl-7 pr-3 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-yellow-400/50 font-mono" />
               </div>
-
-              <!-- No sources connected -->
               <div v-if="!unionGroupedCols.length"
                 class="flex items-center gap-2 px-3 py-3 rounded-lg bg-muted/30 text-[10px] text-muted-foreground italic">
-                ลาก CTE / Table / Union node เข้ามาก่อนเพื่อดู columns
+                เลือก Source ก่อนเพื่อดู columns
               </div>
-
-              <!-- Grouped column picker: one group per connected source -->
-              <div v-else class="flex flex-col gap-3 max-h-[480px] overflow-y-auto pr-0.5">
-                <div
-                  v-for="group in unionFilteredGroups" :key="group.sourceId"
-                  class="border border-yellow-500/20 rounded-xl overflow-hidden"
-                >
-                  <!-- Group header -->
-                  <div class="flex items-center gap-2 px-3 py-2 bg-yellow-500/8 border-b border-yellow-500/15">
+              <div v-else class="flex flex-col gap-2 max-h-[340px] overflow-y-auto pr-0.5">
+                <div v-for="group in unionFilteredGroups" :key="group.sourceId"
+                  class="border border-yellow-500/20 rounded-xl overflow-hidden">
+                  <div class="flex items-center gap-2 px-3 py-2 bg-yellow-500/8 border-b border-yellow-500/15 sticky top-0 z-10">
                     <span :class="[
                       'text-[8px] font-bold px-1.5 py-0.5 rounded font-mono uppercase shrink-0',
                       group.tag === 'TABLE'  ? 'bg-sky-500/20 text-sky-400' :
@@ -2362,315 +2357,157 @@ const finishBtnStyle = computed(() => {
                       group.tag === 'CALC'   ? 'bg-teal-500/20 text-teal-400' :
                                                'bg-muted text-muted-foreground'
                     ]">{{ group.tag }}</span>
-                    <span class="font-mono text-[11px] font-semibold text-foreground/90 flex-1 truncate">
-                      {{ group.label }}
+                    <span class="font-mono text-[11px] font-semibold flex-1 truncate">{{ group.label }}</span>
+                    <span class="text-[9px] text-muted-foreground/50 font-mono shrink-0">
+                      {{ group.cols.filter(c => tn.isUnionSourceColSelected(group.sourceId, c.name)).length }}/{{ group.cols.length }}
                     </span>
-                    <div class="flex flex-wrap gap-1 max-w-[120px]">
-                      <span
-                        v-for="tbl in group.tables" :key="tbl"
-                        class="text-[8px] px-1 py-0 rounded bg-sky-500/10 text-sky-400 font-mono border border-sky-500/15 truncate max-w-[80px]"
-                      >{{ tbl }}</span>
-                    </div>
-                    <div class="flex items-center gap-1.5 shrink-0 ml-1">
-                      <button
-                        @click="tn.selectAllUnionSourceCols(group.sourceId, group.cols.map(c => c.name))"
-                        class="text-[9px] font-semibold text-yellow-600 hover:underline">ทั้งหมด</button>
-                      <span class="text-muted-foreground text-[9px]">/</span>
-                      <button
-                        @click="tn.clearUnionSourceCols(group.sourceId)"
-                        class="text-[9px] text-muted-foreground hover:underline">ล้าง</button>
-                    </div>
+                    <button @click="tn.selectAllUnionSourceCols(group.sourceId, group.cols.map(c => c.name))"
+                      class="text-[9px] font-semibold text-yellow-600 hover:underline ml-1">ทั้งหมด</button>
+                    <span class="text-muted-foreground text-[9px]">/</span>
+                    <button @click="tn.clearUnionSourceCols(group.sourceId)"
+                      class="text-[9px] text-muted-foreground hover:underline">ล้าง</button>
                   </div>
-
-                  <!-- Columns in this group — each independent per source -->
-                  <div class="divide-y divide-border/30">
-                    <label
-                      v-for="col in group.cols" :key="col.name"
-                      class="flex items-center gap-2.5 px-3 py-1.5 cursor-pointer select-none transition-colors hover:bg-yellow-500/5"
+                  <div class="divide-y divide-border/20">
+                    <label v-for="col in group.cols" :key="col.name"
+                      class="flex items-center gap-2 px-3 py-1.5 cursor-pointer select-none transition-colors hover:bg-yellow-500/5"
                       :class="[
                         tn.isUnionSourceColSelected(group.sourceId, col.name) ? 'bg-yellow-500/5' : '',
                         unionColWarnings.has(col.name) ? 'border-l-2 border-rose-500/50' : '',
-                      ]"
-                    >
-                      <div :class="[
-                        'size-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors',
-                        tn.isUnionSourceColSelected(group.sourceId, col.name)
-                          ? 'bg-yellow-500 border-yellow-500'
-                          : 'border-border/60 bg-background',
                       ]">
-                        <svg v-if="tn.isUnionSourceColSelected(group.sourceId, col.name)"
-                          class="size-2.5 text-white" fill="none" viewBox="0 0 10 10">
+                      <div :class="[
+                        'size-3.5 rounded border-2 flex items-center justify-center shrink-0 transition-colors',
+                        tn.isUnionSourceColSelected(group.sourceId, col.name) ? 'bg-yellow-500 border-yellow-500' : 'border-border/60 bg-background',
+                      ]">
+                        <svg v-if="tn.isUnionSourceColSelected(group.sourceId, col.name)" class="size-2 text-white" fill="none" viewBox="0 0 10 10">
                           <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
                         </svg>
                         <input type="checkbox" class="sr-only"
                           :checked="tn.isUnionSourceColSelected(group.sourceId, col.name)"
-                          @change="tn.toggleUnionSourceCol(group.sourceId, col.name)"
-                        />
+                          @change="tn.toggleUnionSourceCol(group.sourceId, col.name)" />
                       </div>
-
-                      <Key v-if="col.isPk" class="size-3 text-amber-400 shrink-0" />
-                      <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(col.type).cls]">
+                      <Key v-if="col.isPk" class="size-2.5 text-amber-400 shrink-0" />
+                      <span :class="['text-[9px] px-1 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(col.type).cls]">
                         {{ getColTypeBadge(col.type).label }}
                       </span>
-                      <span class="font-mono text-[11px] flex-1 truncate" :class="col.isPk ? 'text-amber-500 font-semibold' : ''">
-                        {{ col.name }}
-                      </span>
-                      <span v-if="unionColWarnings.has(col.name)" class="text-[9px] text-rose-400 shrink-0 font-bold ml-0.5">⚠</span>
-                      <span v-if="col.remark" class="text-[9px] text-muted-foreground/50 truncate max-w-[80px] ml-1">
-                        {{ col.remark }}
-                      </span>
+                      <span class="font-mono text-[11px] flex-1 truncate" :class="col.isPk ? 'text-amber-500 font-semibold' : ''">{{ col.name }}</span>
+                      <span v-if="col.remark" class="text-[9px] text-muted-foreground/40 truncate max-w-[100px]">{{ col.remark }}</span>
+                      <span v-if="unionColWarnings.has(col.name)" class="text-[9px] text-rose-400 font-bold shrink-0">⚠</span>
                     </label>
-
                     <div v-if="group.cols.length === 0 && unionColSearch"
-                      class="px-3 py-2 text-[10px] text-muted-foreground/60 italic">
-                      ไม่พบ column ที่ตรงกับ "{{ unionColSearch }}"
-                    </div>
+                      class="px-3 py-2 text-[10px] text-muted-foreground/60 italic">ไม่พบ "{{ unionColSearch }}"</div>
                   </div>
                 </div>
               </div>
+            </div><!-- /RIGHT -->
+            </div><!-- /grid row2 -->
 
-              <!-- SQL Preview (dynamic) -->
-              <div v-if="unionSources.length"
-                class="flex items-start gap-1.5 px-3 py-2 rounded-lg bg-yellow-500/5 border border-yellow-400/20">
-                <span class="text-[9px] font-bold text-yellow-600 shrink-0 mt-0.5">SQL</span>
-                <code class="text-[9px] font-mono text-yellow-400/80 break-all leading-relaxed whitespace-pre-wrap">{{ unionSqlPreview }}</code>
-              </div>
-            </div>
-
-            <!-- Union CTE name (optional — makes this union reusable in another union) -->
-            <div class="flex flex-col gap-1.5">
-              <label class="text-[11px] font-semibold text-yellow-500 uppercase tracking-wide">
-                CTE Name
-                <span class="ml-1 text-[10px] font-normal text-muted-foreground normal-case">ตั้งชื่อเพื่อ union ซ้อนกันได้ (ไม่บังคับ)</span>
-              </label>
-              <input
-                :value="store.modalNode?.data?.name ?? ''"
-                @input="tn.setModalData({ name: ($event.target as HTMLInputElement).value })"
-                class="w-full h-9 px-3 rounded-lg border bg-background text-sm font-mono focus:outline-none focus:ring-2 focus:ring-yellow-500/40"
-                placeholder="เช่น union_ap (ว่าง = auto name)"
-                spellcheck="false"
-              />
-              <p v-if="store.modalNode?.data?.name" class="text-[10px] text-muted-foreground">
-                ชื่อ CTE: <span class="font-mono text-yellow-400">{{ store.modalNode?.data?.name }}</span> — ลาก edge ออกจาก node นี้ไป Union อื่นได้
-              </p>
-            </div>
-
-            <!-- WHERE filter on union result -->
-            <div class="flex flex-col gap-2">
-              <div class="flex items-center justify-between">
-                <label class="text-[11px] font-semibold text-yellow-500 uppercase tracking-wide">
-                  WHERE Filter
-                  <span v-if="(store.modalNode?.data?.conditions ?? []).filter((c: any) => c.column).length"
-                    class="ml-1 text-[10px] font-normal text-muted-foreground normal-case">
-                    {{ (store.modalNode?.data?.conditions ?? []).filter((c: any) => c.column).length }} conditions
-                  </span>
-                </label>
-                <button @click="tn.addUnionCondition()"
-                  class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-yellow-500/30 text-yellow-500 hover:bg-yellow-500/10 transition-colors">
-                  <Plus class="size-2.5" /> เพิ่ม
-                </button>
-              </div>
-              <div v-if="(store.modalNode?.data?.conditions ?? []).length" class="flex flex-col gap-2">
-                <div
-                  v-for="(cond, i) in (store.modalNode?.data?.conditions ?? [])"
-                  :key="i"
-                  class="flex items-center gap-2 p-2.5 rounded-xl border bg-muted/20"
-                >
-                  <!-- Column dropdown -->
-                  <button
-                    @click="toggleUnionCondColDropdown(+i, $event)"
-                    :class="[
-                      'flex-1 h-7 px-2 rounded-lg border text-left text-[11px] font-mono flex items-center gap-1.5 min-w-0 transition-colors',
-                      openUnionCondColIdx === +i ? 'border-yellow-500/60 bg-yellow-500/5' : 'border-border bg-background hover:border-yellow-400/40',
-                    ]"
-                  >
-                    <template v-if="cond.column">
-                      <span :class="['text-[9px] px-1 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(unionAvailableCols.find(c => c.name === cond.column)?.type ?? '').cls]">
-                        {{ getColTypeBadge(unionAvailableCols.find(c => c.name === cond.column)?.type ?? '').label }}
-                      </span>
-                      <span class="truncate">{{ cond.column }}</span>
-                    </template>
-                    <span v-else class="text-muted-foreground/50 truncate">column</span>
-                    <ChevronDown class="size-3 text-muted-foreground/50 ml-auto shrink-0" />
-                  </button>
-                  <!-- Operator -->
-                  <select
-                    :value="cond.operator"
-                    @change="tn.setUnionCondition(+i, { operator: ($event.target as HTMLSelectElement).value })"
-                    class="h-7 px-1.5 rounded-lg border bg-background text-[11px] focus:outline-none focus:ring-1 focus:ring-yellow-500/40 shrink-0"
-                  >
-                    <option v-for="op in ['=','!=','>','<','>=','<=','LIKE','IN','IS NULL','IS NOT NULL']" :key="op" :value="op">{{ op }}</option>
-                  </select>
-                  <!-- Value -->
-                  <input
-                    v-if="!['IS NULL','IS NOT NULL'].includes(cond.operator)"
-                    :value="cond.value"
-                    @input="tn.setUnionCondition(+i, { value: ($event.target as HTMLInputElement).value })"
-                    class="w-24 h-7 px-2 rounded-lg border bg-background text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-yellow-500/40 shrink-0"
-                    placeholder="value"
-                  />
-                  <button @click="tn.removeUnionCondition(+i)"
-                    class="size-6 flex items-center justify-center rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors shrink-0">
-                    <X class="size-3" />
+            <!-- ── Row 3: WHERE + SQL preview ────────────────────────── -->
+            <div class="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-4 border-t pt-4">
+              <!-- WHERE filter -->
+              <div class="flex flex-col gap-2">
+                <div class="flex items-center justify-between">
+                  <label class="text-[11px] font-semibold text-yellow-500 uppercase tracking-wide">
+                    WHERE Filter
+                    <span v-if="(store.modalNode?.data?.conditions ?? []).filter((c: any) => c.column).length"
+                      class="ml-1 text-[10px] font-normal text-muted-foreground normal-case">
+                      {{ (store.modalNode?.data?.conditions ?? []).filter((c: any) => c.column).length }} conditions
+                    </span>
+                  </label>
+                  <button @click="tn.addUnionCondition()"
+                    class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-yellow-500/30 text-yellow-500 hover:bg-yellow-500/10 transition-colors">
+                    <Plus class="size-2.5" /> เพิ่ม
                   </button>
                 </div>
+                <div v-if="(store.modalNode?.data?.conditions ?? []).length" class="flex flex-col gap-2 max-h-[140px] overflow-y-auto">
+                  <div v-for="(cond, i) in (store.modalNode?.data?.conditions ?? [])" :key="i"
+                    class="flex items-center gap-2 px-2.5 py-2 rounded-xl border bg-yellow-500/3">
+                    <button @click="toggleUnionCondColDropdown(+i, $event)"
+                      :class="[
+                        'flex-1 h-7 px-2 rounded-lg border text-left text-[11px] font-mono flex items-center gap-1.5 min-w-0 transition-colors',
+                        openUnionCondColIdx === +i ? 'border-yellow-500/60 bg-yellow-500/5' : 'border-border bg-background hover:border-yellow-400/40',
+                      ]">
+                      <template v-if="cond.column">
+                        <span :class="['text-[9px] px-1 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(unionAvailableCols.find(c => c.name === cond.column)?.type ?? '').cls]">
+                          {{ getColTypeBadge(unionAvailableCols.find(c => c.name === cond.column)?.type ?? '').label }}
+                        </span>
+                        <span class="truncate">{{ cond.column }}</span>
+                      </template>
+                      <span v-else class="text-muted-foreground/50 truncate">column</span>
+                      <ChevronDown class="size-3 text-muted-foreground/50 ml-auto shrink-0" />
+                    </button>
+                    <select :value="cond.operator"
+                      @change="tn.setUnionCondition(+i, { operator: ($event.target as HTMLSelectElement).value })"
+                      class="h-7 px-1.5 rounded-lg border bg-background text-[11px] focus:outline-none focus:ring-1 focus:ring-yellow-500/40 shrink-0">
+                      <option v-for="op in ['=','!=','>','<','>=','<=','LIKE','IN','IS NULL','IS NOT NULL']" :key="op" :value="op">{{ op }}</option>
+                    </select>
+                    <input v-if="!['IS NULL','IS NOT NULL'].includes(cond.operator)"
+                      :value="cond.value"
+                      @input="tn.setUnionCondition(+i, { value: ($event.target as HTMLInputElement).value })"
+                      class="w-24 h-7 px-2 rounded-lg border bg-background text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-yellow-500/40 shrink-0"
+                      placeholder="value" />
+                    <button @click="tn.removeUnionCondition(+i)"
+                      class="size-6 flex items-center justify-center rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors shrink-0">
+                      <X class="size-3" />
+                    </button>
+                  </div>
+                </div>
+                <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">ไม่มี filter = ดึงข้อมูลทั้งหมดจาก union</p>
               </div>
-              <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">ไม่มี filter = ดึงข้อมูลทั้งหมดจาก union</p>
-            </div>
-
-            </div><!-- /RIGHT COLUMN -->
-            </div><!-- /grid -->
+              <!-- SQL Preview -->
+              <div class="flex flex-col gap-2">
+                <p class="text-[11px] font-semibold text-yellow-500 uppercase tracking-wide">SQL Preview</p>
+                <div v-if="unionSources.length"
+                  class="px-3 py-2 rounded-xl bg-yellow-500/5 border border-yellow-400/20 max-h-[140px] overflow-y-auto overflow-x-auto">
+                  <div class="flex items-start gap-1.5">
+                    <span class="text-[9px] font-bold text-yellow-600 shrink-0 mt-0.5">SQL</span>
+                    <code class="text-[9px] font-mono text-yellow-400/80 leading-relaxed whitespace-pre">{{ unionSqlPreview }}</code>
+                  </div>
+                </div>
+                <div v-else class="px-3 py-3 rounded-xl bg-muted/20 border text-[10px] text-muted-foreground/60 italic">
+                  เลือก Sources เพื่อดู SQL
+                </div>
+              </div>
+            </div><!-- /row3 -->
 
           </template>
 
           <!-- ── Where ───────────────────────────────────────────────── -->
           <template v-else-if="nodeType === 'where'">
-            <div
-              v-for="(cond, i) in store.modalNode.data.conditions" :key="i"
-              class="flex flex-col gap-3 border rounded-xl p-4 bg-rose-500/3"
-            >
-              <!-- Header -->
-              <div class="flex items-center gap-2">
-                <span class="text-[10px] font-bold text-rose-500 uppercase tracking-wide flex-1">
-                  Condition {{ Number(i) + 1 }}
-                  <span v-if="cond.column" class="normal-case font-mono text-rose-400 ml-1">
-                    — {{ condPreview(cond) }}
-                  </span>
-                </span>
-                <button @click="tn.removeWhereCondition(Number(i))"
-                  class="size-5 flex items-center justify-center rounded hover:bg-destructive/10 hover:text-destructive text-muted-foreground transition-colors">
-                  <X class="size-3.5" />
+            <div class="grid grid-cols-[1fr_1fr] gap-5 items-start">
+
+            <!-- ── LEFT: Conditions ───────────────────────────────────── -->
+            <div class="flex flex-col gap-3 min-w-0">
+              <div class="flex items-center justify-between">
+                <div>
+                  <p class="text-xs font-bold text-rose-500">WHERE Conditions</p>
+                  <p class="text-[10px] text-muted-foreground mt-0.5">กรองข้อมูลใน WHERE clause</p>
+                </div>
+                <button @click="tn.addWhereCondition()"
+                  class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-rose-500/30 text-rose-400 hover:bg-rose-500/10 transition-colors">
+                  <Plus class="size-2.5" /> เพิ่ม
                 </button>
               </div>
 
-              <!-- Column picker -->
-              <div class="flex items-center gap-2">
-                <label class="text-[10px] font-semibold text-muted-foreground w-16 shrink-0">Column</label>
-                <button
-                  @click="toggleWhereColDropdown(Number(i), $event)"
-                  :class="[
-                    'flex-1 flex items-center gap-2 text-xs border rounded-lg px-2.5 py-2 bg-background text-left transition-colors',
-                    cond.column ? 'border-rose-400/40' : 'border-border hover:border-rose-400/30',
-                    openWhereColIdx === Number(i) ? 'ring-2 ring-rose-400/50 border-rose-400/40' : '',
-                  ]"
-                >
-                  <template v-if="cond.column">
-                    <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0',
-                      getColTypeBadge(upstreamCols.find(c => c.name === cond.column)?.type ?? '').cls]">
-                      {{ getColTypeBadge(upstreamCols.find(c => c.name === cond.column)?.type ?? '').label }}
+              <div v-if="(store.modalNode?.data?.conditions ?? []).length" class="flex flex-col gap-2 max-h-[520px] overflow-y-auto pr-0.5">
+                <div v-for="(cond, i) in store.modalNode.data.conditions" :key="i"
+                  class="flex flex-col gap-3 p-3 rounded-xl border bg-rose-500/3 shrink-0">
+                  <!-- Header -->
+                  <div class="flex items-center gap-2">
+                    <span class="text-[10px] font-bold text-rose-500 uppercase tracking-wide flex-1">
+                      Condition {{ Number(i) + 1 }}
+                      <span v-if="cond.column" class="normal-case font-mono text-rose-400 ml-1">— {{ condPreview(cond) }}</span>
                     </span>
-                    <div class="flex-1 min-w-0">
-                      <p class="text-[11px] truncate">{{ upstreamCols.find(c => c.name === cond.column)?.remark || cond.column }}</p>
-                      <p v-if="upstreamCols.find(c => c.name === cond.column)?.remark" class="font-mono text-[9px] text-muted-foreground/60 truncate">{{ cond.column }}</p>
-                    </div>
-                  </template>
-                  <span v-else class="text-muted-foreground text-[11px] flex-1">— เลือก Column —</span>
-                  <ChevronDown :class="['size-3 shrink-0 text-muted-foreground transition-transform', openWhereColIdx === Number(i) ? 'rotate-180' : '']" />
-                </button>
-              </div>
+                    <button @click="tn.removeWhereCondition(Number(i))"
+                      class="size-5 flex items-center justify-center rounded hover:bg-destructive/10 hover:text-destructive text-muted-foreground transition-colors">
+                      <X class="size-3.5" />
+                    </button>
+                  </div>
 
-              <!-- Operator pills -->
-              <div class="flex flex-col gap-1.5">
-                <label class="text-[10px] font-semibold text-muted-foreground">เงื่อนไข</label>
-                <div v-for="group in WHERE_OP_GROUPS" :key="group.color" class="flex flex-wrap gap-1">
-                  <button
-                    v-for="op in group.ops" :key="op"
-                    @click="tn.setWhereCondition(Number(i), { operator: op })"
-                    :class="['text-[10px] px-2.5 py-1 rounded-lg border font-mono font-bold transition-colors whitespace-nowrap', whereOpClass(cond.operator, op)]"
-                  >{{ op }}</button>
-                </div>
-              </div>
-
-              <!-- Value input (hidden for IS NULL / IS NOT NULL) -->
-              <div v-if="cond.operator && !['IS NULL', 'IS NOT NULL'].includes(cond.operator)" class="flex items-center gap-2">
-                <label class="text-[10px] font-semibold text-muted-foreground w-16 shrink-0">ค่า</label>
-                <div v-if="isDateCol(cond.column)" class="flex-1 relative flex items-center">
-                  <input
-                    :ref="(el) => setWhereDateRef(Number(i), el)"
-                    type="date"
-                    :value="cond.value"
-                    @input="tn.setWhereCondition(Number(i), { value: ($event.target as HTMLInputElement).value })"
-                    class="flex-1 text-xs border rounded-lg pl-2.5 pr-9 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-rose-400/50 font-mono"
-                    :class="cond.value ? 'border-rose-400/40' : ''"
-                  />
-                  <button type="button" @click="openWhereDatePicker(Number(i))"
-                    class="absolute right-2 size-5 flex items-center justify-center rounded text-rose-500 hover:bg-rose-500/15 transition-colors">
-                    <Calendar class="size-3.5" />
-                  </button>
-                </div>
-                <input
-                  v-else
-                  :value="cond.value"
-                  @input="tn.setWhereCondition(Number(i), { value: ($event.target as HTMLInputElement).value })"
-                  :placeholder="cond.operator === 'LIKE' ? 'เช่น %keyword%' : cond.operator === 'IN' ? 'เช่น 1,2,3' : 'ค่าที่ต้องการ'"
-                  class="flex-1 text-xs border rounded-lg px-2.5 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-rose-400/50 font-mono"
-                  :class="cond.value ? 'border-rose-400/40' : ''"
-                />
-              </div>
-
-              <!-- Preview -->
-              <div v-if="cond.column && cond.operator"
-                class="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-rose-500/5 border border-rose-400/20">
-                <span class="text-[9px] font-bold text-rose-500 shrink-0">SQL</span>
-                <code class="text-[9px] font-mono text-rose-300/80 truncate">
-                  {{ condPreview(cond) }}
-                </code>
-              </div>
-            </div>
-
-            <button @click="tn.addWhereCondition"
-              class="text-xs w-full py-2 rounded-xl border border-dashed border-rose-500/40 text-rose-600 hover:bg-rose-500/10 font-semibold transition-colors flex items-center justify-center gap-1.5">
-              <Plus class="size-3.5" /> เพิ่ม Condition
-            </button>
-          </template>
-
-          <!-- ── Standard WHERE (pre-filter) for group / sort / calc ──────── -->
-          <template v-if="nodeType === 'group' || nodeType === 'sort' || nodeType === 'calc'">
-            <div class="border-t border-border/40 pt-4 mt-1 flex flex-col gap-3">
-              <!-- Section header -->
-              <div class="flex items-center gap-2">
-                <div class="flex items-center gap-1.5 flex-1">
-                  <Filter class="size-3.5 text-rose-500 shrink-0" />
-                  <span class="text-[11px] font-semibold text-rose-500 uppercase tracking-wide">WHERE</span>
-                  <span v-if="whereCondCount"
-                    class="text-[9px] px-1.5 py-0.5 rounded-full bg-rose-500/15 text-rose-400 font-bold">
-                    {{ whereCondCount }}
-                  </span>
-                </div>
-                <span class="text-[10px] text-muted-foreground/50">กรองข้อมูลก่อนประมวลผล</span>
-              </div>
-
-              <!-- Condition rows -->
-              <div
-                v-for="(cond, i) in (store.modalNode.data.conditions ?? [])" :key="i"
-                class="flex flex-col gap-3 border rounded-xl p-4 bg-rose-500/3"
-              >
-                <!-- Row header -->
-                <div class="flex items-center gap-2">
-                  <span class="text-[10px] font-bold text-rose-500 uppercase tracking-wide flex-1">
-                    Condition {{ Number(i) + 1 }}
-                    <span v-if="cond.column" class="normal-case font-mono text-rose-400 ml-1">
-                      — {{ cond.column }} {{ cond.operator }}
-                      {{ !['IS NULL','IS NOT NULL'].includes(cond.operator) ? cond.value : '' }}
-                    </span>
-                  </span>
-                  <button @click="tn.removeWhereCondition(Number(i))"
-                    class="size-5 flex items-center justify-center rounded hover:bg-destructive/10 hover:text-destructive text-muted-foreground transition-colors">
-                    <X class="size-3.5" />
-                  </button>
-                </div>
-
-                <!-- Column picker -->
-                <div class="flex items-center gap-2">
-                  <label class="text-[10px] font-semibold text-muted-foreground w-16 shrink-0">Column</label>
-                  <button
-                    @click="toggleWhereColDropdown(Number(i), $event)"
-                    :class="[
-                      'flex-1 flex items-center gap-2 text-xs border rounded-lg px-2.5 py-2 bg-background text-left transition-colors',
+                  <!-- Column picker -->
+                  <button @click="toggleWhereColDropdown(Number(i), $event)"
+                    :class="['w-full flex items-center gap-2 text-xs border rounded-lg px-2.5 py-2 bg-background text-left transition-colors',
                       cond.column ? 'border-rose-400/40' : 'border-border hover:border-rose-400/30',
-                      openWhereColIdx === Number(i) ? 'ring-2 ring-rose-400/50 border-rose-400/40' : '',
-                    ]"
-                  >
+                      openWhereColIdx === Number(i) ? 'ring-2 ring-rose-400/50 border-rose-400/40' : '']">
                     <template v-if="cond.column">
                       <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0',
                         getColTypeBadge(upstreamCols.find(c => c.name === cond.column)?.type ?? '').cls]">
@@ -2684,63 +2521,57 @@ const finishBtnStyle = computed(() => {
                     <span v-else class="text-muted-foreground text-[11px] flex-1">— เลือก Column —</span>
                     <ChevronDown :class="['size-3 shrink-0 text-muted-foreground transition-transform', openWhereColIdx === Number(i) ? 'rotate-180' : '']" />
                   </button>
-                </div>
 
-                <!-- Operator pills -->
-                <div class="flex flex-col gap-1.5">
-                  <label class="text-[10px] font-semibold text-muted-foreground">เงื่อนไข</label>
-                  <div v-for="grp in WHERE_OP_GROUPS" :key="grp.color" class="flex flex-wrap gap-1">
-                    <button
-                      v-for="op in grp.ops" :key="op"
-                      @click="tn.setWhereCondition(Number(i), { operator: op })"
-                      :class="['text-[10px] px-2.5 py-1 rounded-lg border font-mono font-bold transition-colors whitespace-nowrap', whereOpClass(cond.operator, op)]"
-                    >{{ op }}</button>
+                  <!-- Operator pills -->
+                  <div class="flex flex-col gap-1.5">
+                    <div v-for="group in WHERE_OP_GROUPS" :key="group.color" class="flex flex-wrap gap-1">
+                      <button v-for="op in group.ops" :key="op"
+                        @click="tn.setWhereCondition(Number(i), { operator: op })"
+                        :class="['text-[10px] px-2.5 py-1 rounded-lg border font-mono font-bold transition-colors whitespace-nowrap', whereOpClass(cond.operator, op)]">{{ op }}</button>
+                    </div>
                   </div>
-                </div>
 
-                <!-- Value input -->
-                <div v-if="cond.operator && !['IS NULL', 'IS NOT NULL'].includes(cond.operator)" class="flex items-center gap-2">
-                  <label class="text-[10px] font-semibold text-muted-foreground w-16 shrink-0">ค่า</label>
-                  <div v-if="isDateCol(cond.column)" class="flex-1 relative flex items-center">
-                    <input
-                      :ref="(el) => setWhereDateRef(Number(i), el)"
-                      type="date"
-                      :value="cond.value"
-                      @input="tn.setWhereCondition(Number(i), { value: ($event.target as HTMLInputElement).value })"
-                      class="flex-1 text-xs border rounded-lg pl-2.5 pr-9 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-rose-400/50 font-mono"
-                      :class="cond.value ? 'border-rose-400/40' : ''"
-                    />
-                    <button type="button" @click="openWhereDatePicker(Number(i))"
-                      class="absolute right-2 size-5 flex items-center justify-center rounded text-rose-500 hover:bg-rose-500/15 transition-colors">
-                      <Calendar class="size-3.5" />
-                    </button>
+                  <!-- Value input -->
+                  <div v-if="cond.operator && !['IS NULL', 'IS NOT NULL'].includes(cond.operator)" class="flex items-center gap-2">
+                    <label class="text-[10px] font-semibold text-muted-foreground w-8 shrink-0">ค่า</label>
+                    <div v-if="isDateCol(cond.column)" class="flex-1 relative flex items-center">
+                      <input :ref="(el) => setWhereDateRef(Number(i), el)" type="date" :value="cond.value"
+                        @input="tn.setWhereCondition(Number(i), { value: ($event.target as HTMLInputElement).value })"
+                        class="flex-1 text-xs border rounded-lg pl-2.5 pr-9 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-rose-400/50 font-mono"
+                        :class="cond.value ? 'border-rose-400/40' : ''" />
+                      <button type="button" @click="openWhereDatePicker(Number(i))"
+                        class="absolute right-2 size-5 flex items-center justify-center rounded text-rose-500 hover:bg-rose-500/15 transition-colors">
+                        <Calendar class="size-3.5" />
+                      </button>
+                    </div>
+                    <input v-else :value="cond.value" @input="tn.setWhereCondition(Number(i), { value: ($event.target as HTMLInputElement).value })"
+                      :placeholder="cond.operator === 'LIKE' ? 'เช่น %keyword%' : cond.operator === 'IN' ? 'เช่น 1,2,3' : 'ค่าที่ต้องการ'"
+                      class="flex-1 text-xs border rounded-lg px-2.5 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-rose-400/50 font-mono"
+                      :class="cond.value ? 'border-rose-400/40' : ''" />
                   </div>
-                  <input
-                    v-else
-                    :value="cond.value"
-                    @input="tn.setWhereCondition(Number(i), { value: ($event.target as HTMLInputElement).value })"
-                    :placeholder="cond.operator === 'LIKE' ? 'เช่น %keyword%' : cond.operator === 'IN' ? 'เช่น 1,2,3' : 'ค่าที่ต้องการ'"
-                    class="flex-1 text-xs border rounded-lg px-2.5 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-rose-400/50 font-mono"
-                    :class="cond.value ? 'border-rose-400/40' : ''"
-                  />
-                </div>
 
-                <!-- Preview -->
-                <div v-if="cond.column && cond.operator"
-                  class="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-rose-500/5 border border-rose-400/20">
-                  <span class="text-[9px] font-bold text-rose-500 shrink-0">SQL</span>
-                  <code class="text-[9px] font-mono text-rose-300/80 truncate">
-                    {{ cond.column }} {{ cond.operator }}{{ !['IS NULL','IS NOT NULL'].includes(cond.operator) ? ` '${cond.value || '?'}'` : '' }}
-                  </code>
+                  <!-- Preview -->
+                  <div v-if="cond.column && cond.operator"
+                    class="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-rose-500/5 border border-rose-400/20">
+                    <span class="text-[9px] font-bold text-rose-500 shrink-0">SQL</span>
+                    <code class="text-[9px] font-mono text-rose-300/80 truncate">{{ condPreview(cond) }}</code>
+                  </div>
                 </div>
               </div>
+              <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">ไม่มี condition = ดึงข้อมูลทั้งหมด</p>
+            </div><!-- /LEFT -->
 
-              <!-- Add condition button -->
-              <button @click="tn.addWhereCondition"
-                class="text-xs w-full py-2 rounded-xl border border-dashed border-rose-500/40 text-rose-600 hover:bg-rose-500/10 font-semibold transition-colors flex items-center justify-center gap-1.5">
-                <Plus class="size-3.5" /> เพิ่ม WHERE Condition
-              </button>
-            </div>
+            <!-- ── RIGHT: SQL Preview ─────────────────────────────────── -->
+            <div class="flex flex-col gap-4 min-w-0">
+              <div class="px-3 py-2 rounded-lg bg-rose-500/5 border border-rose-400/20 max-h-[120px] overflow-y-auto overflow-x-auto">
+                <div class="flex items-start gap-1.5">
+                  <span class="text-[9px] font-bold text-rose-500 shrink-0 mt-0.5">SQL</span>
+                  <code class="text-[9px] font-mono text-rose-300/80 leading-relaxed whitespace-pre">{{ whereSqlPreview }}</code>
+                </div>
+              </div>
+            </div><!-- /RIGHT -->
+
+            </div><!-- /grid -->
           </template>
 
         </div>
