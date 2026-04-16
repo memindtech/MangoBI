@@ -1189,6 +1189,7 @@
   "nav_analytics": "วิเคราะห์ข้อมูล",
   "nav_documents": "เอกสาร",
   "nav_settings": "ตั้งค่า",
+  "nav_profile": "ข้อมูลพนักงาน",
   "nav_logout": "ออกจากระบบ",
   "nav_logout_all": "ออกจากระบบทุกอุปกรณ์",
   "nav_theme_light": "โหมดสว่าง",
@@ -1327,5 +1328,13 @@
   "login_err_title_otp":   "ต้องการ OTP",
   "login_err_title_admin": "ติดต่อผู้ดูแลระบบ",
   "login_err_title_full":  "Session เต็ม",
-  "login_err_title_fail":  "เข้าสู่ระบบไม่สำเร็จ"
+  "login_err_title_fail":  "เข้าสู่ระบบไม่สำเร็จ",
+
+  "nav_menu":              "เมนู",
+  "nav_font_size":         "ขนาดตัวอักษร",
+
+  "auto_logout_title":     "หมดเวลาการเชื่อมต่อ",
+  "auto_logout_desc_pre":  "คุณไม่ได้ทำรายการใดๆ เป็นเวลานาน ระบบจะออกจากระบบอัตโนมัติในอีก",
+  "auto_logout_desc_suf":  "วินาที",
+  "auto_logout_stay":      "อยู่ในระบบต่อ"
 }

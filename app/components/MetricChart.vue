@@ -1,13 +1,16 @@
 <script setup lang="ts">
 const props = withDefaults(defineProps<{
-  data:     number[]
-  label:    string
-  unit:     string
-  color?:   string
-  max?:     number
-  current?: number | string
+  data:         number[]
+  label:        string
+  unit:         string
+  color?:       string
+  max?:         number
+  current?:     number | string
+  /** Tailwind height class applied to the chart area (default: 'h-20') */
+  chartHeight?: string
 }>(), {
-  color: '#22c55e',
+  color:       '#22c55e',
+  chartHeight: 'h-20',
 })
 
 const colorMode = useColorMode()
@@ -74,7 +77,7 @@ const option = computed(() => ({
     </div>
 
     <!-- echarts -->
-    <div class="h-20 w-full">
+    <div :class="[chartHeight, 'w-full']">
       <ReportEChart :option="option" />
     </div>
 

@@ -21,7 +21,6 @@ definePageMeta({
 const { t } = useI18n()
 useHead({ title: computed(() => `${t('page_title_login')} | MangoBI`) })
 
-const { $xt } = useNuxtApp()
 const router = useRouter()
 const route = useRoute()
 
@@ -116,8 +115,13 @@ const submitLogin = async (target: 'standard' | 'microsoft') => {
     }
 
     const attempt = sessionStorage.getItem('attempt') || '1'
-    const action = `api/public/Login?is_api=N&app_name=ERP&attempt=${attempt}`
-    const resp = await $xt.postServerJson(action, form) as any
+
+    // เรียก MangoBI server-side login proxy
+    // — mango_auth token ถูกเก็บ server-side, browser ได้รับแค่ bi_session HttpOnly cookie
+    const resp = await $fetch('/api/auth/login', {
+      method: 'POST',
+      body: { ...form, attempt },
+    }).catch((err: any) => err?.data ?? { error: err?.message ?? 'Login failed' }) as any
 
     if (resp.error) {
       if (resp.error.indexOf('Request OTP;') === 0) {
@@ -140,7 +144,6 @@ const submitLogin = async (target: 'standard' | 'microsoft') => {
 
       if (resp.error_type === 'C') {
         showAlert(t('login_err_title_error'), resp.error, 'danger')
-        // TODO: open change password modal
         return
       }
 
@@ -152,10 +155,7 @@ const submitLogin = async (target: 'standard' | 'microsoft') => {
       throw resp.error
     }
 
-    // Login Success
-    const authCookie = useCookie('mango_auth')
-    authCookie.value = resp.data
-    localStorage.setItem('mango_auth', resp.data)
+    // Login Success — bi_session cookie ถูก set โดย server แล้ว
     sessionStorage.clear()
 
     const redirectPath = (route.query.from as string) || '/'
@@ -171,7 +171,7 @@ const submitLogin = async (target: 'standard' | 'microsoft') => {
 
 const fetchCompanies = async () => {
   try {
-    const resp = await $xt.getServer('api/public/LoginCompanies')
+    const resp: any = await $fetch('/api/auth/companies')
     companyList.value = resp.data || []
     if (companyList.value.length > 0) {
       form.maincode = companyList.value[0].maincode

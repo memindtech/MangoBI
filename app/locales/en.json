@@ -1192,6 +1192,7 @@
   "nav_analytics": "Analytics",
   "nav_documents": "Documents",
   "nav_settings": "Settings",
+  "nav_profile": "Employee Profile",
   "nav_logout": "Logout",
   "nav_logout_all": "Logout All Devices",
   "nav_theme_light": "Light Mode",
@@ -1330,5 +1331,13 @@
   "login_err_title_otp":   "OTP Required",
   "login_err_title_admin": "Contact Admin",
   "login_err_title_full":  "Full Session",
-  "login_err_title_fail":  "Login Failed"
+  "login_err_title_fail":  "Login Failed",
+
+  "nav_menu":              "Menu",
+  "nav_font_size":         "Font Size",
+
+  "auto_logout_title":     "Session Expired",
+  "auto_logout_desc_pre":  "You have been inactive for too long. You will be logged out automatically in",
+  "auto_logout_desc_suf":  "seconds",
+  "auto_logout_stay":      "Stay Logged In"
 }

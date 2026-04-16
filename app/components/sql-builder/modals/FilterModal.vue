@@ -368,8 +368,8 @@ function close() { store.filterNodeId = null }
                 <div v-for="g in filteredGroups" :key="g.nodeId" class="mb-0.5">
 
                   <!-- Group header -->
-                  <button @click.stop="toggleGroupExpanded(g.nodeId)"
-                    class="w-full flex items-center gap-2 px-3 py-2 bg-muted hover:bg-muted/80 transition-colors sticky top-0 z-10">
+                  <div @click.stop="toggleGroupExpanded(g.nodeId)"
+                    class="w-full flex items-center gap-2 px-3 py-2 bg-muted hover:bg-muted/80 transition-colors sticky top-0 z-10 cursor-pointer">
                     <ChevronRight :class="['size-3.5 text-muted-foreground transition-transform shrink-0', expandedGroups.has(g.nodeId) ? 'rotate-90' : '']" />
                     <span class="font-mono text-xs font-bold text-foreground flex-1 truncate tracking-wide">{{ g.table }}</span>
                     <span class="text-xs font-mono shrink-0">
@@ -381,7 +381,7 @@ function close() { store.filterNodeId = null }
                     <span class="text-muted-foreground/40 text-[11px]">/</span>
                     <button @click.stop="clearGroup(g.nodeId)"
                       class="text-[11px] text-muted-foreground hover:underline shrink-0">ล้าง</button>
-                  </button>
+                  </div>
 
                   <!-- Children -->
                   <div v-if="expandedGroups.has(g.nodeId)" class="relative ml-4 border-l-2 border-border/30">

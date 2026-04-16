@@ -25,15 +25,15 @@ export default defineNuxtRouteMiddleware(async (to) => {
   if (import.meta.server) return
 
   const authStore = useAuthStore()
-  const token = localStorage.getItem('mango_auth')
 
   if (to.meta.redirect) {
     globalThis.location.href = to.meta.redirect as string
     return
   }
 
+  // Login page — ถ้า auth อยู่แล้ว (same-session) ไปหน้าหลักเลย
   if (to.path === '/login') {
-    if (token && authStore.auth.is_authen) return navigateTo('/')
+    if (authStore.auth.is_authen) return navigateTo('/')
     return
   }
 
@@ -41,11 +41,7 @@ export default defineNuxtRouteMiddleware(async (to) => {
   const isPageProtected = to.matched.some(m => m.meta.auth === true) || mangoMenu?.checkUserRight
   if (!isPageProtected) return
 
-  if (!token) {
-    authStore.auth = { is_authen: false }
-    return navigateTo('/login')
-  }
-
+  // Protected route — fetchUserAuth ตรวจ bi_session ผ่าน /api/auth/me
   try {
     const success = await authStore.fetchUserAuth(
       mangoMenu?.menu_name || 'PLANWEB',
@@ -53,7 +49,6 @@ export default defineNuxtRouteMiddleware(async (to) => {
       to.meta.module as string,
     )
     if (!success || !authStore.auth.is_authen) {
-      localStorage.removeItem('mango_auth')
       return navigateTo('/login')
     }
   } catch (err) {

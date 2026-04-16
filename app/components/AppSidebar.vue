@@ -2,7 +2,7 @@
 import {
   BarChart2, Share2,
   Sun, Moon, LogOut, ChevronUp, Languages, ALargeSmall,
-  LayoutDashboard, Send, Code2,
+  LayoutDashboard, Send, Code2, UserCircle,
 } from 'lucide-vue-next'
 import {
   Sidebar, SidebarContent, SidebarFooter, SidebarGroup,
@@ -25,9 +25,14 @@ const route  = useRoute()
 const router = useRouter()
 const { state } = useSidebar()
 
+const showProfile = ref(false)
+
 // ข้อมูลผู้ใช้จาก store
 const user = computed(() => authStore.auth)
-const userName = computed(() => user.value?.full_name || user.value?.name || user.value?.user_name || 'User')
+const empProfile = computed(() => authStore.profile)
+const userName = computed(() =>
+  empProfile.value?.empname_t || empProfile.value?.userId || 'User'
+)
 const userInitial = computed(() => userName.value?.charAt(0)?.toUpperCase() || 'U')
 const userRole = computed(() => user.value?.position || user.value?.role || '')
 
@@ -91,7 +96,7 @@ function isActive(path: string) {
     <SidebarContent>
       <SidebarGroup>
         <SidebarGroupLabel class="group-data-[collapsible=icon]:hidden">
-          Menu
+          {{ t('nav_menu') }}
         </SidebarGroupLabel>
         <SidebarGroupContent>
           <SidebarMenu>
@@ -130,15 +135,15 @@ function isActive(path: string) {
         <SidebarMenuItem>
           <DropdownMenu>
             <DropdownMenuTrigger as-child>
-              <SidebarMenuButton tooltip="ขนาดตัวอักษร">
+              <SidebarMenuButton :tooltip="t('nav_font_size')">
                 <ALargeSmall class="size-4 shrink-0" />
                 <span class="group-data-[collapsible=icon]:hidden">
-                  ตัวอักษร ({{ fontSize }}px)
+                  {{ t('nav_font_size') }} ({{ fontSize }}px)
                 </span>
               </SidebarMenuButton>
             </DropdownMenuTrigger>
             <DropdownMenuContent side="right" align="end" class="min-w-44">
-              <DropdownMenuLabel>ขนาดตัวอักษร</DropdownMenuLabel>
+              <DropdownMenuLabel>{{ t('nav_font_size') }}</DropdownMenuLabel>
               <DropdownMenuSeparator />
               <DropdownMenuRadioGroup :model-value="String(fontSize)" @update:model-value="v => applySize(Number(v))">
                 <DropdownMenuRadioItem
@@ -214,6 +219,11 @@ function isActive(path: string) {
                 </div>
               </DropdownMenuLabel>
               <DropdownMenuSeparator />
+              <DropdownMenuItem class="cursor-pointer" @click="showProfile = true">
+                <UserCircle class="size-4 mr-2" />
+                <span>{{ t('nav_profile') }}</span>
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
               <DropdownMenuItem class="cursor-pointer" @click="logout(false)">
                 <LogOut class="size-4 mr-2 text-destructive" />
                 <span>{{ t('nav_logout') }}</span>
@@ -229,4 +239,6 @@ function isActive(path: string) {
       </SidebarMenu>
     </SidebarFooter>
   </Sidebar>
+
+  <ProfileModal v-model:open="showProfile" />
 </template>

@@ -28,7 +28,11 @@ export default defineNuxtConfig({
 
   nitro: {
     storage: {
-      'mango-schema': { driver: 'memory' },
+      'mango-schema':  { driver: 'memory' },
+      // server-side session store — swap driver เป็น redis ใน production
+      // NUXT_NITRO_STORAGE_BI_SESSIONS_DRIVER=redis
+      // NUXT_NITRO_STORAGE_BI_SESSIONS_URL=redis://...
+      'bi-sessions':   { driver: 'memory' },
     },
   },
 
@@ -39,7 +43,7 @@ export default defineNuxtConfig({
     'ag-grid-community/styles/ag-theme-quartz.css',
   ],
 
-  fontFamily: "THSarabunNew, sans-serif",
+  // fontFamily ตั้งค่าใน app/assets/css/tailwind.css (--font-sans) ไม่ใช่ nuxt.config
 
   vite: {
     vue: {
@@ -68,7 +72,6 @@ export default defineNuxtConfig({
       { code: 'en', file: 'en.json' },
       { code: 'cn', file: 'cn.json' }
     ],
-    lazy: true,
     // ใช้ resolve เพื่อดึงพาธจาก app/locales ตรงๆ ป้องกัน i18n v10 เติมพาธซ้อน
     langDir: resolve(__dirname, 'app/locales'),
     defaultLocale: 'th',

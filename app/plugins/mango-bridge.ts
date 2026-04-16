@@ -1,57 +1,53 @@
 import moment from 'moment'
 import Decimal from 'decimal.js'
 
-// Paths ที่ขึ้นต้นด้วย prefix เหล่านี้ → ส่งไปยัง Planning backend (localhost:8310)
-// ที่เหลือ (api/public/..., etc.) → ส่งไปยัง main service (localhost/service/)
+/**
+ * mango-bridge — BFF edition
+ *
+ * ทุก API call ผ่าน Nuxt proxy routes (/api/proxy/planning/* และ /api/proxy/main/*)
+ * Server ฝั่ง Nitro inject X-Mango-Auth จาก bi_session cookie โดยอัตโนมัติ
+ * Browser ไม่เห็น mango_auth token และไม่เห็น URL ของ Planning/Main backend
+ *
+ * Planning prefix  → /api/proxy/planning/{path}
+ * ที่เหลือทั้งหมด → /api/proxy/main/{path}
+ */
+
 const PLANNING_PREFIXES = ['Planning/', 'planning/']
 
-function makeFetcher(baseURL: string, getToken: () => string, onUnauthorized?: () => void) {
+function makeProxyFetcher(prefix: string, onUnauthorized?: () => void) {
   return $fetch.create({
-    baseURL,
-    async onRequest({ options }) {
-      const extra: Record<string, string> = {}
-      const token = getToken()
-      if (token) extra['X-Mango-Auth'] = token
-      if (import.meta.server) {
-        const reqHeaders = useRequestHeaders(['cookie'])
-        if (reqHeaders.cookie) extra['cookie'] = reqHeaders.cookie
-      }
-      options.headers = { ...(options.headers as Record<string, string>), ...extra }
-    },
+    baseURL: prefix,
+    credentials: 'include', // ส่ง bi_session cookie ไปกับทุก request
     async onResponseError({ response }) {
       if ((response.status === 401 || response.status === 403) && onUnauthorized) {
         onUnauthorized()
       }
       throw response._data
-    }
+    },
   })
 }
 
 export default defineNuxtPlugin((_nuxtApp) => {
-  const config      = useRuntimeConfig()
-  const authCookie  = useCookie('mango_auth')
-  const getToken    = () => authCookie.value || (import.meta.client ? localStorage.getItem('mango_auth') ?? '' : '')
-
   // ป้องกัน redirect ซ้ำเมื่อหลาย request ล้มพร้อมกัน
   let _loggingOut = false
-  function handleUnauthorized() {
+
+  async function handleUnauthorized() {
     if (!import.meta.client || _loggingOut) return
-    // หยุด request อื่นทันที ก่อน redirect
     if (window.location.pathname.includes('/login')) return
     _loggingOut = true
-    localStorage.removeItem('mango_auth')
-    sessionStorage.removeItem('mango_auth_session')
-    authCookie.value = null
-    // hard redirect เหมือน handleLogout — ให้ plugin re-init ใหม่ ไม่ค้าง state เดิม
+    // ล้าง server session + cookie ผ่าน logout endpoint
+    try { await $fetch('/api/auth/logout', { method: 'POST' }) } catch {}
     window.location.href = '/login'
   }
 
-  const mainFetcher     = makeFetcher(config.public.apiBase,      getToken, handleUnauthorized)
-  const planningFetcher = makeFetcher(config.public.planningBase, getToken, handleUnauthorized)
+  const planningProxy = makeProxyFetcher('/api/proxy/planning/', handleUnauthorized)
+  const mainProxy     = makeProxyFetcher('/api/proxy/main/',     handleUnauthorized)
 
   function getFetcher(url: string) {
-    return PLANNING_PREFIXES.some(p => url.startsWith(p)) ? planningFetcher : mainFetcher
+    return PLANNING_PREFIXES.some(p => url.startsWith(p)) ? planningProxy : mainProxy
   }
+
+  const config = useRuntimeConfig()
 
   const xtools = {
     async getServer(url: string, opts?: any) {
@@ -59,7 +55,7 @@ export default defineNuxtPlugin((_nuxtApp) => {
         return await getFetcher(url)(url, { method: 'GET', ...opts })
       } catch (error: any) {
         console.error(`xt.getServer Error [${url}]:`, error)
-        return { error: error.message || error }
+        return { error: error?.message || error }
       }
     },
 
@@ -68,22 +64,20 @@ export default defineNuxtPlugin((_nuxtApp) => {
         return await getFetcher(url)(url, { method: 'POST', body: data, ...opts })
       } catch (error: any) {
         console.error(`xt.postServerJson Error [${url}]:`, error)
-        return { error: error.message || error }
+        return { error: error?.message || error }
       }
     },
 
-    async capture_log_planning(task: string, pre_event: string, plan_code: string,
-      taskid: string = '',
-      log_status: string = '',
-      to_target: string = '',
-      alertcode: string = ''
+    async capture_log_planning(
+      task: string, pre_event: string, plan_code: string,
+      taskid      = '',
+      log_status  = '',
+      to_target   = '',
+      alertcode   = '',
     ) {
       return await this.postServerJson('Planning/Planning/Planning_Log', {
         task, pre_event, plan_code,
-        taskid: taskid || '',
-        log_status: log_status || '',
-        to_target: to_target || '',
-        alertcode: alertcode || ''
+        taskid, log_status, to_target, alertcode,
       })
     },
 
@@ -101,13 +95,12 @@ export default defineNuxtPlugin((_nuxtApp) => {
     formatNumber(x: any, n?: number) {
       try {
         if (this.isEmpty(x) || Number.isNaN(Number.parseFloat(x))) return ''
-        // n=0 → 0 ทศนิยม | n ระบุ → ใช้ global decimal | ไม่ระบุ → 2
         const globalDecimal: number = import.meta.client ? ((globalThis as any).decimals ?? 2) : 2
         const precision = n === 0 ? 0 : (n !== undefined ? globalDecimal : 2)
         const dValue = new Decimal(x)
         if (dValue.isNaN()) return ''
         const sp = dValue.toFixed(precision).split('.')
-        let fm = Number.parseInt(sp[0]).toLocaleString('en-US')
+        let fm = Number.parseInt(sp[0] ?? '0').toLocaleString('en-US')
         if (sp.length > 1) fm = fm + '.' + sp[1]
         return fm
       } catch {
@@ -116,9 +109,9 @@ export default defineNuxtPlugin((_nuxtApp) => {
     },
 
     checkUserRight(id: number, moduleName = 'PN') {
-      const authStore = useAuthStore()
+      const authStore  = useAuthStore()
       const userRights = authStore?.userRight ?? []
-      const status = userRights.find((x: any) => x.menu_id == id && x.module == moduleName) || null
+      const status     = userRights.find((x: any) => x.menu_id == id && x.module == moduleName) || null
       if (status) {
         const classes: string[] = []
         if (status.isall == 1)      classes.push('rights-is-all')
@@ -133,7 +126,8 @@ export default defineNuxtPlugin((_nuxtApp) => {
     },
 
     isEmpty(val: any) {
-      return val === null || val === undefined || val === '' || (Array.isArray(val) && val.length === 0)
+      return val === null || val === undefined || val === ''
+        || (Array.isArray(val) && val.length === 0)
     },
 
     int(val: any) {

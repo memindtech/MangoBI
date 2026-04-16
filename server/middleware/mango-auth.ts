@@ -1,17 +1,21 @@
 /**
- * Middleware — ป้องกัน /api/mango-schema/* routes
- * ต้องมี mango_auth cookie หรือ X-Mango-Auth header
- * (token ที่ได้จาก login MangoBI)
+ * Server Middleware — ป้องกัน protected routes
+ *
+ * /api/proxy/*        → ต้องมี bi_session cookie ที่ valid
+ * /api/mango-schema/* → ต้องมี bi_session cookie ที่ valid
+ *                       (actual backend call ใช้ NUXT_MANGO_SCHEMA_PASSCODE แยกต่างหาก)
  */
-export default defineEventHandler((event) => {
-  if (!event.path.startsWith('/api/mango-schema/')) return
+export default defineEventHandler(async (event) => {
+  const path = event.path
 
-  const cookie    = getHeader(event, 'cookie') ?? ''
-  const mangoAuth = cookie.match(/mango_auth=([^;]+)/)?.[1]
-    ?? getHeader(event, 'x-mango-auth')
-    ?? ''
-
-  if (!mangoAuth) {
-    throw createError({ statusCode: 401, statusMessage: 'Unauthorized' })
+  if (
+    path.startsWith('/api/proxy/') ||
+    path.startsWith('/api/mango-schema/')
+  ) {
+    const sessionId = getSessionId(event)
+    const session   = sessionId ? await getSession(sessionId) : null
+    if (!session) {
+      throw createError({ statusCode: 401, statusMessage: 'Unauthorized' })
+    }
   }
 })

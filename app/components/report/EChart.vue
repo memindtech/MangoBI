@@ -1,7 +1,11 @@
 <script setup lang="ts">
 import * as echarts from 'echarts'
 
-const props = defineProps<{ option: Record<string, any> }>()
+const props = defineProps<{
+  option: Record<string, any>
+  /** Base font size for axis labels and text (default: 11) */
+  fontSize?: number
+}>()
 
 const emit = defineEmits<{
   (e: 'chart-click', params: { name: string; value: any; seriesName: string; dataIndex: number }): void
@@ -19,7 +23,7 @@ const isDark = computed(() => colorMode.value === 'dark')
 // Merge transparent bg + themed text into every option
 const mergedOption = computed(() => ({
   backgroundColor: 'transparent',
-  textStyle: { color: isDark.value ? '#94a3b8' : '#64748b', fontSize: 11 },
+  textStyle: { color: isDark.value ? '#94a3b8' : '#64748b', fontSize: props.fontSize ?? 11 },
   ...props.option,
 }))
 

@@ -37,20 +37,22 @@ const isConfigured = computed(() => {
 })
 
 // ── Limit data points sent to chart (prevents browser freeze) ────────────────
-const MAX_CHART_POINTS = 50
+// Can be overridden per-node via config: { maxChartPoints: N }
+const MAX_CHART_POINTS = computed(() => config.value.maxChartPoints ?? 50)
 
 const chartRows = computed(() => {
   const all = rows.value
-  if (!all.length || all.length <= MAX_CHART_POINTS) return all
+  if (!all.length || all.length <= MAX_CHART_POINTS.value) return all
 
+  const limit = MAX_CHART_POINTS.value
   const x = xField.value
   const y = yField.value
 
   if (chartType.value === 'line') {
     // Evenly sample across full range
-    const step = Math.ceil(all.length / MAX_CHART_POINTS)
+    const step = Math.ceil(all.length / limit)
     const sampled: typeof all = []
-    for (let i = 0; i < all.length && sampled.length < MAX_CHART_POINTS; i += step)
+    for (let i = 0; i < all.length && sampled.length < limit; i += step)
       sampled.push(all[i])
     return sampled
   }
@@ -63,11 +65,11 @@ const chartRows = computed(() => {
   }
   return Array.from(groups.entries())
     .sort((a, b) => b[1] - a[1])
-    .slice(0, MAX_CHART_POINTS)
+    .slice(0, limit)
     .map(([xVal, yVal]) => ({ [x]: xVal, [y]: yVal } as any))
 })
 
-const isSampled = computed(() => rows.value.length > MAX_CHART_POINTS)
+const isSampled = computed(() => rows.value.length > MAX_CHART_POINTS.value)
 
 const chartIcon: Record<ChartType, any> = {
   bar: BarChart2, line: TrendingUp, pie: PieChart,
