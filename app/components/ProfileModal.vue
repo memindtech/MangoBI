@@ -33,7 +33,7 @@ async function fetchProfile() {
   loading.value = true
   error.value   = ''
   try {
-    const res: any = await $xt.getServer('Planning/MangoBI/Me')
+    const res: any = await $xt.getServer('MangoBI/Me')
     if (res?.error) { error.value = res.error; return }
     profileData.value = res?.data ?? res
   } catch (e: any) {

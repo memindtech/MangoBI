@@ -1070,7 +1070,7 @@ function selectAggCol(i: number, colName: string) {
   closeAggDropdown()
 }
 
-// ── Finish = save config + generate SQL + close ───────────────────────────
+// ── Finish = apply sort defaults + generate SQL + close tool modal ────────
 function finish() {
   if (nodeType.value === 'sort' && store.modalNodeId && !sortItems.value.length && !sortExplicitlyCleared.value && upstreamCols.value.length) {
     store.updateNodeData(store.modalNodeId, {
@@ -1081,6 +1081,13 @@ function finish() {
   store.newToolNodeId = null
   generateSQL()
   store.modalNodeId = null
+}
+
+// ── Finish & Save = close tool modal → open FinishModal ──────────────────
+async function finishAndSave() {
+  finish()                    // apply sort defaults + generateSQL + close tool modal
+  await nextTick()            // let Vue flush the modal-close DOM update first
+  store.openFinishModal()     // then trigger FinishModal via store action
 }
 
 function close() {
@@ -2769,7 +2776,7 @@ const finishBtnStyle = computed(() => {
               class="text-xs px-4 py-2 border rounded-lg hover:bg-accent transition-colors">
               ยกเลิก
             </button>
-            <button @click="finish"
+            <button @click="finishAndSave"
               class="text-xs px-5 py-2 text-white rounded-lg font-semibold hover:opacity-90 transition-opacity flex items-center gap-1.5"
               :style="finishBtnStyle"
             >

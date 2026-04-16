@@ -3,7 +3,7 @@
  * Routes: MangoBI/<action>
  */
 
-const BASE        = 'Planning/MangoBI'
+const BASE        = 'MangoBI'
 const BASE_PUBLIC = 'Planning/Public'
 
 // Module-level cache — shared across all composable instances within the same session.
@@ -105,6 +105,11 @@ export function useMangoBIApi() {
     return res?.data ?? []
   }
 
+  async function listPublicDataModels(): Promise<BIListItem[]> {
+    const res: any = await $xt.getServer(`${BASE}/GetDataModels?public=true`)
+    return res?.data ?? []
+  }
+
   async function loadDataModel(id: string): Promise<any> {
     const res: any = await $xt.getServer(`${BASE}/GetDataModel?id=${id}`)
     return res?.data ?? null
@@ -115,6 +120,7 @@ export function useMangoBIApi() {
     name:          string
     nodesJson:     string
     relationsJson: string
+    isPublic?:     boolean
   }): Promise<string | null> {
     const res: any = await $xt.postServerJson(`${BASE}/SaveDataModel`, payload)
     return res?.data?.id ?? res?.id ?? null
@@ -132,6 +138,11 @@ export function useMangoBIApi() {
     return res?.data ?? []
   }
 
+  async function listPublicSQLBuilders(): Promise<BIListItem[]> {
+    const res: any = await $xt.getServer(`${BASE}/GetSQLBuilders?public=true`)
+    return res?.data ?? []
+  }
+
   async function loadSQLBuilder(id: string): Promise<any> {
     const res: any = await $xt.getServer(`${BASE}/GetSQLBuilder?id=${id}`)
     return res?.data ?? null
@@ -144,6 +155,7 @@ export function useMangoBIApi() {
     edgesJson:     string
     sqlText:       string
     columnMapping?: string   // JSON: ColumnMapEntry[]
+    isPublic?:     boolean
   }): Promise<string | null> {
     const res: any = await $xt.postServerJson(`${BASE}/SaveSQLBuilder`, payload)
     return res?.data?.id ?? res?.id ?? null
@@ -168,8 +180,8 @@ export function useMangoBIApi() {
     loadPublicReport,
     listReports, loadReport, saveReport, deleteReport,
     prefetchReport, invalidateReport,
-    listDataModels, loadDataModel, saveDataModel, deleteDataModel,
-    listSQLBuilders, loadSQLBuilder, saveSQLBuilder, deleteSQLBuilder,
+    listDataModels, listPublicDataModels, loadDataModel, saveDataModel, deleteDataModel,
+    listSQLBuilders, listPublicSQLBuilders, loadSQLBuilder, saveSQLBuilder, deleteSQLBuilder,
     updateStructure,
   }
 }

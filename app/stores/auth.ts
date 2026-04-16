@@ -89,9 +89,9 @@ export const useAuthStore = defineStore('auth', () => {
       return false
     }
 
-    // session เก่าไม่มี empname_t → ดึงจาก Planning/MangoBI/Me โดยตรง (reactive update)
+    // session เก่าไม่มี empname_t → ดึงจาก MangoBI/Me โดยตรง (reactive update)
     if (!profile.value.empname_t) {
-      $xt.getServer('Planning/MangoBI/Me').then((res: any) => {
+      $xt.getServer('MangoBI/Me').then((res: any) => {
         const data = res?.data ?? res
         if (data?.empname_t) {
           profile.value = {

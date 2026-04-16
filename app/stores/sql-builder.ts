@@ -19,6 +19,10 @@ export const useSqlBuilderStore = defineStore('sql-builder', () => {
   // ── UI State ────────────────────────────────────────────────────────────
   const generatedSQL   = ref('')
   const sqlPanelOpen   = ref(true)
+  const savedId           = ref<string | null>(null)   // current cloud-saved record id
+  const savedName         = ref('')
+  const savedIsPublic     = ref(false)
+  const showFinishModal   = ref(false)               // shared trigger: open save-to-API modal
   const activeEdgeId    = ref<string | null>(null)
   const selectedNodeId  = ref<string | null>(null)
   const selectedNodeIds = ref<string[]>([])
@@ -337,6 +341,10 @@ export const useSqlBuilderStore = defineStore('sql-builder', () => {
     localStorage.removeItem(STORAGE_KEY)
   }
 
+  // ── Finish Modal ────────────────────────────────────────────────────────
+  function openFinishModal()  { showFinishModal.value = true  }
+  function closeFinishModal() { showFinishModal.value = false }
+
   // ── Column Cache ────────────────────────────────────────────────────────
   function cacheColumns(tableName: string, cols: ColumnInfo[]) {
     columnCache.value = { ...columnCache.value, [tableName]: cols }
@@ -348,7 +356,8 @@ export const useSqlBuilderStore = defineStore('sql-builder', () => {
 
   return {
     // State
-    nodes, edges, generatedSQL, sqlPanelOpen, activeEdgeId, selectedNodeId, selectedNodeIds,
+    nodes, edges, generatedSQL, sqlPanelOpen, savedId, savedName, savedIsPublic, showFinishModal,
+    activeEdgeId, selectedNodeId, selectedNodeIds,
     modalNodeId, filterNodeId, pendingToolId, pendingVp, relationEdgeId, newToolNodeId, search, clipboard, groupModalData,
     modules, objects, expandedMods, loadingMods, loadingObjs, searchLoading,
     syncStatus, syncLastAt,
@@ -361,6 +370,7 @@ export const useSqlBuilderStore = defineStore('sql-builder', () => {
     // Actions
     addNode, removeNode, updateNodeData, nextNodeId,
     setJoinType, updateEdgeData, resetCanvas,
+    openFinishModal, closeFinishModal,
     saveToStorage, loadFromStorage, clearStorage,
     cacheColumns, getCachedColumns,
     listTemplates, saveTemplate, loadTemplate, deleteTemplate,

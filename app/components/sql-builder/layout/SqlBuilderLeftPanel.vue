@@ -2,12 +2,76 @@
 /**
  * SQL Builder — Left Panel (Table Browser)
  */
-import { Database, Search, RefreshCw, X, ChevronRight, AlertTriangle, WifiOff } from 'lucide-vue-next'
+import { Database, Search, RefreshCw, X, ChevronRight, Globe, Lock, Loader2, BookMarked } from 'lucide-vue-next'
 import { useSqlBuilderStore } from '~/stores/sql-builder'
 import { useErpData } from '~/composables/sql-builder/useErpData'
+import { useMangoBIApi } from '~/composables/useMangoBIApi'
+import type { BIListItem } from '~/composables/useMangoBIApi'
 
 const store   = useSqlBuilderStore()
 const erpData = useErpData()
+const api     = useMangoBIApi()
+
+// ── SQL Builder Templates ────────────────────────────────────────────
+const tplOpen      = ref(true)
+const myTpls       = ref<BIListItem[]>([])
+const publicTpls   = ref<BIListItem[]>([])
+const tplLoading   = ref(false)
+const tplAppending = ref<string | null>(null)
+
+async function loadTemplates() {
+  tplLoading.value = true
+  try {
+    const [mine, pub] = await Promise.all([
+      api.listSQLBuilders(),
+      api.listPublicSQLBuilders(),
+    ])
+    myTpls.value     = mine
+    // exclude own items that are already in "ของฉัน"
+    const myIds      = new Set(mine.map(i => i.id))
+    publicTpls.value = pub.filter(i => !myIds.has(i.id))
+  } catch {
+    myTpls.value = []; publicTpls.value = []
+  } finally {
+    tplLoading.value = false
+  }
+}
+
+async function appendTemplate(item: BIListItem) {
+  if (tplAppending.value) return
+  tplAppending.value = item.id
+  try {
+    const data = await api.loadSQLBuilder(item.id)
+    if (!data) return
+    const rawNodes = JSON.parse(data.nodesJson ?? '[]')
+    const rawEdges = JSON.parse(data.edgesJson ?? '[]')
+
+    // Remap IDs to avoid collision with existing nodes
+    const suffix = `-${Date.now()}`
+    const idMap  = new Map<string, string>()
+    const dy     = store.nodes.length
+      ? Math.max(...store.nodes.map((n: any) => (n.position?.y ?? 0) + 200)) + 80
+      : 0
+
+    const remapped = rawNodes.map((n: any) => {
+      const newId = n.id + suffix
+      idMap.set(n.id, newId)
+      return { ...n, id: newId, position: { x: n.position?.x ?? 0, y: (n.position?.y ?? 0) + dy } }
+    })
+    const remappedEdges = rawEdges.map((e: any) => ({
+      ...e,
+      id:     e.id + suffix,
+      source: idMap.get(e.source) ?? (e.source + suffix),
+      target: idMap.get(e.target) ?? (e.target + suffix),
+    }))
+
+    store.nodes = [...store.nodes, ...remapped]
+    store.edges = [...store.edges, ...remappedEdges]
+  } catch { /* ignore */ }
+  finally { tplAppending.value = null }
+}
+
+onMounted(() => loadTemplates())
 
 function onDragStart(e: DragEvent, obj: any) {
   e.dataTransfer?.setData('application/json', JSON.stringify(obj))
@@ -184,6 +248,76 @@ const syncTooltip = computed(() => ({
             </div>
           </template>
         </template>
+
+      </div>
+    </div>
+
+    <!-- ── SQL Builder Templates ────────────────────────────────────── -->
+    <div class="border-t shrink-0">
+
+      <!-- Section header -->
+      <button
+        class="w-full flex items-center gap-2 px-3 py-2 bg-muted/30 hover:bg-muted/60 transition-colors text-left"
+        @click="tplOpen = !tplOpen"
+      >
+        <ChevronRight :class="['size-3.5 text-muted-foreground shrink-0 transition-transform duration-150', tplOpen ? 'rotate-90' : '']" />
+        <BookMarked class="size-3.5 text-violet-400 shrink-0" />
+        <span class="text-xs font-bold text-muted-foreground uppercase tracking-wide flex-1">Templates</span>
+        <Loader2 v-if="tplLoading" class="size-3.5 animate-spin text-muted-foreground shrink-0" />
+        <button v-else @click.stop="loadTemplates()" class="text-muted-foreground hover:text-foreground shrink-0" title="รีเฟรช">
+          <RefreshCw class="size-3.5" />
+        </button>
+      </button>
+
+      <div v-if="tplOpen" class="max-h-64 overflow-y-auto">
+
+        <!-- ของฉัน -->
+        <div class="px-3 py-1 flex items-center gap-1.5 sticky top-0 bg-background/90 backdrop-blur-sm z-10">
+          <Lock class="size-2.5 text-muted-foreground/60" />
+          <span class="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wide">ของฉัน</span>
+          <span class="text-[9px] text-muted-foreground/40 font-mono">({{ myTpls.length }})</span>
+        </div>
+        <div v-if="!myTpls.length && !tplLoading"
+          class="px-4 pb-2 text-[10px] text-muted-foreground/50 italic">ยังไม่มี</div>
+        <button
+          v-for="t in myTpls" :key="t.id"
+          @click="appendTemplate(t)"
+          :disabled="tplAppending === t.id"
+          class="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-accent transition-colors text-left disabled:opacity-50 border-b border-border/10 last:border-0"
+        >
+          <Loader2 v-if="tplAppending === t.id" class="size-3 animate-spin text-violet-400 shrink-0" />
+          <BookMarked v-else class="size-3 text-violet-400 shrink-0" />
+          <div class="flex-1 min-w-0">
+            <p class="text-xs truncate">{{ t.name }}</p>
+            <p class="text-[9px] text-muted-foreground/50 truncate">
+              {{ new Date(t.updatedAt ?? t.createdAt).toLocaleDateString('th-TH') }}
+            </p>
+          </div>
+        </button>
+
+        <!-- สาธารณะ -->
+        <div class="px-3 py-1 flex items-center gap-1.5 sticky top-0 bg-background/90 backdrop-blur-sm z-10 mt-1">
+          <Globe class="size-2.5 text-sky-400/80" />
+          <span class="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wide">สาธารณะ</span>
+          <span class="text-[9px] text-muted-foreground/40 font-mono">({{ publicTpls.length }})</span>
+        </div>
+        <div v-if="!publicTpls.length && !tplLoading"
+          class="px-4 pb-2 text-[10px] text-muted-foreground/50 italic">ยังไม่มี</div>
+        <button
+          v-for="t in publicTpls" :key="t.id"
+          @click="appendTemplate(t)"
+          :disabled="tplAppending === t.id"
+          class="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-accent transition-colors text-left disabled:opacity-50 border-b border-border/10 last:border-0"
+        >
+          <Loader2 v-if="tplAppending === t.id" class="size-3 animate-spin text-sky-400 shrink-0" />
+          <Globe v-else class="size-3 text-sky-400 shrink-0" />
+          <div class="flex-1 min-w-0">
+            <p class="text-xs truncate">{{ t.name }}</p>
+            <p class="text-[9px] text-muted-foreground/50 truncate">
+              {{ t.createdBy }} · {{ new Date(t.updatedAt ?? t.createdAt).toLocaleDateString('th-TH') }}
+            </p>
+          </div>
+        </button>
 
       </div>
     </div>

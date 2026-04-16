@@ -5,9 +5,9 @@
  * Added: Template save/load, JSON export, Finish (API save), Load from cloud
  */
 import {
-  Code2, ArrowRight, Trash2, Undo2, Redo2, Save, FolderOpen,
-  BookmarkPlus, BookMarked, Download, X as XIcon, CheckCircle2,
-  CloudUpload, CloudDownload, Loader2, FileCode2, CheckCheck, AlertCircle,
+  Code2, ArrowRight, Trash2, Undo2, Redo2,
+  BookmarkPlus, BookMarked, Download, X as XIcon,
+  CloudDownload, Loader2, FileCode2, CheckCheck, Globe,
 } from 'lucide-vue-next'
 import { MarkerType } from '@vue-flow/core'
 import { getEdgeStyle } from '~/types/sql-builder'
@@ -49,91 +49,14 @@ function deleteTemplate(id: string) {
 
 function closeTemplateMenu() { showTemplateMenu.value = false }
 
-// ── Finish (Save to API) ──────────────────────────────────────────────────
-const showFinishModal = ref(false)
-const finishName      = ref('')
-const finishSaving    = ref(false)
-const finishError     = ref('')
-const finishSuccess   = ref(false)
-const currentSavedId  = ref<string | null>(null)
-
-// Column mapping validation
-const colMapLoading = ref(false)
-const colMapError   = ref('')
-const colMapRows    = ref<{ columnName: string; dataType: string; remark: string; newName: string }[]>([])
-
-const { $xt } = useNuxtApp() as any
-
-async function openFinishModal() {
-  finishName.value    = ''
-  finishError.value   = ''
-  finishSuccess.value = false
-  colMapError.value   = ''
-  colMapRows.value    = []
-  showFinishModal.value = true
-
-  if (!store.generatedSQL) return
-
-  colMapLoading.value = true
-  try {
-    const res: any = await $xt.postServerJson('AnywhereAPI/SQLGenerator/GeneratorSQL', {
-      SqlText: store.generatedSQL,
-    })
-    const raw = res?.data ?? res ?? {}
-    colMapRows.value = Object.values(raw)
-      .filter((v: any) => v?.ColumnName)
-      .map((v: any) => ({
-        columnName: String(v.ColumnName),
-        dataType:   String(v.DataType ?? ''),
-        remark:     String(v.Remark   ?? ''),
-        newName:    String(v.Remark || v.ColumnName),
-      }))
-  } catch (e: any) {
-    colMapError.value = e?.message ?? 'โหลดข้อมูลคอลัมน์ไม่สำเร็จ'
-  } finally {
-    colMapLoading.value = false
-  }
-}
-
-async function doFinish() {
-  const name = finishName.value.trim()
-  if (!name) { finishError.value = 'กรุณาระบุชื่อ'; return }
-  finishSaving.value = true
-  finishError.value  = ''
-  try {
-    const columnMapping = colMapRows.value.map(r => ({
-      columnName:    r.columnName,
-      dataType:      r.dataType,
-      newColumnName: r.newName,
-    }))
-    const id = await api.saveSQLBuilder({
-      id:            currentSavedId.value ?? undefined,
-      name,
-      nodesJson:     JSON.stringify(store.nodes),
-      edgesJson:     JSON.stringify(store.edges),
-      sqlText:       store.generatedSQL,
-      columnMapping: JSON.stringify(columnMapping),
-    })
-    if (id) {
-      currentSavedId.value = id
-      finishSuccess.value  = true
-      setTimeout(() => { showFinishModal.value = false; finishSuccess.value = false }, 1200)
-    } else {
-      finishError.value = 'บันทึกไม่สำเร็จ'
-    }
-  } catch (e: any) {
-    finishError.value = e?.message ?? 'เกิดข้อผิดพลาด'
-  } finally {
-    finishSaving.value = false
-  }
-}
-
 // ── Load from cloud / templates ───────────────────────────────────────────
 const showLoadModal   = ref(false)
 const cloudItems      = ref<BIListItem[]>([])
+const publicItems     = ref<BIListItem[]>([])
 const loadingCloud    = ref(false)
+const loadingPublic   = ref(false)
 const deletingId      = ref<string | null>(null)
-const loadTab         = ref<'cloud' | 'local' | 'import'>('cloud')
+const loadTab         = ref<'cloud' | 'local' | 'import' | 'public'>('cloud')
 const appendingId     = ref<string | null>(null)
 
 // ── Import Query ──────────────────────────────────────────────────────────
@@ -313,8 +236,8 @@ const localTemplates  = computed(() => store.listTemplates())
 
 async function openLoadModal() {
   showLoadModal.value = true
-  loadingCloud.value  = true
   loadTab.value       = 'cloud'
+  loadingCloud.value  = true
   try {
     cloudItems.value = await api.listSQLBuilders()
   } catch {
@@ -323,6 +246,22 @@ async function openLoadModal() {
     loadingCloud.value = false
   }
 }
+
+async function loadPublicItems() {
+  if (publicItems.value.length) return   // already loaded
+  loadingPublic.value = true
+  try {
+    publicItems.value = await api.listPublicSQLBuilders()
+  } catch {
+    publicItems.value = []
+  } finally {
+    loadingPublic.value = false
+  }
+}
+
+watch(loadTab, (tab) => {
+  if (tab === 'public') loadPublicItems()
+})
 
 /** Remap node IDs + edge refs, offset positions, then append to canvas */
 function appendNodesToCanvas(rawNodes: any[], rawEdges: any[]): any[] {
@@ -372,9 +311,9 @@ async function addCloudToCanvas(item: BIListItem) {
     const edges = JSON.parse(data.edgesJson ?? '[]')
     appendNodesToCanvas(nodes, edges)
     // Set as current save target if canvas was empty before
-    if (!currentSavedId.value) {
-      currentSavedId.value = item.id
-      finishName.value     = item.name
+    if (!store.savedId) {
+      store.savedId   = item.id
+      store.savedName = item.name
     }
   } catch {
     // ignore
@@ -442,19 +381,6 @@ function nodeStats(nodes: any[]) {
 
       <div class="h-4 w-px bg-border" />
 
-      <!-- Save / Load (browser storage) -->
-      <button @click="store.saveToStorage()"
-        class="flex items-center gap-1 text-xs px-2 py-1.5 border rounded-lg hover:bg-accent transition-colors"
-        title="Save to browser">
-        <Save class="size-3.5" />
-      </button>
-      <button @click="store.loadFromStorage()"
-        class="flex items-center gap-1 text-xs px-2 py-1.5 border rounded-lg hover:bg-accent transition-colors"
-        title="Load from browser">
-        <FolderOpen class="size-3.5" />
-      </button>
-
-      <div class="h-4 w-px bg-border" />
 
       <!-- Template save/load dropdown -->
       <div class="relative">
@@ -532,14 +458,6 @@ function nodeStats(nodes: any[]) {
         <span class="hidden sm:inline">Load</span>
       </button>
 
-      <!-- Finish (Save to API) -->
-      <button @click="openFinishModal" :disabled="!store.hasNodes"
-        class="flex items-center gap-1.5 text-xs px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-semibold transition-colors disabled:opacity-40"
-        title="บันทึกลง server">
-        <CloudUpload class="size-3.5" />
-        Finish
-      </button>
-
       <!-- Send to DataModel -->
       <button @click="sendToDataModel" :disabled="!store.generatedSQL"
         class="flex items-center gap-1.5 text-xs px-3 py-1.5 bg-orange-500 hover:bg-orange-600 text-white rounded-lg font-semibold transition-colors disabled:opacity-40">
@@ -554,120 +472,6 @@ function nodeStats(nodes: any[]) {
       </button>
     </div>
   </header>
-
-  <!-- ── Finish Modal ──────────────────────────────────────────────────── -->
-  <Teleport to="body">
-    <Transition name="fade">
-      <div v-if="showFinishModal"
-        class="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 p-4"
-        @click.self="showFinishModal = false">
-        <div class="bg-background border rounded-2xl shadow-2xl w-full max-w-2xl flex flex-col max-h-[90vh]">
-
-          <!-- Header -->
-          <div class="flex items-center gap-2 px-6 pt-6 pb-4 shrink-0">
-            <CloudUpload class="size-5 text-emerald-500" />
-            <h2 class="font-bold text-sm">บันทึก SQL Builder</h2>
-            <button @click="showFinishModal = false" class="ml-auto text-muted-foreground hover:text-foreground">
-              <XIcon class="size-4" />
-            </button>
-          </div>
-
-          <!-- Success state -->
-          <div v-if="finishSuccess" class="flex flex-col items-center gap-3 py-10 px-6">
-            <CheckCircle2 class="size-10 text-emerald-500" />
-            <p class="text-sm font-semibold text-emerald-600">บันทึกสำเร็จ</p>
-          </div>
-
-          <!-- Form state -->
-          <template v-else>
-            <!-- Name input -->
-            <div class="px-6 pb-4 shrink-0">
-              <label class="text-xs text-muted-foreground mb-1 block">ชื่อ</label>
-              <input
-                v-model="finishName"
-                placeholder="ตั้งชื่อ SQL Builder…"
-                class="w-full text-sm border rounded-lg px-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
-                autofocus
-              />
-            </div>
-
-            <!-- Column Mapping Table -->
-            <div class="px-6 pb-4 flex flex-col gap-2 min-h-0 flex-1">
-              <div class="flex items-center justify-between shrink-0">
-                <p class="text-xs font-semibold text-muted-foreground">ตรวจสอบ Column Names</p>
-                <span v-if="colMapRows.length" class="text-[10px] text-emerald-600 font-mono">{{ colMapRows.length }} columns</span>
-              </div>
-
-              <!-- Loading -->
-              <div v-if="colMapLoading" class="flex items-center justify-center gap-2 py-6 text-muted-foreground text-xs border rounded-lg">
-                <Loader2 class="size-4 animate-spin" /> กำลังโหลดข้อมูล column…
-              </div>
-
-              <!-- Error -->
-              <div v-else-if="colMapError" class="flex items-center gap-2 py-3 px-3 text-xs text-amber-600 bg-amber-500/10 border border-amber-500/20 rounded-lg">
-                <AlertCircle class="size-3.5 shrink-0" /> {{ colMapError }}
-              </div>
-
-              <!-- No SQL generated -->
-              <div v-else-if="!colMapRows.length" class="text-center py-6 text-[10px] text-muted-foreground/60 italic border border-dashed rounded-lg">
-                ไม่มีข้อมูล column — กรุณา Generate SQL ก่อนบันทึก
-              </div>
-
-              <!-- Table -->
-              <div v-else class="overflow-auto border rounded-lg flex-1">
-                <table class="w-full text-[11px]">
-                  <thead class="sticky top-0 bg-muted/80 backdrop-blur-sm">
-                    <tr>
-                      <th class="px-2.5 py-2 text-left font-semibold text-muted-foreground w-8">#</th>
-                      <th class="px-2.5 py-2 text-left font-semibold text-muted-foreground">ColumnName</th>
-                      <th class="px-2.5 py-2 text-left font-semibold text-muted-foreground w-24">DataType</th>
-                      <th class="px-2.5 py-2 text-left font-semibold text-emerald-600">NewColumnName</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="(row, i) in colMapRows" :key="row.columnName"
-                      class="border-t hover:bg-accent/30 transition-colors"
-                      :class="row.newName !== row.columnName ? 'bg-emerald-500/5' : ''">
-                      <td class="px-2.5 py-1.5 text-muted-foreground/60 font-mono">{{ i + 1 }}</td>
-                      <td class="px-2.5 py-1.5 font-mono text-foreground/80">{{ row.columnName }}</td>
-                      <td class="px-2.5 py-1.5 text-muted-foreground/70">{{ row.dataType }}</td>
-                      <td class="px-2.5 py-1.5">
-                        <input
-                          v-model="row.newName"
-                          class="w-full text-[11px] font-mono border rounded px-2 py-0.5 bg-background
-                                 focus:outline-none focus:ring-1 focus:ring-emerald-400
-                                 placeholder:text-muted-foreground/40"
-                          :class="row.newName !== row.columnName ? 'border-emerald-400/60 text-emerald-600' : ''"
-                          :placeholder="row.columnName"
-                        />
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            <!-- Footer -->
-            <div class="px-6 pb-6 shrink-0">
-              <p v-if="finishError" class="text-xs text-destructive mb-2">{{ finishError }}</p>
-              <div class="flex gap-2 justify-end">
-                <button @click="showFinishModal = false"
-                  class="text-xs px-3 py-1.5 border rounded-lg hover:bg-accent transition-colors">
-                  ยกเลิก
-                </button>
-                <button @click="doFinish" :disabled="finishSaving || colMapLoading || !finishName.trim()"
-                  class="flex items-center gap-1.5 text-xs px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-semibold transition-colors disabled:opacity-50">
-                  <Loader2 v-if="finishSaving" class="size-3.5 animate-spin" />
-                  <CloudUpload v-else class="size-3.5" />
-                  บันทึก
-                </button>
-              </div>
-            </div>
-          </template>
-        </div>
-      </div>
-    </Transition>
-  </Teleport>
 
   <!-- ── Load Modal (Cloud + Local templates) ──────────────────────────── -->
   <Teleport to="body">
@@ -692,7 +496,14 @@ function nodeStats(nodes: any[]) {
               :class="['flex-1 text-xs py-1 rounded-md font-medium transition-colors',
                 loadTab === 'cloud' ? 'bg-background shadow text-sky-600' : 'text-muted-foreground hover:text-foreground']"
             >
-              Template <span class="text-[10px] opacity-60">({{ cloudItems.length }})</span>
+              ของฉัน <span class="text-[10px] opacity-60">({{ cloudItems.length }})</span>
+            </button>
+            <button
+              @click="loadTab = 'public'"
+              :class="['flex-1 text-xs py-1 rounded-md font-medium transition-colors',
+                loadTab === 'public' ? 'bg-background shadow text-sky-600' : 'text-muted-foreground hover:text-foreground']"
+            >
+              <Globe class="size-3 inline-block mr-0.5 -mt-px" />สาธารณะ
             </button>
             <button
               @click="loadTab = 'local'"
@@ -706,7 +517,7 @@ function nodeStats(nodes: any[]) {
               :class="['flex-1 text-xs py-1 rounded-md font-medium transition-colors',
                 loadTab === 'import' ? 'bg-background shadow text-emerald-600' : 'text-muted-foreground hover:text-foreground']"
             >
-              Import Query
+              Import SQL
             </button>
           </div>
 
@@ -747,6 +558,39 @@ function nodeStats(nodes: any[]) {
                 >
                   <Loader2 v-if="deletingId === item.id" class="size-3.5 animate-spin" />
                   <Trash2 v-else class="size-3.5" />
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- ── Public tab ── -->
+          <div v-else-if="loadTab === 'public'">
+            <div v-if="loadingPublic" class="flex items-center justify-center gap-2 py-8 text-muted-foreground text-xs">
+              <Loader2 class="size-4 animate-spin" /> กำลังโหลด…
+            </div>
+            <div v-else-if="!publicItems.length" class="text-center py-8 text-xs text-muted-foreground/60 italic">
+              ยังไม่มี Query สาธารณะ
+            </div>
+            <div v-else class="flex flex-col gap-1 max-h-80 overflow-y-auto -mx-1 px-1">
+              <div
+                v-for="item in publicItems" :key="item.id"
+                class="flex items-center gap-2 px-3 py-2.5 rounded-xl hover:bg-accent transition-colors group"
+              >
+                <Globe class="size-3.5 text-sky-400 shrink-0" />
+                <div class="flex-1 min-w-0">
+                  <p class="text-sm font-medium truncate">{{ item.name }}</p>
+                  <p class="text-[10px] text-muted-foreground/60">
+                    {{ item.createdBy }} ·
+                    {{ new Date(item.updatedAt ?? item.createdAt).toLocaleString('th-TH') }}
+                  </p>
+                </div>
+                <button
+                  @click.stop="addCloudToCanvas(item)"
+                  :disabled="appendingId === item.id"
+                  class="flex items-center gap-1 text-[10px] px-2.5 py-1 bg-sky-500 hover:bg-sky-600 text-white rounded-lg font-semibold transition-colors disabled:opacity-50 shrink-0"
+                >
+                  <Loader2 v-if="appendingId === item.id" class="size-3 animate-spin" />
+                  <span v-else>+ Add</span>
                 </button>
               </div>
             </div>

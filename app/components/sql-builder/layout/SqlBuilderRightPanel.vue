@@ -13,6 +13,7 @@ const props = defineProps<{ columnsLoading?: boolean }>()
 const emit = defineEmits<{
   addTool: [toolId: string]
   generate: []
+  finish: []
 }>()
 
 // Processing tool nodes (create toolNode)
@@ -58,7 +59,7 @@ const tools = [
     <!-- Finish button -->
     <div class="p-3 border-t">
       <button
-        @click="emit('generate')"
+        @click="emit('finish')"
         class="w-full flex flex-col items-center justify-center gap-1 py-3 rounded-xl text-white transition-colors"
         :class="props.columnsLoading ? 'bg-green-500/70' : 'bg-green-500 hover:bg-green-600'"
       >

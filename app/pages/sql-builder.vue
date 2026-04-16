@@ -76,6 +76,12 @@ function onAddTool(toolId: string) {
   const vp = getViewport()
   dragDrop.addToolNode(toolId, vp.x, vp.y, vp.zoom)
 }
+
+async function onFinish() {
+  generateSQL()
+  await nextTick()
+  store.openFinishModal()
+}
 </script>
 
 <template>
@@ -85,12 +91,13 @@ function onAddTool(toolId: string) {
     <div class="flex flex-1 overflow-hidden">
       <SqlBuilderLayoutSqlBuilderLeftPanel />
       <SqlBuilderLayoutSqlBuilderCanvas @drop="dragDrop.onDrop" />
-      <SqlBuilderLayoutSqlBuilderRightPanel @addTool="onAddTool" @generate="generateSQL" :columns-loading="columnsLoading" />
+      <SqlBuilderLayoutSqlBuilderRightPanel @addTool="onAddTool" @generate="generateSQL" @finish="onFinish" :columns-loading="columnsLoading" />
     </div>
 
     <SqlBuilderModalsToolConfigModal />
     <SqlBuilderModalsRelationModal />
     <SqlBuilderModalsFilterModal />
     <SqlBuilderModalsGroupSelectModal />
+    <SqlBuilderModalsFinishModal />
   </div>
 </template>

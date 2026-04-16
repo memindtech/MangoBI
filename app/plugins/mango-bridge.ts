@@ -13,6 +13,7 @@ import Decimal from 'decimal.js'
  */
 
 const PLANNING_PREFIXES = ['Planning/', 'planning/']
+const BI_PREFIXES       = ['MangoBI/']
 
 function makeProxyFetcher(prefix: string, onUnauthorized?: () => void) {
   return $fetch.create({
@@ -42,9 +43,12 @@ export default defineNuxtPlugin((_nuxtApp) => {
 
   const planningProxy = makeProxyFetcher('/api/proxy/planning/', handleUnauthorized)
   const mainProxy     = makeProxyFetcher('/api/proxy/main/',     handleUnauthorized)
+  const biProxy       = makeProxyFetcher('/api/proxy/bi/',       handleUnauthorized)
 
   function getFetcher(url: string) {
-    return PLANNING_PREFIXES.some(p => url.startsWith(p)) ? planningProxy : mainProxy
+    if (BI_PREFIXES.some(p => url.startsWith(p)))       return biProxy
+    if (PLANNING_PREFIXES.some(p => url.startsWith(p))) return planningProxy
+    return mainProxy
   }
 
   const config = useRuntimeConfig()

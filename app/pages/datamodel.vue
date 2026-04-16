@@ -7,7 +7,7 @@ import '@vue-flow/controls/dist/style.css'
 import {
   Database, Download, Loader2, AlertCircle, Bug,
   GitMerge, Home, Trash2, Link2, X, Table2, ArrowRight,
-  Shuffle, Plus, ChevronDown, Layers, RotateCcw,
+  Shuffle, Plus, ChevronDown, Layers, RotateCcw, Globe, Lock,
 } from 'lucide-vue-next'
 import {
   applyTransform, componentKey,
@@ -470,16 +470,22 @@ const datasetOptions = Object.entries(DATASET_META).map(([key, m]) => ({
 
 // ─── My SQL Builder (saved) ───────────────────────────────────────────────────
 const savedSqlItems   = ref<import('~/composables/useMangoBIApi').BIListItem[]>([])
+const publicSqlItems  = ref<import('~/composables/useMangoBIApi').BIListItem[]>([])
 const savedSqlLoading = ref(false)
 const savedSqlAdding  = ref<string | null>(null)
 
 async function loadSavedSqlList() {
   savedSqlLoading.value = true
   try {
-    // Backend already filters by EmpNo == current user — no client-side filter needed
-    savedSqlItems.value = await biApi.listSQLBuilders()
+    const [mine, pub] = await Promise.all([
+      biApi.listSQLBuilders(),
+      biApi.listPublicSQLBuilders(),
+    ])
+    savedSqlItems.value  = mine
+    const myIds          = new Set(mine.map(i => i.id))
+    publicSqlItems.value = pub.filter(i => !myIds.has(i.id))
   } catch {
-    savedSqlItems.value = []
+    savedSqlItems.value = []; publicSqlItems.value = []
   } finally {
     savedSqlLoading.value = false
   }
@@ -492,7 +498,7 @@ async function addSavedSqlTable(item: import('~/composables/useMangoBIApi').BILi
     const full = await biApi.loadSQLBuilder(item.id)
     if (!full?.sqlText) throw new Error('ไม่พบ SQL ของชุดนี้')
 
-    const res: any = await $xt.postServerJson('Planning/MangoBI/ExecuteCustomSql', {
+    const res: any = await $xt.postServerJson('MangoBI/ExecuteCustomSql', {
       sql:  full.sqlText,
       name: customName.value.trim() || item.name,
     })
@@ -602,7 +608,7 @@ async function addRawSqlTable() {
   rawSqlLoading.value = true
   errorMsg.value = ''
   try {
-    const res: any = await $xt.postServerJson('Planning/MangoBI/ExecuteCustomSql', {
+    const res: any = await $xt.postServerJson('MangoBI/ExecuteCustomSql', {
       sql:  rawSqlText.value.trim(),
       name: customName.value.trim() || 'Custom SQL',
     })
@@ -1396,14 +1402,18 @@ const biApi = useMangoBIApi()
 
 const dmSavedId    = ref<string | null>(null)   // current saved record id
 const dmSaveName   = ref('')
+const dmIsPublic   = ref(false)
 const dmSaving     = ref(false)
 const dmSaveMsg    = ref('')
 const showDmSave   = ref(false)
 
-const showDmLoad   = ref(false)
-const dmLoadList   = ref<import('~/composables/useMangoBIApi').BIListItem[]>([])
-const dmLoadBusy   = ref(false)
-const dmDeleting   = ref<string | null>(null)
+const showDmLoad    = ref(false)
+const dmLoadTab     = ref<'mine' | 'public'>('mine')
+const dmLoadList    = ref<import('~/composables/useMangoBIApi').BIListItem[]>([])
+const dmPublicList  = ref<import('~/composables/useMangoBIApi').BIListItem[]>([])
+const dmLoadBusy    = ref(false)
+const dmPublicBusy  = ref(false)
+const dmDeleting    = ref<string | null>(null)
 
 async function openDmSave() {
   dmSaveMsg.value  = ''
@@ -1440,6 +1450,7 @@ async function doSaveDm() {
       name:         dmSaveName.value.trim(),
       nodesJson,
       relationsJson,
+      isPublic:     dmIsPublic.value,
     })
     if (savedId) {
       dmSavedId.value = savedId
@@ -1454,12 +1465,26 @@ async function doSaveDm() {
 
 async function openDmLoad() {
   showDmLoad.value  = true
+  dmLoadTab.value   = 'mine'
   dmLoadBusy.value  = true
   dmLoadList.value  = []
+  dmPublicList.value = []
   try { dmLoadList.value = await biApi.listDataModels() }
   catch { dmLoadList.value = [] }
   finally { dmLoadBusy.value = false }
 }
+
+async function loadDmPublicTab() {
+  if (dmPublicList.value.length) return
+  dmPublicBusy.value = true
+  try { dmPublicList.value = await biApi.listPublicDataModels() }
+  catch { dmPublicList.value = [] }
+  finally { dmPublicBusy.value = false }
+}
+
+watch(dmLoadTab, (tab) => {
+  if (tab === 'public') loadDmPublicTab()
+})
 
 async function doLoadDm(id: string) {
   dmLoadBusy.value = true
@@ -1496,6 +1521,7 @@ async function doLoadDm(id: string) {
 
     dmSavedId.value  = id
     dmSaveName.value = row.name ?? ''
+    dmIsPublic.value = row.isPublic ?? false
     showDmLoad.value = false
     selectedNodeId.value = null
     selectedEdgeId.value = null
@@ -1746,6 +1772,47 @@ function clearDatamodel() {
                 <AlertCircle class="size-3 shrink-0 mt-0.5" />
                 <span class="break-all">{{ errorMsg }}</span>
               </div>
+
+              <!-- Public SQL Builder -->
+              <div class="flex items-center gap-1.5 pt-1">
+                <Globe class="size-3 text-sky-400 shrink-0" />
+                <p class="text-[10px] font-semibold text-muted-foreground flex-1">SQL Builder สาธารณะ</p>
+                <span class="text-[9px] text-muted-foreground/50 font-mono">({{ publicSqlItems.length }})</span>
+              </div>
+
+              <div v-if="savedSqlLoading" class="flex justify-center py-3">
+                <Loader2 class="size-4 animate-spin text-muted-foreground" />
+              </div>
+              <div v-else-if="!publicSqlItems.length"
+                class="flex flex-col items-center gap-1 py-3 text-[10px] text-muted-foreground/50 italic border border-dashed rounded-lg">
+                <Globe class="size-3.5" />
+                ยังไม่มี SQL Builder สาธารณะ
+              </div>
+              <div v-else class="flex flex-col gap-1 max-h-48 overflow-y-auto -mx-1 px-1">
+                <div
+                  v-for="item in publicSqlItems" :key="item.id"
+                  class="flex items-center gap-2 px-2.5 py-2 rounded-xl border border-sky-500/20 hover:bg-sky-500/5 transition-colors group"
+                >
+                  <Globe class="size-3 text-sky-400 shrink-0" />
+                  <div class="flex-1 min-w-0">
+                    <p class="text-xs font-medium truncate">{{ item.name }}</p>
+                    <p class="text-[9px] text-muted-foreground/60 font-mono truncate">
+                      {{ item.createdBy }} · {{ new Date(item.updatedAt ?? item.createdAt).toLocaleString('th-TH') }}
+                    </p>
+                  </div>
+                  <button
+                    @click="addSavedSqlTable(item)"
+                    :disabled="!!savedSqlAdding"
+                    class="flex items-center gap-1 text-[10px] px-2.5 py-1 bg-sky-500 hover:bg-sky-600
+                           text-white rounded-lg font-semibold transition-colors disabled:opacity-50 shrink-0"
+                  >
+                    <Loader2 v-if="savedSqlAdding === item.id" class="size-3 animate-spin" />
+                    <Plus v-else class="size-3" />
+                    <span v-if="savedSqlAdding !== item.id">Add</span>
+                  </button>
+                </div>
+              </div>
+
             </template>
 
             <!-- Passcode / SQL Template mode -->
@@ -2341,6 +2408,27 @@ function clearDatamodel() {
                 @keydown.enter="doSaveDm"
               />
             </div>
+            <!-- Public toggle -->
+            <button
+              type="button"
+              @click="dmIsPublic = !dmIsPublic"
+              :class="[
+                'w-full flex items-center gap-3 px-3 py-2 rounded-xl border transition-colors',
+                dmIsPublic
+                  ? 'bg-sky-500/10 border-sky-500/40 text-sky-600'
+                  : 'bg-muted/30 border-border text-muted-foreground hover:bg-accent'
+              ]"
+            >
+              <Globe v-if="dmIsPublic" class="size-4 shrink-0" />
+              <Lock v-else class="size-4 shrink-0" />
+              <div class="flex-1 text-left">
+                <p class="text-xs font-semibold">{{ dmIsPublic ? 'สาธารณะ' : 'ส่วนตัว' }}</p>
+                <p class="text-[10px] opacity-70">{{ dmIsPublic ? 'ทุกคนในระบบเห็นและโหลดได้' : 'มองเห็นเฉพาะคุณ' }}</p>
+              </div>
+              <div :class="['relative w-9 h-5 rounded-full transition-colors shrink-0', dmIsPublic ? 'bg-sky-500' : 'bg-muted-foreground/30']">
+                <div :class="['absolute top-0.5 size-4 rounded-full bg-white shadow transition-transform', dmIsPublic ? 'translate-x-4' : 'translate-x-0.5']" />
+              </div>
+            </button>
             <p v-if="dmSaveMsg" class="text-xs text-center"
                :class="dmSaveMsg.startsWith('✓') ? 'text-emerald-600' : 'text-red-500'">
               {{ dmSaveMsg }}
@@ -2366,45 +2454,100 @@ function clearDatamodel() {
       <Transition name="fade">
         <div v-if="showDmLoad" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
           @click.self="showDmLoad = false">
-          <div class="bg-background rounded-xl shadow-2xl w-[420px] flex flex-col max-h-[80vh]">
+          <div class="bg-background rounded-xl shadow-2xl w-[460px] flex flex-col max-h-[80vh]">
+
+            <!-- Header -->
             <div class="flex items-center justify-between px-5 py-4 border-b">
               <span class="font-semibold text-sm">{{ t('bi_load_dm_title') }}</span>
               <button @click="showDmLoad = false" class="text-muted-foreground hover:text-foreground">
                 <X class="size-4" />
               </button>
             </div>
-            <div class="flex-1 overflow-y-auto p-3">
-              <div v-if="dmLoadBusy" class="flex items-center justify-center py-10 gap-2 text-muted-foreground">
-                <Loader2 class="size-4 animate-spin" />
-                <span class="text-xs">{{ t('bi_loading') }}</span>
-              </div>
-              <div v-else-if="!dmLoadList.length"
-                class="text-center py-10 text-xs text-muted-foreground">{{ t('bi_no_saved_dm') }}</div>
-              <div v-else class="flex flex-col gap-1.5">
-                <div
-                  v-for="item in dmLoadList" :key="item.id"
-                  class="flex items-center gap-2 px-3 py-2.5 rounded-lg border hover:bg-accent cursor-pointer transition-colors"
-                  @click="doLoadDm(item.id)"
-                >
-                  <div class="flex-1 min-w-0">
-                    <p class="text-xs font-semibold truncate">{{ item.name }}</p>
-                    <p class="text-[10px] text-muted-foreground">
-                      {{ item.createdBy }} ·
-                      {{ new Date(item.updatedAt ?? item.createdAt).toLocaleDateString('th-TH') }}
-                    </p>
-                  </div>
-                  <button
-                    @click.stop="doDeleteDm(item.id)"
-                    :disabled="dmDeleting === item.id"
-                    class="shrink-0 p-1 rounded hover:bg-red-100 dark:hover:bg-red-900/30
-                           text-red-500 transition-colors disabled:opacity-50"
-                    :title="t('delete')"
-                  >
-                    <Trash2 class="size-3.5" />
-                  </button>
-                </div>
-              </div>
+
+            <!-- Tabs -->
+            <div class="flex gap-1 mx-4 mt-3 mb-1 p-1 bg-muted/50 rounded-lg shrink-0">
+              <button
+                @click="dmLoadTab = 'mine'"
+                :class="['flex-1 text-xs py-1 rounded-md font-medium transition-colors',
+                  dmLoadTab === 'mine' ? 'bg-background shadow text-sky-600' : 'text-muted-foreground hover:text-foreground']"
+              >
+                ของฉัน <span class="text-[10px] opacity-60">({{ dmLoadList.length }})</span>
+              </button>
+              <button
+                @click="dmLoadTab = 'public'"
+                :class="['flex-1 text-xs py-1 rounded-md font-medium transition-colors flex items-center justify-center gap-1',
+                  dmLoadTab === 'public' ? 'bg-background shadow text-sky-600' : 'text-muted-foreground hover:text-foreground']"
+              >
+                <Globe class="size-3" />
+                สาธารณะ
+              </button>
             </div>
+
+            <!-- List -->
+            <div class="flex-1 overflow-y-auto p-3">
+
+              <!-- ของฉัน -->
+              <template v-if="dmLoadTab === 'mine'">
+                <div v-if="dmLoadBusy" class="flex items-center justify-center py-10 gap-2 text-muted-foreground">
+                  <Loader2 class="size-4 animate-spin" />
+                  <span class="text-xs">{{ t('bi_loading') }}</span>
+                </div>
+                <div v-else-if="!dmLoadList.length"
+                  class="text-center py-10 text-xs text-muted-foreground">{{ t('bi_no_saved_dm') }}</div>
+                <div v-else class="flex flex-col gap-1.5">
+                  <div
+                    v-for="item in dmLoadList" :key="item.id"
+                    class="flex items-center gap-2 px-3 py-2.5 rounded-lg border hover:bg-accent cursor-pointer transition-colors"
+                    @click="doLoadDm(item.id)"
+                  >
+                    <div class="flex-1 min-w-0">
+                      <p class="text-xs font-semibold truncate">{{ item.name }}</p>
+                      <p class="text-[10px] text-muted-foreground">
+                        {{ item.createdBy }} ·
+                        {{ new Date(item.updatedAt ?? item.createdAt).toLocaleDateString('th-TH') }}
+                      </p>
+                    </div>
+                    <button
+                      @click.stop="doDeleteDm(item.id)"
+                      :disabled="dmDeleting === item.id"
+                      class="shrink-0 p-1 rounded hover:bg-red-100 dark:hover:bg-red-900/30
+                             text-red-500 transition-colors disabled:opacity-50"
+                      :title="t('delete')"
+                    >
+                      <Trash2 class="size-3.5" />
+                    </button>
+                  </div>
+                </div>
+              </template>
+
+              <!-- สาธารณะ -->
+              <template v-else>
+                <div v-if="dmPublicBusy" class="flex items-center justify-center py-10 gap-2 text-muted-foreground">
+                  <Loader2 class="size-4 animate-spin" />
+                  <span class="text-xs">{{ t('bi_loading') }}</span>
+                </div>
+                <div v-else-if="!dmPublicList.length"
+                  class="text-center py-10 text-xs text-muted-foreground">ยังไม่มี Data Model สาธารณะ</div>
+                <div v-else class="flex flex-col gap-1.5">
+                  <div
+                    v-for="item in dmPublicList" :key="item.id"
+                    class="flex items-center gap-2 px-3 py-2.5 rounded-lg border hover:bg-accent cursor-pointer transition-colors"
+                    @click="doLoadDm(item.id)"
+                  >
+                    <Globe class="size-3.5 text-sky-400 shrink-0" />
+                    <div class="flex-1 min-w-0">
+                      <p class="text-xs font-semibold truncate">{{ item.name }}</p>
+                      <p class="text-[10px] text-muted-foreground">
+                        {{ item.createdBy }} ·
+                        {{ new Date(item.updatedAt ?? item.createdAt).toLocaleDateString('th-TH') }}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </template>
+
+            </div>
+
             <div class="px-5 py-3 border-t flex justify-end">
               <button @click="showDmLoad = false"
                 class="text-xs px-4 py-1.5 rounded-lg border hover:bg-accent transition-colors">

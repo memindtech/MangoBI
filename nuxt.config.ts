@@ -20,9 +20,10 @@ export default defineNuxtConfig({
     mangoBase: '',
     mangoSchemaPasscode: '',
     public: {
-      // ค่าจริงอยู่ใน .env → NUXT_PUBLIC_API_BASE / NUXT_PUBLIC_PLANNING_BASE
+      // ค่าจริงอยู่ใน .env → NUXT_PUBLIC_API_BASE / NUXT_PUBLIC_PLANNING_BASE / NUXT_PUBLIC_BI_BASE
       apiBase:      '',
       planningBase: '',
+      biBase:       '',   // MangoBI backend (MicroBackend)
     }
   },
 
