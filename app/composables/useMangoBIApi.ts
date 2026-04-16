@@ -1,6 +1,6 @@
 /**
- * Composable for MangoBI save / load / delete via Planning backend.
- * Routes: Planning/MangoBI/<action>
+ * Composable for MangoBI save / load / delete via main backend.
+ * Routes: MangoBI/<action>
  */
 
 const BASE        = 'Planning/MangoBI'
@@ -18,11 +18,19 @@ function invalidateReport(id: string): void {
 }
 
 export interface BIListItem {
-  id:        string
-  name:      string
-  createdBy: string
-  createdAt: string
-  updatedAt: string | null
+  id:            string
+  name:          string
+  createdBy:     string
+  createdAt:     string
+  updatedAt:     string | null
+  columnMapping?: string   // JSON: ColumnMapEntry[]
+  isPublic?:     boolean
+}
+
+export interface ColumnMapEntry {
+  columnName:    string
+  dataType:      string
+  newColumnName: string
 }
 
 export function useMangoBIApi() {
@@ -130,11 +138,12 @@ export function useMangoBIApi() {
   }
 
   async function saveSQLBuilder(payload: {
-    id?:       string
-    name:      string
-    nodesJson: string
-    edgesJson: string
-    sqlText:   string
+    id?:           string
+    name:          string
+    nodesJson:     string
+    edgesJson:     string
+    sqlText:       string
+    columnMapping?: string   // JSON: ColumnMapEntry[]
   }): Promise<string | null> {
     const res: any = await $xt.postServerJson(`${BASE}/SaveSQLBuilder`, payload)
     return res?.data?.id ?? res?.id ?? null
@@ -147,8 +156,11 @@ export function useMangoBIApi() {
 
   // ── System ────────────────────────────────────────────────────────────────
 
-  async function updateStructure(): Promise<{ messages: string[] } | null> {
-    const res: any = await $xt.postServerJson(`${BASE}/UpdateStructure`, {})
+  async function updateStructure(
+    columnMappings?: ColumnMapEntry[],
+  ): Promise<{ messages: string[] } | null> {
+    const body = columnMappings?.length ? { columnMappings } : {}
+    const res: any = await $xt.postServerJson(`${BASE}/UpdateStructure`, body)
     return res?.data ?? null
   }
 

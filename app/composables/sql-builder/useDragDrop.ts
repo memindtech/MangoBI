@@ -302,9 +302,35 @@ export function useDragDrop() {
         ...store.selectedNodeIds,
         ...(store.selectedNodeId ? [store.selectedNodeId] : []),
       ])
-      const targets = store.nodes.filter((n: any) =>
+      const selectedTargets = store.nodes.filter((n: any) =>
         n.type === 'sqlTable' && (selIds.has(n.id) || n.selected)
       )
+
+      // Flood-fill all sqlTable nodes connected to the selected targets via JOIN edges
+      const connectedNodes: any[] = []
+      if (selectedTargets.length) {
+        const visited = new Set<string>()
+        const queue = [...selectedTargets]
+        while (queue.length) {
+          const n = queue.shift()!
+          if (visited.has(n.id)) continue
+          visited.add(n.id)
+          connectedNodes.push(n)
+          for (const e of store.edges) {
+            if ((e as any).data?.isTool) continue
+            if ((e as any).source === n.id) {
+              const tgt = store.nodes.find((x: any) => x.id === (e as any).target)
+              if (tgt?.type === 'sqlTable' && !visited.has(tgt.id)) queue.push(tgt)
+            }
+            if ((e as any).target === n.id) {
+              const src2 = store.nodes.find((x: any) => x.id === (e as any).source)
+              if (src2?.type === 'sqlTable' && !visited.has(src2.id)) queue.push(src2)
+            }
+          }
+        }
+      }
+
+      const targets = connectedNodes.length ? connectedNodes : selectedTargets
 
       let position: { x: number; y: number }
       let width  = 200

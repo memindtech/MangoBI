@@ -36,6 +36,7 @@ useHead({ title: computed(() => `${t('page_title_datamodel')} | MangoBI`) })
 // ─── Stores / Router ──────────────────────────────────────────────────────────
 const dmStore     = useDataModelStore()
 const reportStore = useReportStore()
+const authStore   = useAuthStore()
 const router      = useRouter()
 const { $xt } = useNuxtApp() as any
 
@@ -457,7 +458,7 @@ watch(selectedEdgeId, () => {
 // ─── Add Table panel ─────────────────────────────────────────────────────────
 const showAddPanel    = ref(false)
 const showLayersPanel = ref(false)
-const addMode       = ref<'mock' | 'passcode' | 'rawsql'>('mock')
+const addMode       = ref<'saved' | 'passcode' | 'rawsql'>('saved')
 const customName    = ref('')
 const selectedKey   = ref<DatasetKey>('sales_monthly')
 const loading       = ref(false)
@@ -466,6 +467,66 @@ const errorMsg      = ref('')
 const datasetOptions = Object.entries(DATASET_META).map(([key, m]) => ({
   key: key as DatasetKey, label: m.label,
 }))
+
+// ─── My SQL Builder (saved) ───────────────────────────────────────────────────
+const savedSqlItems   = ref<import('~/composables/useMangoBIApi').BIListItem[]>([])
+const savedSqlLoading = ref(false)
+const savedSqlAdding  = ref<string | null>(null)
+
+async function loadSavedSqlList() {
+  savedSqlLoading.value = true
+  try {
+    // Backend already filters by EmpNo == current user — no client-side filter needed
+    savedSqlItems.value = await biApi.listSQLBuilders()
+  } catch {
+    savedSqlItems.value = []
+  } finally {
+    savedSqlLoading.value = false
+  }
+}
+
+async function addSavedSqlTable(item: import('~/composables/useMangoBIApi').BIListItem) {
+  savedSqlAdding.value = item.id
+  errorMsg.value = ''
+  try {
+    const full = await biApi.loadSQLBuilder(item.id)
+    if (!full?.sqlText) throw new Error('ไม่พบ SQL ของชุดนี้')
+
+    const res: any = await $xt.postServerJson('Planning/MangoBI/ExecuteCustomSql', {
+      sql:  full.sqlText,
+      name: customName.value.trim() || item.name,
+    })
+    if (res?.error) throw new Error(res.error)
+    const payload = extractSqlPayload(res)
+    if (!payload?.rows?.length) throw new Error(t('bi_no_data_found'))
+
+    // Apply columnMapping to rename columns
+    let rows: any[] = payload.rows
+    if (full.columnMapping) {
+      const mapping: import('~/composables/useMangoBIApi').ColumnMapEntry[] = JSON.parse(full.columnMapping)
+      const renamed = mapping.filter(m => m.newColumnName && m.newColumnName !== m.columnName)
+      if (renamed.length) {
+        rows = rows.map(row => {
+          const out: Record<string, any> = {}
+          for (const [k, v] of Object.entries(row as Record<string, any>)) {
+            const m = renamed.find(r => r.columnName === k)
+            out[m ? m.newColumnName : k] = v
+          }
+          return out
+        })
+      }
+    }
+
+    const name = customName.value.trim() || item.name
+    placeTableNode(`saved_${Date.now()}`, name, rows)
+    showAddPanel.value = false
+    customName.value   = ''
+  } catch (e: any) {
+    errorMsg.value = e?.message ?? t('bi_error')
+  } finally {
+    savedSqlAdding.value = null
+  }
+}
 
 // SQL Template mode
 const sqlPasscode        = ref('')
@@ -495,8 +556,13 @@ async function fetchSqlTemplates() {
 }
 
 watch(addMode, (m) => {
+  if (m === 'saved')    loadSavedSqlList()
   if (m === 'passcode') { sqlTemplatesLoaded.value = false; sqlTemplates.value = [] }
   rawSqlErrors.value = []
+})
+
+watch(showAddPanel, (v) => {
+  if (v && addMode.value === 'saved') loadSavedSqlList()
 })
 
 // ─── Raw SQL mode ─────────────────────────────────────────────────────────────
@@ -515,8 +581,8 @@ function validateRawSql(sql: string): string[] {
   const trimmed = sql.trim()
 
   if (!trimmed) { errors.push('กรุณาใส่ SQL'); return errors }
-  if (!/^SELECT\b/i.test(trimmed))
-    errors.push('SQL ต้องเริ่มต้นด้วย SELECT เท่านั้น')
+  if (!/^(SELECT|WITH)\b/i.test(trimmed))
+    errors.push('SQL ต้องเริ่มต้นด้วย SELECT หรือ WITH (CTE) เท่านั้น')
   if (trimmed.includes(';'))
     errors.push('ไม่อนุญาตให้ใช้ semicolon (;) เพื่อป้องกันการ inject หลาย statement')
 
@@ -1600,7 +1666,7 @@ function clearDatamodel() {
           <!-- Mode tabs -->
           <div class="flex border-b text-[10px] shrink-0">
             <button
-              v-for="[m, label] in ([['mock','📦 Demo'],['passcode','🔑 Passcode'],['rawsql','🗄️ SQL']] as const)"
+              v-for="[m, label] in ([['saved','🗄️ My SQL'],['passcode','🔑 Passcode'],['rawsql','✏️ SQL']] as const)"
               :key="m"
               @click="addMode = m; errorMsg = ''"
               :class="[
@@ -1622,26 +1688,64 @@ function clearDatamodel() {
               />
             </div>
 
-            <!-- Mock mode -->
-            <template v-if="addMode === 'mock'">
-              <div>
-                <p class="text-[10px] font-semibold text-muted-foreground mb-1">{{ t('bi_dataset') }}</p>
-                <select
-                  v-model="selectedKey"
-                  class="w-full text-xs border rounded-lg px-2 py-1.5 bg-background
-                         focus:outline-none focus:ring-1 focus:ring-indigo-400"
+            <!-- My SQL Builder (saved) -->
+            <template v-if="addMode === 'saved'">
+              <div class="flex items-center justify-between">
+                <p class="text-[10px] font-semibold text-muted-foreground">SQL Builder ของฉัน</p>
+                <button
+                  @click="loadSavedSqlList"
+                  :disabled="savedSqlLoading"
+                  class="size-5 flex items-center justify-center rounded hover:bg-accent transition-colors text-muted-foreground disabled:opacity-50"
+                  title="รีเฟรช"
                 >
-                  <option v-for="ds in datasetOptions" :key="ds.key" :value="ds.key">
-                    {{ ds.label }}
-                  </option>
-                </select>
+                  <RotateCcw v-if="!savedSqlLoading" class="size-3" />
+                  <Loader2 v-else class="size-3 animate-spin" />
+                </button>
               </div>
-              <button
-                @click="addMockTable"
-                class="w-full text-xs py-2 bg-indigo-500 hover:bg-indigo-600 text-white rounded-lg font-medium transition-colors"
-              >
-                {{ t('bi_add_table') }}
-              </button>
+
+              <!-- Loading -->
+              <div v-if="savedSqlLoading" class="flex justify-center py-5">
+                <Loader2 class="size-4 animate-spin text-muted-foreground" />
+              </div>
+
+              <!-- Empty -->
+              <div v-else-if="!savedSqlItems.length"
+                class="flex flex-col items-center gap-1.5 py-5 text-[10px] text-muted-foreground/60 italic border border-dashed rounded-lg">
+                <Database class="size-4" />
+                ยังไม่มี SQL Builder ที่บันทึกไว้
+              </div>
+
+              <!-- List -->
+              <div v-else class="flex flex-col gap-1 max-h-56 overflow-y-auto -mx-1 px-1">
+                <div
+                  v-for="item in savedSqlItems" :key="item.id"
+                  class="flex items-center gap-2 px-2.5 py-2 rounded-xl border hover:bg-accent/50 transition-colors group"
+                >
+                  <div class="flex-1 min-w-0">
+                    <p class="text-xs font-medium truncate">{{ item.name }}</p>
+                    <p class="text-[9px] text-muted-foreground/60 font-mono">
+                      {{ new Date(item.updatedAt ?? item.createdAt).toLocaleString('th-TH') }}
+                    </p>
+                  </div>
+                  <button
+                    @click="addSavedSqlTable(item)"
+                    :disabled="!!savedSqlAdding"
+                    class="flex items-center gap-1 text-[10px] px-2.5 py-1 bg-indigo-500 hover:bg-indigo-600
+                           text-white rounded-lg font-semibold transition-colors disabled:opacity-50 shrink-0"
+                  >
+                    <Loader2 v-if="savedSqlAdding === item.id" class="size-3 animate-spin" />
+                    <Plus v-else class="size-3" />
+                    <span v-if="savedSqlAdding !== item.id">Add</span>
+                  </button>
+                </div>
+              </div>
+
+              <!-- Error -->
+              <div v-if="errorMsg && addMode === 'saved'"
+                class="flex items-start gap-1.5 text-[10px] text-destructive bg-destructive/10 rounded-lg px-2 py-1.5">
+                <AlertCircle class="size-3 shrink-0 mt-0.5" />
+                <span class="break-all">{{ errorMsg }}</span>
+              </div>
             </template>
 
             <!-- Passcode / SQL Template mode -->
@@ -1750,12 +1854,12 @@ function clearDatamodel() {
               <div>
                 <div class="flex items-center justify-between mb-1">
                   <p class="text-[10px] font-semibold text-muted-foreground">SQL Statement</p>
-                  <span class="text-[9px] text-muted-foreground/60">SELECT เท่านั้น</span>
+                  <span class="text-[9px] text-muted-foreground/60">SELECT / WITH CTE</span>
                 </div>
                 <textarea
                   v-model="rawSqlText"
                   rows="10"
-                  placeholder="SELECT col1, col2&#10;FROM table_name&#10;WHERE condition"
+                  placeholder="SELECT col1, col2&#10;FROM table_name&#10;WHERE condition&#10;&#10;-- หรือ CTE:&#10;WITH cte AS (&#10;  SELECT ...&#10;)&#10;SELECT * FROM cte"
                   spellcheck="false"
                   class="w-full text-[10px] font-mono border rounded-lg px-2 py-1.5 bg-background
                          focus:outline-none focus:ring-1 focus:ring-indigo-400 resize-none leading-relaxed"
@@ -1767,7 +1871,7 @@ function clearDatamodel() {
               <!-- Security note -->
               <div class="flex items-start gap-1.5 text-[10px] text-muted-foreground bg-muted/40 rounded-lg px-2.5 py-2">
                 <AlertCircle class="size-3 shrink-0 mt-0.5 text-amber-500" />
-                <span>ระบบจะตรวจสอบ SQL ทั้ง client และ server — อนุญาตเฉพาะ SELECT เท่านั้น</span>
+                <span>ระบบจะตรวจสอบ SQL ทั้ง client และ server — อนุญาตเฉพาะ SELECT และ WITH … AS (CTE) เท่านั้น</span>
               </div>
 
               <!-- Error -->

@@ -7,7 +7,7 @@
 import {
   Code2, ArrowRight, Trash2, Undo2, Redo2, Save, FolderOpen,
   BookmarkPlus, BookMarked, Download, X as XIcon, CheckCircle2,
-  CloudUpload, CloudDownload, Loader2, FileCode2, CheckCheck,
+  CloudUpload, CloudDownload, Loader2, FileCode2, CheckCheck, AlertCircle,
 } from 'lucide-vue-next'
 import { MarkerType } from '@vue-flow/core'
 import { getEdgeStyle } from '~/types/sql-builder'
@@ -57,11 +57,42 @@ const finishError     = ref('')
 const finishSuccess   = ref(false)
 const currentSavedId  = ref<string | null>(null)
 
-function openFinishModal() {
+// Column mapping validation
+const colMapLoading = ref(false)
+const colMapError   = ref('')
+const colMapRows    = ref<{ columnName: string; dataType: string; remark: string; newName: string }[]>([])
+
+const { $xt } = useNuxtApp() as any
+
+async function openFinishModal() {
   finishName.value    = ''
   finishError.value   = ''
   finishSuccess.value = false
+  colMapError.value   = ''
+  colMapRows.value    = []
   showFinishModal.value = true
+
+  if (!store.generatedSQL) return
+
+  colMapLoading.value = true
+  try {
+    const res: any = await $xt.postServerJson('AnywhereAPI/SQLGenerator/GeneratorSQL', {
+      SqlText: store.generatedSQL,
+    })
+    const raw = res?.data ?? res ?? {}
+    colMapRows.value = Object.values(raw)
+      .filter((v: any) => v?.ColumnName)
+      .map((v: any) => ({
+        columnName: String(v.ColumnName),
+        dataType:   String(v.DataType ?? ''),
+        remark:     String(v.Remark   ?? ''),
+        newName:    String(v.Remark || v.ColumnName),
+      }))
+  } catch (e: any) {
+    colMapError.value = e?.message ?? 'โหลดข้อมูลคอลัมน์ไม่สำเร็จ'
+  } finally {
+    colMapLoading.value = false
+  }
 }
 
 async function doFinish() {
@@ -70,12 +101,18 @@ async function doFinish() {
   finishSaving.value = true
   finishError.value  = ''
   try {
+    const columnMapping = colMapRows.value.map(r => ({
+      columnName:    r.columnName,
+      dataType:      r.dataType,
+      newColumnName: r.newName,
+    }))
     const id = await api.saveSQLBuilder({
-      id:        currentSavedId.value ?? undefined,
+      id:            currentSavedId.value ?? undefined,
       name,
-      nodesJson: JSON.stringify(store.nodes),
-      edgesJson: JSON.stringify(store.edges),
-      sqlText:   store.generatedSQL,
+      nodesJson:     JSON.stringify(store.nodes),
+      edgesJson:     JSON.stringify(store.edges),
+      sqlText:       store.generatedSQL,
+      columnMapping: JSON.stringify(columnMapping),
     })
     if (id) {
       currentSavedId.value = id
@@ -522,10 +559,12 @@ function nodeStats(nodes: any[]) {
   <Teleport to="body">
     <Transition name="fade">
       <div v-if="showFinishModal"
-        class="fixed inset-0 z-[200] flex items-center justify-center bg-black/50"
+        class="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 p-4"
         @click.self="showFinishModal = false">
-        <div class="bg-background border rounded-2xl shadow-2xl w-full max-w-sm p-6">
-          <div class="flex items-center gap-2 mb-4">
+        <div class="bg-background border rounded-2xl shadow-2xl w-full max-w-2xl flex flex-col max-h-[90vh]">
+
+          <!-- Header -->
+          <div class="flex items-center gap-2 px-6 pt-6 pb-4 shrink-0">
             <CloudUpload class="size-5 text-emerald-500" />
             <h2 class="font-bold text-sm">บันทึก SQL Builder</h2>
             <button @click="showFinishModal = false" class="ml-auto text-muted-foreground hover:text-foreground">
@@ -534,35 +573,95 @@ function nodeStats(nodes: any[]) {
           </div>
 
           <!-- Success state -->
-          <div v-if="finishSuccess" class="flex flex-col items-center gap-3 py-4">
+          <div v-if="finishSuccess" class="flex flex-col items-center gap-3 py-10 px-6">
             <CheckCircle2 class="size-10 text-emerald-500" />
             <p class="text-sm font-semibold text-emerald-600">บันทึกสำเร็จ</p>
           </div>
 
           <!-- Form state -->
           <template v-else>
-            <label class="text-xs text-muted-foreground mb-1 block">ชื่อ</label>
-            <input
-              v-model="finishName"
-              placeholder="ตั้งชื่อ SQL Builder…"
-              class="w-full text-sm border rounded-lg px-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-emerald-500/50 mb-3"
-              @keydown.enter="doFinish"
-              autofocus
-            />
+            <!-- Name input -->
+            <div class="px-6 pb-4 shrink-0">
+              <label class="text-xs text-muted-foreground mb-1 block">ชื่อ</label>
+              <input
+                v-model="finishName"
+                placeholder="ตั้งชื่อ SQL Builder…"
+                class="w-full text-sm border rounded-lg px-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
+                autofocus
+              />
+            </div>
 
-            <p v-if="finishError" class="text-xs text-destructive mb-2">{{ finishError }}</p>
+            <!-- Column Mapping Table -->
+            <div class="px-6 pb-4 flex flex-col gap-2 min-h-0 flex-1">
+              <div class="flex items-center justify-between shrink-0">
+                <p class="text-xs font-semibold text-muted-foreground">ตรวจสอบ Column Names</p>
+                <span v-if="colMapRows.length" class="text-[10px] text-emerald-600 font-mono">{{ colMapRows.length }} columns</span>
+              </div>
 
-            <div class="flex gap-2 justify-end">
-              <button @click="showFinishModal = false"
-                class="text-xs px-3 py-1.5 border rounded-lg hover:bg-accent transition-colors">
-                ยกเลิก
-              </button>
-              <button @click="doFinish" :disabled="finishSaving"
-                class="flex items-center gap-1.5 text-xs px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-semibold transition-colors disabled:opacity-50">
-                <Loader2 v-if="finishSaving" class="size-3.5 animate-spin" />
-                <CloudUpload v-else class="size-3.5" />
-                บันทึก
-              </button>
+              <!-- Loading -->
+              <div v-if="colMapLoading" class="flex items-center justify-center gap-2 py-6 text-muted-foreground text-xs border rounded-lg">
+                <Loader2 class="size-4 animate-spin" /> กำลังโหลดข้อมูล column…
+              </div>
+
+              <!-- Error -->
+              <div v-else-if="colMapError" class="flex items-center gap-2 py-3 px-3 text-xs text-amber-600 bg-amber-500/10 border border-amber-500/20 rounded-lg">
+                <AlertCircle class="size-3.5 shrink-0" /> {{ colMapError }}
+              </div>
+
+              <!-- No SQL generated -->
+              <div v-else-if="!colMapRows.length" class="text-center py-6 text-[10px] text-muted-foreground/60 italic border border-dashed rounded-lg">
+                ไม่มีข้อมูล column — กรุณา Generate SQL ก่อนบันทึก
+              </div>
+
+              <!-- Table -->
+              <div v-else class="overflow-auto border rounded-lg flex-1">
+                <table class="w-full text-[11px]">
+                  <thead class="sticky top-0 bg-muted/80 backdrop-blur-sm">
+                    <tr>
+                      <th class="px-2.5 py-2 text-left font-semibold text-muted-foreground w-8">#</th>
+                      <th class="px-2.5 py-2 text-left font-semibold text-muted-foreground">ColumnName</th>
+                      <th class="px-2.5 py-2 text-left font-semibold text-muted-foreground w-24">DataType</th>
+                      <th class="px-2.5 py-2 text-left font-semibold text-emerald-600">NewColumnName</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(row, i) in colMapRows" :key="row.columnName"
+                      class="border-t hover:bg-accent/30 transition-colors"
+                      :class="row.newName !== row.columnName ? 'bg-emerald-500/5' : ''">
+                      <td class="px-2.5 py-1.5 text-muted-foreground/60 font-mono">{{ i + 1 }}</td>
+                      <td class="px-2.5 py-1.5 font-mono text-foreground/80">{{ row.columnName }}</td>
+                      <td class="px-2.5 py-1.5 text-muted-foreground/70">{{ row.dataType }}</td>
+                      <td class="px-2.5 py-1.5">
+                        <input
+                          v-model="row.newName"
+                          class="w-full text-[11px] font-mono border rounded px-2 py-0.5 bg-background
+                                 focus:outline-none focus:ring-1 focus:ring-emerald-400
+                                 placeholder:text-muted-foreground/40"
+                          :class="row.newName !== row.columnName ? 'border-emerald-400/60 text-emerald-600' : ''"
+                          :placeholder="row.columnName"
+                        />
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Footer -->
+            <div class="px-6 pb-6 shrink-0">
+              <p v-if="finishError" class="text-xs text-destructive mb-2">{{ finishError }}</p>
+              <div class="flex gap-2 justify-end">
+                <button @click="showFinishModal = false"
+                  class="text-xs px-3 py-1.5 border rounded-lg hover:bg-accent transition-colors">
+                  ยกเลิก
+                </button>
+                <button @click="doFinish" :disabled="finishSaving || colMapLoading || !finishName.trim()"
+                  class="flex items-center gap-1.5 text-xs px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-semibold transition-colors disabled:opacity-50">
+                  <Loader2 v-if="finishSaving" class="size-3.5 animate-spin" />
+                  <CloudUpload v-else class="size-3.5" />
+                  บันทึก
+                </button>
+              </div>
             </div>
           </template>
         </div>
