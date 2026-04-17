@@ -5,7 +5,7 @@
  */
 import {
   X, Plus, Layers, Calculator, Database, SortAsc, GitMerge, Filter,
-  ChevronDown, Key, Search, Sparkles, Calendar,
+  ChevronDown, Key, Search, Sparkles, Calendar, Play,
 } from 'lucide-vue-next'
 import { MarkerType } from '@vue-flow/core'
 import { AGG_FUNCS, getColTypeBadge } from '~/types/sql-builder'
@@ -988,8 +988,13 @@ watch(() => store.modalNode, (node) => {
   const type = node.data.nodeType
   if (type === 'group') {
     colSearch.value = ''
-    if (!node.data.groupCols?.length && upstreamCols.value.length) {
-      store.updateNodeData(node.id, { groupCols: upstreamCols.value.map((c: VisibleCol) => c.name) })
+    // Clear junk groupCols from old auto-populate behavior, but only if the user
+    // has never explicitly set them (_groupColsUserSet flag is absent)
+    if (!node.data._groupColsUserSet && upstreamCols.value.length > 0) {
+      const currentGroupCols = (node.data.groupCols ?? []) as string[]
+      if (currentGroupCols.length >= upstreamCols.value.length) {
+        store.updateNodeData(node.id, { groupCols: [], _groupColsUserSet: false })
+      }
     }
   } else if (type === 'sort') {
     sortColSearch.value = ''
@@ -1009,8 +1014,14 @@ watch(() => store.modalNode, (node) => {
 watch(upstreamCols, (cols) => {
   const node = store.modalNode
   if (!node) return
-  if (node.data.nodeType === 'group' && !node.data.groupCols?.length && cols.length) {
-    store.updateNodeData(node.id, { groupCols: cols.map((c: VisibleCol) => c.name) })
+  if (node.data.nodeType === 'group') {
+    // Clear junk only if user never explicitly set groupCols
+    if (!node.data._groupColsUserSet && cols.length > 0) {
+      const currentGroupCols = (node.data.groupCols ?? []) as string[]
+      if (currentGroupCols.length >= cols.length) {
+        store.updateNodeData(node.id, { groupCols: [], _groupColsUserSet: false })
+      }
+    }
   } else if (node.data.nodeType === 'sort' && !node.data.items?.length && cols.length) {
     store.updateNodeData(node.id, { items: cols.map((c: VisibleCol) => ({ col: c.name, dir: 'ASC' })) })
   }
@@ -1024,17 +1035,19 @@ function toggleGroupCol(colName: string, checked: boolean) {
     const idx = current.indexOf(colName)
     if (idx >= 0) current.splice(idx, 1)
   }
-  store.updateNodeData(store.modalNodeId!, { groupCols: current })
+  // Mark as user-set so auto-clear logic never touches it again
+  store.updateNodeData(store.modalNodeId!, { groupCols: current, _groupColsUserSet: true })
 }
 
 function selectAllGroupCols() {
   store.updateNodeData(store.modalNodeId!, {
     groupCols: upstreamCols.value.map((c: VisibleCol) => c.name),
+    _groupColsUserSet: true,
   })
 }
 
 function clearGroupCols() {
-  store.updateNodeData(store.modalNodeId!, { groupCols: [] })
+  store.updateNodeData(store.modalNodeId!, { groupCols: [], _groupColsUserSet: true })
 }
 
 const groupColCount = computed(() =>
@@ -1939,6 +1952,13 @@ const finishBtnStyle = computed(() => {
                   </div>
                 </div>
 
+                <!-- Warning: too many columns selected for GROUP BY -->
+                <div v-if="upstreamCols.length > 0 && groupColCount >= upstreamCols.length"
+                  class="flex items-start gap-2 px-3 py-2 rounded-lg bg-rose-500/10 border border-rose-400/30 text-[10px] text-rose-400">
+                  <span class="shrink-0 font-bold mt-0.5">⚠</span>
+                  <span>เลือกทุก column ไม่มีประโยชน์ — กด <button @click="clearGroupCols" class="font-bold underline">ล้าง</button> แล้วเลือกเฉพาะ column ที่ต้องการ GROUP BY จริงๆ</span>
+                </div>
+
                 <div class="relative">
                   <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground/50" />
                   <input v-model="colSearch" placeholder="ค้นหา column..."
@@ -2198,13 +2218,23 @@ const finishBtnStyle = computed(() => {
                 <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">ไม่มี pre-filter</p>
               </div>
 
-              <!-- SQL Preview -->
-              <div class="px-3 py-2 rounded-lg bg-orange-500/5 border border-orange-400/20 max-h-[120px] overflow-y-auto overflow-x-auto">
-                <div class="flex items-start gap-1.5">
-                  <span class="text-[9px] font-bold text-orange-500 shrink-0 mt-0.5">SQL</span>
-                  <code class="text-[9px] font-mono text-orange-300/80 leading-relaxed whitespace-pre">{{ groupSqlPreview }}</code>
+              <!-- SQL Preview (editable) -->
+              <div class="rounded-lg bg-orange-500/5 border border-orange-400/20 overflow-hidden">
+                <div class="flex items-center justify-between px-3 py-1.5 border-b border-orange-400/20">
+                  <span class="text-[9px] font-bold text-orange-500">SQL PREVIEW</span>
+                  <button
+                    v-if="store.modalNode.data.customGroupSql"
+                    @click="store.updateNodeData(store.modalNode.id, { customGroupSql: '' })"
+                    class="text-[9px] text-muted-foreground hover:text-rose-400 transition-colors"
+                  >reset</button>
                 </div>
-              </div>
+                <textarea
+                  :value="store.modalNode.data.customGroupSql || groupSqlPreview"
+                  @input="store.updateNodeData(store.modalNode.id, { customGroupSql: ($event.target as HTMLTextAreaElement).value })"
+                  class="w-full bg-transparent text-[9px] font-mono text-orange-300/80 leading-relaxed resize-y p-2.5 outline-none min-h-[120px]"
+                  rows="10"
+                  spellcheck="false"
+                /></div>
 
             </div><!-- /RIGHT -->
             </div><!-- /grid -->
@@ -2771,18 +2801,25 @@ const finishBtnStyle = computed(() => {
             <span v-if="(store.modalNode?.data?.selectedCols ?? []).length"> cols</span>
           </p>
           <span v-else />
-          <div class="flex gap-2">
-            <button @click="close"
-              class="text-xs px-4 py-2 border rounded-lg hover:bg-accent transition-colors">
-              ยกเลิก
+          <div class="flex flex-col gap-2 items-end">
+            <button v-if="nodeType !== 'group'" @click="generateSQL()"
+              class="text-xs px-4 py-2 border rounded-lg hover:bg-accent transition-colors flex items-center gap-1.5 w-full justify-center">
+              <Play class="size-3.5" />
+              Generate SQL
             </button>
-            <button @click="finishAndSave"
-              class="text-xs px-5 py-2 text-white rounded-lg font-semibold hover:opacity-90 transition-opacity flex items-center gap-1.5"
-              :style="finishBtnStyle"
-            >
-              <Sparkles class="size-3.5" />
-              Finish &amp; Generate SQL
-            </button>
+            <div class="flex gap-2">
+              <button @click="close"
+                class="text-xs px-4 py-2 border rounded-lg hover:bg-accent transition-colors">
+                ยกเลิก
+              </button>
+              <button @click="nodeType === 'group' ? finish() : finishAndSave()"
+                class="text-xs px-5 py-2 text-white rounded-lg font-semibold hover:opacity-90 transition-opacity flex items-center gap-1.5"
+                :style="finishBtnStyle"
+              >
+                <Sparkles class="size-3.5" />
+                Finish
+              </button>
+            </div>
           </div>
         </div>
       </div>

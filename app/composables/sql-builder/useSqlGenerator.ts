@@ -152,24 +152,41 @@ export function useSqlGenerator() {
       }
 
       const cols: string[] = []
-      const used = new Set<string>()
+      // Case-insensitive: store lowercase keys so 'DD_mango' and 'dd_mango' collide.
+      const used    = new Set<string>()
+      const uHas    = (n: string) => used.has(n.toLowerCase())
+      const uAdd    = (n: string) => used.add(n.toLowerCase())
       for (const tn of orderedNodes) {
         const tbl     = alias(tn)
         const visible = tn.data.visibleCols as VisibleCol[] | undefined
+        const details = tn.data.details     as any[]       | undefined
         if (visible?.length) {
+          // explicit user-selected cols — mirror buildJoinBlock visibleCols path
           for (const col of visible) {
             if (col.alias) {
-              cols.push(col.alias); used.add(col.alias)
-            } else if (used.has(col.name)) {
+              cols.push(col.alias); uAdd(col.alias)
+            } else if (uHas(col.name)) {
               let a = `${tbl}_${col.name}`; let i = 2
-              while (used.has(a)) a = `${tbl}_${col.name}_${i++}`
-              cols.push(a); used.add(a)
+              while (uHas(a)) a = `${tbl}_${col.name}_${i++}`
+              cols.push(a); uAdd(a)
             } else {
-              cols.push(col.name); used.add(col.name)
+              cols.push(col.name); uAdd(col.name)
+            }
+          }
+        } else if (details?.length) {
+          // full DB metadata — mirror buildJoinBlock details path
+          for (const col of details) {
+            const colName: string = col.column_name
+            if (uHas(colName)) {
+              let a = `${tbl}_${colName}`; let i = 2
+              while (uHas(a)) a = `${tbl}_${colName}_${i++}`
+              cols.push(a); uAdd(a)
+            } else {
+              cols.push(colName); uAdd(colName)
             }
           }
         }
-        // wildcard → unknown cols, skip
+        // no metadata at all (wildcard) → column names unknown, skip
       }
       return cols
     }
@@ -306,7 +323,7 @@ export function useSqlGenerator() {
       switch (nt) {
         case 'cte':    cteSql = buildCteToolBlock(node, upName); break
         case 'where':  cteSql = buildWhereBlock(node, upName);   break
-        case 'group':  cteSql = buildGroupBlock(node, upName);   break
+        case 'group':  cteSql = buildGroupBlock(node, upName, cteOutputCols.get(upName) ?? []);   break
         case 'calc':   cteSql = buildCalcBlock(node, upName, cteOutputCols.get(upName) ?? []);    break
         case 'union': {
           const upPairs = upIds
@@ -418,7 +435,11 @@ export function useSqlGenerator() {
 
     // ── SELECT columns (in topological node order) ───────────────────────
     const selectCols: string[] = []
+    // Case-insensitive collision tracking: store lowercase keys so that
+    // 'dd_mango' and 'DD_mango' are treated as the same column name.
     const usedOutputNames = new Set<string>()
+    const ciHas  = (name: string) => usedOutputNames.has(name.toLowerCase())
+    const ciAdd  = (name: string) => usedOutputNames.add(name.toLowerCase())
 
     // Order SELECT by BFS visit order (primary first, then its children)
     const orderedNodes = [primary, ...sortedEdges
@@ -433,16 +454,16 @@ export function useSqlGenerator() {
         for (const col of visible) {
           if (col.alias) {
             selectCols.push(`  ${tbl}.${col.name} AS ${col.alias}`)
-            usedOutputNames.add(col.alias)
-          } else if (usedOutputNames.has(col.name)) {
+            ciAdd(col.alias)
+          } else if (ciHas(col.name)) {
             let aliasName = `${tbl}_${col.name}`
             let idx = 2
-            while (usedOutputNames.has(aliasName)) aliasName = `${tbl}_${col.name}_${idx++}`
+            while (ciHas(aliasName)) aliasName = `${tbl}_${col.name}_${idx++}`
             selectCols.push(`  ${tbl}.${col.name} AS ${aliasName}`)
-            usedOutputNames.add(aliasName)
+            ciAdd(aliasName)
           } else {
             selectCols.push(`  ${tbl}.${col.name}`)
-            usedOutputNames.add(col.name)
+            ciAdd(col.name)
           }
         }
       } else {
@@ -451,15 +472,15 @@ export function useSqlGenerator() {
         if (details?.length) {
           for (const col of details) {
             const colName: string = col.column_name
-            if (usedOutputNames.has(colName)) {
+            if (ciHas(colName)) {
               let aliasName = `${tbl}_${colName}`
               let idx = 2
-              while (usedOutputNames.has(aliasName)) aliasName = `${tbl}_${colName}_${idx++}`
+              while (ciHas(aliasName)) aliasName = `${tbl}_${colName}_${idx++}`
               selectCols.push(`  ${tbl}.${colName} AS ${aliasName}`)
-              usedOutputNames.add(aliasName)
+              ciAdd(aliasName)
             } else {
               selectCols.push(`  ${tbl}.${colName}`)
-              usedOutputNames.add(colName)
+              ciAdd(colName)
             }
           }
         } else {
@@ -666,15 +687,74 @@ export function useSqlGenerator() {
   }
 
   // ── GROUP BY CTE block ────────────────────────────────────────────────
-  function buildGroupBlock(node: Node, upstream: string): string {
-    const groupCols = (node.data.groupCols ?? []).filter(Boolean) as string[]
-    const aggs      = (node.data.aggs ?? []).filter((a: any) => a.col && a.func)
+  // upstreamColNames: actual output column names of the upstream CTE.
+  // Used to remap stored groupCol names (which may be raw DB names) to the
+  // collision-aliased names that the upstream CTE actually outputs (e.g. b_dd).
+  function buildGroupBlock(node: Node, upstream: string, upstreamColNames: string[] = []): string {
+    // If user has manually edited the SQL in the modal, use it directly
+    const custom = (node.data.customGroupSql as string | undefined)?.trim()
+    if (custom) return custom
 
-    if (!groupCols.length && !aggs.length) return `SELECT * FROM ${upstream}`
+    const rawGroupCols = (node.data.groupCols ?? []).filter(Boolean) as string[]
+    const aggs         = (node.data.aggs ?? []).filter((a: any) => a.col && a.func)
+
+    if (!rawGroupCols.length && !aggs.length) return `SELECT * FROM ${upstream}`
+
+    // Map each stored groupCol name to the actual column name in the upstream CTE.
+    // Case-insensitive: 'DD_mango' and 'dd_mango' are treated as the same column.
+    // Uses assignedUpstream to prevent two occurrences of the same raw name from
+    // both resolving to the same upstream column
+    // (e.g. groupCols ['ac_code_ic','ac_code_ic'] → ['ac_code_ic','ibrcode_ac_code_ic']).
+    const upstreamMap = new Map(upstreamColNames.map(n => [n.toLowerCase(), n]))
+    const assignedUpstream = new Set<string>()   // stores lowercase keys
+    function resolveCol(raw: string): string | null {
+      if (!upstreamColNames.length) return raw
+      const rawLower = raw.toLowerCase()
+      // 1. Exact match (case-insensitive) that hasn't been claimed yet
+      const exactOrig = upstreamMap.get(rawLower)
+      if (exactOrig && !assignedUpstream.has(rawLower)) {
+        assignedUpstream.add(rawLower)
+        return exactOrig
+      }
+      // 2. Exact match already claimed or missing →
+      //    find an unclaimed upstream col whose LAST segment matches (case-insensitive)
+      //    e.g. raw='maincode' matches 'ibrcode_maincode' via endsWith('_maincode')
+      //    but only if the full name is specifically tableName_colName format
+      const aliased = upstreamColNames.find(n => {
+        const nLower = n.toLowerCase()
+        // Must end with _rawLower AND have a non-empty prefix (real alias form)
+        return !assignedUpstream.has(nLower)
+          && nLower.endsWith(`_${rawLower}`)
+          && nLower.length > rawLower.length + 1
+      })
+      if (aliased) {
+        assignedUpstream.add(aliased.toLowerCase())
+        return aliased
+      }
+      // 3. Nothing matched — return null so caller can drop it
+      return null
+    }
+
+    // Resolve, validate against upstream, and deduplicate
+    // Columns that can't be matched to any upstream output are silently dropped
+    // (prevents invalid SQL when stored names don't match actual CTE output)
+    const seen = new Set<string>()
+    const groupCols = rawGroupCols
+      .map(resolveCol)
+      .filter((c): c is string => {
+        if (c === null) return false
+        // If upstreamColNames is available, validate resolved name actually exists
+        if (upstreamColNames.length > 0 && !upstreamMap.has(c.toLowerCase())) return false
+        if (seen.has(c.toLowerCase())) return false
+        seen.add(c.toLowerCase()); return true
+      })
+
+    // Remap agg column references too (fall back to raw name if resolveCol returns null)
+    const resolvedAggs = aggs.map((a: any) => ({ ...a, col: resolveCol(a.col) ?? a.col }))
 
     const selectParts = [
       ...groupCols.map((c: string) => `  ${c}`),
-      ...aggs.map((a: any) => {
+      ...resolvedAggs.map((a: any) => {
         const fn = a.func === 'COUNT DISTINCT'
           ? `COUNT(DISTINCT ${a.col})`
           : `${a.func}(${a.col})`

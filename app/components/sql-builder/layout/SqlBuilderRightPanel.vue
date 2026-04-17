@@ -56,8 +56,15 @@ const tools = [
       </button>
     </div>
 
-    <!-- Finish button -->
-    <div class="p-3 border-t">
+    <!-- Generate SQL + Finish buttons -->
+    <div class="p-3 border-t flex flex-col gap-2">
+      <button
+        @click="emit('generate')"
+        class="w-full flex items-center justify-center gap-1.5 py-2 rounded-xl border transition-colors hover:bg-accent"
+      >
+        <Play class="size-3.5" />
+        <span class="text-xs font-semibold">Generate SQL</span>
+      </button>
       <button
         @click="emit('finish')"
         class="w-full flex flex-col items-center justify-center gap-1 py-3 rounded-xl text-white transition-colors"
@@ -66,7 +73,7 @@ const tools = [
         <Loader2 v-if="props.columnsLoading" class="size-4 animate-spin" />
         <Play v-else class="size-4" />
         <span class="text-xs font-bold">{{ props.columnsLoading ? 'โหลดอยู่…' : 'Finish' }}</span>
-        <span class="text-[10px] opacity-80">{{ props.columnsLoading ? 'auto-generate เมื่อเสร็จ' : 'Generate SQL' }}</span>
+        <span v-if="props.columnsLoading" class="text-[10px] opacity-80">auto-generate เมื่อเสร็จ</span>
       </button>
     </div>
   </aside>

@@ -8,6 +8,7 @@ import {
   Code2, ArrowRight, Trash2, Undo2, Redo2,
   BookmarkPlus, BookMarked, Download, X as XIcon,
   CloudDownload, Loader2, FileCode2, CheckCheck, Globe,
+  FolderOpen, PlusCircle,
 } from 'lucide-vue-next'
 import { MarkerType } from '@vue-flow/core'
 import { getEdgeStyle } from '~/types/sql-builder'
@@ -58,6 +59,7 @@ const loadingPublic   = ref(false)
 const deletingId      = ref<string | null>(null)
 const loadTab         = ref<'cloud' | 'local' | 'import' | 'public'>('cloud')
 const appendingId     = ref<string | null>(null)
+const loadingId       = ref<string | null>(null)
 
 // ── Import Query ──────────────────────────────────────────────────────────
 const importSQL       = ref('')
@@ -263,22 +265,46 @@ watch(loadTab, (tab) => {
   if (tab === 'public') loadPublicItems()
 })
 
-/** Remap node IDs + edge refs, offset positions, then append to canvas */
+/** Remap node IDs + edge refs, offset positions, then append to canvas.
+ *  New nodes are placed to the RIGHT of existing nodes (never overlapping),
+ *  vertically centred relative to the existing cluster. */
 function appendNodesToCanvas(rawNodes: any[], rawEdges: any[]): any[] {
   const suffix = `-${Date.now()}`
   const idMap  = new Map<string, string>()
 
-  // Compute Y offset to place below existing nodes
-  let dy = 0
-  if (store.nodes.length) {
-    const maxY = Math.max(...store.nodes.map((n: any) => (n.position?.y ?? 0) + 200))
-    dy = maxY + 80
+  let dx = 0, dy = 0
+
+  if (store.nodes.length && rawNodes.length) {
+    // ── Right edge of existing nodes ──────────────────────────────────────
+    const existRight = Math.max(...store.nodes.map((n: any) => {
+      const w = parseFloat(String((n.style as any)?.width ?? 220))
+      return (n.position?.x ?? 0) + (Number.isFinite(w) ? w : 220)
+    }))
+
+    // ── Vertical centre of existing nodes ─────────────────────────────────
+    const existYLo = Math.min(...store.nodes.map((n: any) => n.position?.y ?? 0))
+    const existYHi = Math.max(...store.nodes.map((n: any) => {
+      const h = parseFloat(String((n.style as any)?.height ?? 80))
+      return (n.position?.y ?? 0) + (Number.isFinite(h) ? h : 80)
+    }))
+    const existCY = (existYLo + existYHi) / 2
+
+    // ── Bounding box of new nodes ──────────────────────────────────────────
+    const newLeft  = Math.min(...rawNodes.map((n: any) => n.position?.x ?? 0))
+    const newYLo   = Math.min(...rawNodes.map((n: any) => n.position?.y ?? 0))
+    const newYHi   = Math.max(...rawNodes.map((n: any) => {
+      const h = parseFloat(String((n.style as any)?.height ?? 80))
+      return (n.position?.y ?? 0) + (Number.isFinite(h) ? h : 80)
+    }))
+    const newCY = (newYLo + newYHi) / 2
+
+    dx = existRight + 140 - newLeft   // gap of 140 px to the right
+    dy = existCY - newCY              // align vertical centres
   }
 
   const remappedNodes = rawNodes.map((n: any) => {
     const newId = n.id + suffix
     idMap.set(n.id, newId)
-    // Ensure loaded nodes are never stuck in loading state
     const data = n.type === 'sqlTable' && n.data?.columnsLoading
       ? { ...n.data, columnsLoading: false }
       : n.data
@@ -286,7 +312,7 @@ function appendNodesToCanvas(rawNodes: any[], rawEdges: any[]): any[] {
       ...n,
       id: newId,
       data,
-      position: { x: n.position?.x ?? 0, y: (n.position?.y ?? 0) + dy },
+      position: { x: (n.position?.x ?? 0) + dx, y: (n.position?.y ?? 0) + dy },
     }
   })
 
@@ -302,6 +328,31 @@ function appendNodesToCanvas(rawNodes: any[], rawEdges: any[]): any[] {
   return remappedNodes
 }
 
+/** REPLACE: clear canvas and load item as the active document */
+async function loadCloudToCanvas(item: BIListItem) {
+  loadingId.value = item.id
+  try {
+    const data = await api.loadSQLBuilder(item.id)
+    if (!data) return
+    store.resetCanvas()
+    store.nodes = (JSON.parse(data.nodesJson ?? '[]') as any[]).map((n: any) =>
+      n.type === 'sqlTable' && n.data?.columnsLoading
+        ? { ...n, data: { ...n.data, columnsLoading: false } }
+        : n
+    )
+    store.edges = JSON.parse(data.edgesJson ?? '[]')
+    store.savedId       = item.id
+    store.savedName     = item.name
+    store.savedIsPublic = item.isPublic ?? false
+    showLoadModal.value = false
+  } catch {
+    // ignore
+  } finally {
+    loadingId.value = null
+  }
+}
+
+/** APPEND: add item nodes to the RIGHT of the current canvas */
 async function addCloudToCanvas(item: BIListItem) {
   appendingId.value = item.id
   try {
@@ -310,7 +361,7 @@ async function addCloudToCanvas(item: BIListItem) {
     const nodes = JSON.parse(data.nodesJson ?? '[]')
     const edges = JSON.parse(data.edgesJson ?? '[]')
     appendNodesToCanvas(nodes, edges)
-    // Set as current save target if canvas was empty before
+    // Set as current save target only if canvas was empty before
     if (!store.savedId) {
       store.savedId   = item.id
       store.savedName = item.name
@@ -322,6 +373,21 @@ async function addCloudToCanvas(item: BIListItem) {
   }
 }
 
+/** REPLACE local template */
+function loadLocalToCanvas(id: string) {
+  const tpl = store.listTemplates().find((t: any) => t.id === id)
+  if (!tpl) return
+  store.resetCanvas()
+  store.nodes = ((tpl.nodes ?? []) as any[]).map((n: any) =>
+    n.type === 'sqlTable' && n.data?.columnsLoading
+      ? { ...n, data: { ...n.data, columnsLoading: false } }
+      : n
+  )
+  store.edges = tpl.edges ?? []
+  showLoadModal.value = false
+}
+
+/** APPEND local template */
 function addLocalToCanvas(id: string) {
   const tpl = store.listTemplates().find((t: any) => t.id === id)
   if (!tpl) return
@@ -540,15 +606,27 @@ function nodeStats(nodes: any[]) {
                     {{ new Date(item.updatedAt ?? item.createdAt).toLocaleString('th-TH') }}
                   </p>
                 </div>
-                <!-- Add to canvas button -->
+                <!-- Load (replace) -->
+                <button
+                  @click.stop="loadCloudToCanvas(item)"
+                  :disabled="loadingId === item.id || appendingId === item.id"
+                  class="flex items-center gap-1 text-[10px] px-2.5 py-1 border rounded-lg font-semibold transition-colors disabled:opacity-50 shrink-0 hover:bg-accent"
+                  title="โหลดแทน Canvas ปัจจุบัน"
+                >
+                  <Loader2 v-if="loadingId === item.id" class="size-3 animate-spin" />
+                  <FolderOpen v-else class="size-3" />
+                  <span class="hidden sm:inline">Load</span>
+                </button>
+                <!-- Add beside -->
                 <button
                   @click.stop="addCloudToCanvas(item)"
-                  :disabled="appendingId === item.id"
+                  :disabled="appendingId === item.id || loadingId === item.id"
                   class="flex items-center gap-1 text-[10px] px-2.5 py-1 bg-sky-500 hover:bg-sky-600 text-white rounded-lg font-semibold transition-colors disabled:opacity-50 shrink-0"
-                  title="เพิ่มลง Canvas"
+                  title="เพิ่มต่อจาก Canvas ปัจจุบัน"
                 >
                   <Loader2 v-if="appendingId === item.id" class="size-3 animate-spin" />
-                  <span v-else>+ Add</span>
+                  <PlusCircle v-else class="size-3" />
+                  <span>Add</span>
                 </button>
                 <!-- Delete -->
                 <button
@@ -584,13 +662,27 @@ function nodeStats(nodes: any[]) {
                     {{ new Date(item.updatedAt ?? item.createdAt).toLocaleString('th-TH') }}
                   </p>
                 </div>
+                <!-- Load (replace) -->
+                <button
+                  @click.stop="loadCloudToCanvas(item)"
+                  :disabled="loadingId === item.id || appendingId === item.id"
+                  class="flex items-center gap-1 text-[10px] px-2.5 py-1 border rounded-lg font-semibold transition-colors disabled:opacity-50 shrink-0 hover:bg-accent"
+                  title="โหลดแทน Canvas ปัจจุบัน"
+                >
+                  <Loader2 v-if="loadingId === item.id" class="size-3 animate-spin" />
+                  <FolderOpen v-else class="size-3" />
+                  <span class="hidden sm:inline">Load</span>
+                </button>
+                <!-- Add beside -->
                 <button
                   @click.stop="addCloudToCanvas(item)"
-                  :disabled="appendingId === item.id"
+                  :disabled="appendingId === item.id || loadingId === item.id"
                   class="flex items-center gap-1 text-[10px] px-2.5 py-1 bg-sky-500 hover:bg-sky-600 text-white rounded-lg font-semibold transition-colors disabled:opacity-50 shrink-0"
+                  title="เพิ่มต่อจาก Canvas ปัจจุบัน"
                 >
                   <Loader2 v-if="appendingId === item.id" class="size-3 animate-spin" />
-                  <span v-else>+ Add</span>
+                  <PlusCircle v-else class="size-3" />
+                  <span>Add</span>
                 </button>
               </div>
             </div>
@@ -614,13 +706,23 @@ function nodeStats(nodes: any[]) {
                     {{ new Date(tpl.createdAt).toLocaleDateString('th-TH') }}
                   </p>
                 </div>
-                <!-- Add to canvas -->
+                <!-- Load (replace) -->
+                <button
+                  @click.stop="loadLocalToCanvas(tpl.id)"
+                  class="flex items-center gap-1 text-[10px] px-2.5 py-1 border rounded-lg font-semibold transition-colors shrink-0 hover:bg-accent"
+                  title="โหลดแทน Canvas ปัจจุบัน"
+                >
+                  <FolderOpen class="size-3" />
+                  <span class="hidden sm:inline">Load</span>
+                </button>
+                <!-- Add beside -->
                 <button
                   @click.stop="addLocalToCanvas(tpl.id)"
                   class="flex items-center gap-1 text-[10px] px-2.5 py-1 bg-sky-500 hover:bg-sky-600 text-white rounded-lg font-semibold transition-colors shrink-0"
-                  title="เพิ่มลง Canvas"
+                  title="เพิ่มต่อจาก Canvas ปัจจุบัน"
                 >
-                  + Add
+                  <PlusCircle class="size-3" />
+                  <span>Add</span>
                 </button>
                 <!-- Delete -->
                 <button
@@ -671,7 +773,8 @@ function nodeStats(nodes: any[]) {
 
           <!-- Footer hint -->
           <p v-if="loadTab !== 'import'" class="text-[10px] text-muted-foreground/50 text-center mt-3">
-            กด "+ Add" เพื่อเพิ่ม template เข้า canvas (ไม่แทนที่ข้อมูลเดิม)
+            <span class="font-semibold">Load</span> = โหลดแทน canvas ปัจจุบัน &nbsp;·&nbsp;
+            <span class="font-semibold">Add</span> = เพิ่มไว้ข้างๆ node ที่มีอยู่
           </p>
         </div>
       </div>

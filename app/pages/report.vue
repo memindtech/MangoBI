@@ -72,6 +72,9 @@ function onColumnClick(datasetId: string, colName: string) {
   }
 }
 
+// ─── Layers panel ─────────────────────────────────────────────────────────────
+const showLayersPanel = ref(false)
+
 // ─── Add Visual ───────────────────────────────────────────────────────────────
 const showVisualMenu = ref(false)
 const WIDGET_TYPES: { type: WidgetType; label: string; icon: any; color: string }[] = [
@@ -1158,6 +1161,67 @@ async function doDeleteRp(id: string) {
             {{ t('bi_hint_assign_field') }}
           </p>
         </div>
+
+        <!-- ── Layers toggle button (top-right) ────────────────────────── -->
+        <button
+          v-if="!showLayersPanel && store.widgets.length"
+          @click.stop="showLayersPanel = true"
+          class="absolute top-3 right-3 z-20 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-all shadow-sm bg-background text-muted-foreground border-border hover:border-indigo-400/50 hover:text-indigo-500"
+        >
+          <Layers class="size-3.5" />
+          Layers
+        </button>
+
+        <!-- ── Layers Panel ──────────────────────────────────────────────── -->
+        <Transition name="slide-right">
+          <div
+            v-if="showLayersPanel && store.widgets.length"
+            class="absolute top-3 right-3 z-20 w-60 rounded-xl border bg-background shadow-2xl flex flex-col overflow-hidden"
+            style="max-height: calc(100% - 24px)"
+            @click.stop
+          >
+            <!-- Header -->
+            <div class="px-3 py-2.5 border-b flex items-center justify-between shrink-0 bg-muted/30">
+              <div class="flex items-center gap-1.5">
+                <Layers class="size-3.5 text-indigo-500" />
+                <span class="text-xs font-semibold">Layers</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="text-xs text-muted-foreground">{{ store.widgets.length }} items</span>
+                <button @click="showLayersPanel = false" class="text-muted-foreground hover:text-foreground transition-colors">
+                  <X class="size-3.5" />
+                </button>
+              </div>
+            </div>
+            <!-- Widget list -->
+            <div class="flex-1 overflow-y-auto min-h-0 py-1">
+              <button
+                v-for="widget in [...store.widgets].reverse()"
+                :key="widget.id"
+                @click="selectedWidgetId = widget.id; activeField = null"
+                class="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-accent transition-colors"
+                :class="selectedWidgetId === widget.id ? 'bg-indigo-50 dark:bg-indigo-950/40' : ''"
+              >
+                <component
+                  :is="WIDGET_TYPES.find(t => t.type === widget.type)?.icon ?? LayoutDashboard"
+                  class="size-3.5 shrink-0"
+                  :class="selectedWidgetId === widget.id
+                    ? 'text-indigo-500'
+                    : (WIDGET_TYPES.find(t => t.type === widget.type)?.color ?? 'text-muted-foreground')"
+                />
+                <div class="flex-1 min-w-0">
+                  <p class="text-xs font-medium truncate"
+                    :class="selectedWidgetId === widget.id ? 'text-indigo-600 dark:text-indigo-400' : ''">
+                    {{ widget.title || WIDGET_TYPES.find(t => t.type === widget.type)?.label || widget.type }}
+                  </p>
+                  <p class="text-xs text-muted-foreground">
+                    {{ WIDGET_TYPES.find(t => t.type === widget.type)?.label ?? widget.type }}
+                  </p>
+                </div>
+              </button>
+            </div>
+          </div>
+        </Transition>
 
         <!-- Canvas size extender -->
         <div style="min-width: 1400px; min-height: 900px; position: relative; padding: 12px;">

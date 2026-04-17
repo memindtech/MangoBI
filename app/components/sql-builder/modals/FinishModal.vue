@@ -92,10 +92,16 @@ async function doSave() {
         newColumnName: r.newName,
       }))
     )
+    // Strip details arrays to reduce payload size (they can be re-fetched from API on load)
+    const nodesSlim = nodes.value.map((n: any) => ({
+      ...n,
+      data: { ...n.data, details: undefined },
+    }))
+
     const newId = await api.saveSQLBuilder({
       id:            savedId.value ?? undefined,
       name:          finishName.value.trim(),
-      nodesJson:     JSON.stringify(nodes.value),
+      nodesJson:     JSON.stringify(nodesSlim),
       edgesJson:     JSON.stringify(edges.value),
       sqlText:       generatedSQL.value,
       columnMapping,
