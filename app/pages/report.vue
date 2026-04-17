@@ -4,8 +4,11 @@ import {
   Database, Download, Loader2, AlertCircle,
   LayoutDashboard, Home, Plus, X, Trash2,
   ChevronDown, ChevronLeft, Hash as HashIcon, Type as TypeIcon, Filter,
-  Layers, Activity, Network, Code2, MousePointer2, Link2, Check, RotateCcw,
+  Layers, Activity, Network, Code2, MousePointer2, Link2, Check, RotateCcw, Sparkles,
 } from 'lucide-vue-next'
+import { useAiContext } from '~/composables/report/useAiContext'
+import { useAiChatStore } from '~/stores/ai-chat'
+import { useAiFeature } from '~/composables/useAiFeature'
 import ReportWidget from '~/components/report/ReportWidget.vue'
 import { MOCK_DATA, DATASET_META, type DatasetKey } from '~/stores/canvas'
 import type { WidgetType, WidgetFields, FilterCondition, FilterOperator, ReportWidget as RWidget, AggregationType } from '~/stores/report'
@@ -30,6 +33,10 @@ useHead({ title: computed(() => `${t('page_title_report')} | MangoBI`) })
 const store  = useReportStore()
 const router = useRouter()
 const { $xt } = useNuxtApp() as any
+
+const { systemPrompt: aiSystemPrompt, contextLabel: aiContextLabel } = useAiContext()
+const aiStore = useAiChatStore()
+const { enabled: aiEnabled } = useAiFeature()
 
 // ─── Selection ────────────────────────────────────────────────────────────────
 const selectedWidgetId = ref<string | null>(null)
@@ -927,6 +934,21 @@ async function doDeleteRp(id: string) {
             </button>
           </div>
         </div>
+
+        <!-- AI Assistant (paying customers only) -->
+        <button
+          v-if="aiEnabled"
+          @click.stop="aiStore.togglePanel('report')"
+          :class="[
+            'flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border font-medium transition-all',
+            aiStore.openPage === 'report'
+              ? 'bg-violet-500 text-white border-violet-500'
+              : 'border-violet-300 text-violet-600 hover:bg-violet-50 dark:border-violet-700 dark:text-violet-400 dark:hover:bg-violet-950/30',
+          ]"
+        >
+          <Sparkles class="size-3.5" />
+          AI
+        </button>
       </div>
     </header>
 
@@ -1985,6 +2007,14 @@ async function doDeleteRp(id: string) {
         </div>
       </Transition>
     </Teleport>
+
+    <!-- AI Panel -->
+    <AiPanel
+      v-if="aiEnabled && aiStore.openPage === 'report'"
+      page="report"
+      :system-prompt="aiSystemPrompt"
+      :context-label="aiContextLabel"
+    />
 
   </div>
 </template>

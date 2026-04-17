@@ -6,6 +6,11 @@ import { useDragDrop } from '~/composables/sql-builder/useDragDrop'
 import { useHistory } from '~/composables/sql-builder/useHistory'
 import { useKeyboardShortcuts } from '~/composables/sql-builder/useKeyboardShortcuts'
 import { useSqlGenerator } from '~/composables/sql-builder/useSqlGenerator'
+import { useAiContext } from '~/composables/sql-builder/useAiContext'
+import { useAiChatStore } from '~/stores/ai-chat'
+import { useAiFeature } from '~/composables/useAiFeature'
+import { useAiActions } from '~/composables/sql-builder/useAiActions'
+import type { AiCanvasAction } from '~/composables/sql-builder/useAiActions'
 
 definePageMeta({ layout: 'workspace', auth: true })
 useHead({ title: 'SQL Builder | MangoBI', bodyAttrs: { class: 'sql-builder-active' } })
@@ -82,6 +87,18 @@ async function onFinish() {
   await nextTick()
   store.openFinishModal()
 }
+
+const { systemPrompt, contextLabel } = useAiContext()
+const aiStore = useAiChatStore()
+const { enabled: aiEnabled } = useAiFeature()
+const { execute: executeAiAction } = useAiActions()
+
+function onAiAction(action: AiCanvasAction) {
+  const result = executeAiAction(action)
+  if (!result.ok) {
+    console.warn('[AI Action]', result.message)
+  }
+}
 </script>
 
 <template>
@@ -99,5 +116,14 @@ async function onFinish() {
     <SqlBuilderModalsFilterModal />
     <SqlBuilderModalsGroupSelectModal />
     <SqlBuilderModalsFinishModal />
+
+    <!-- AI Panel -->
+    <AiPanel
+      v-if="aiEnabled && aiStore.openPage === 'sql-builder'"
+      page="sql-builder"
+      :system-prompt="systemPrompt"
+      :context-label="contextLabel"
+      @apply-action="onAiAction"
+    />
   </div>
 </template>

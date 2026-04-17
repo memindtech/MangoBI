@@ -1,3 +1,19 @@
+/* ── AI Panel slide-in transition ───────────────────────────────────────────────── */
+.slide-right-enter-active,
+.slide-right-leave-active {
+  transition: transform 0.25s ease, opacity 0.25s ease;
+}
+.slide-right-enter-from,
+.slide-right-leave-to {
+  transform: translateX(100%);
+  opacity: 0;
+}
+.slide-right-enter-to,
+.slide-right-leave-from {
+  transform: translateX(0);
+  opacity: 1;
+}
+
 /* ── Thin 2px scrollbar — SQL Builder page (includes teleported modals/dropdowns) ── */
 body.sql-builder-active * {
   scrollbar-width: thin;

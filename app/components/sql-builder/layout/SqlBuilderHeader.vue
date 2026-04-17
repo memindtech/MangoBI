@@ -8,8 +8,13 @@ import {
   Code2, ArrowRight, Trash2, Undo2, Redo2,
   BookmarkPlus, BookMarked, Download, X as XIcon,
   CloudDownload, Loader2, FileCode2, CheckCheck, Globe,
-  FolderOpen, PlusCircle,
+  FolderOpen, PlusCircle, Sparkles,
 } from 'lucide-vue-next'
+import { useAiChatStore } from '~/stores/ai-chat'
+import { useAiFeature } from '~/composables/useAiFeature'
+
+const aiStore = useAiChatStore()
+const { enabled: aiEnabled } = useAiFeature()
 import { MarkerType } from '@vue-flow/core'
 import { getEdgeStyle } from '~/types/sql-builder'
 import { useSqlBuilderStore } from '~/stores/sql-builder'
@@ -535,6 +540,22 @@ function nodeStats(nodes: any[]) {
         class="text-xs px-2 py-1.5 border rounded-lg hover:bg-destructive/10 hover:text-destructive transition-colors"
         title="Clear canvas">
         <Trash2 class="size-3.5" />
+      </button>
+
+      <!-- AI Assistant (paying customers only) -->
+      <button
+        v-if="aiEnabled"
+        @click="aiStore.togglePanel('sql-builder')"
+        :class="[
+          'flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border font-medium transition-all',
+          aiStore.openPage === 'sql-builder'
+            ? 'bg-violet-500 text-white border-violet-500'
+            : 'border-violet-300 text-violet-600 hover:bg-violet-50 dark:border-violet-700 dark:text-violet-400 dark:hover:bg-violet-950/30',
+        ]"
+        title="AI Assistant"
+      >
+        <Sparkles class="size-3.5" />
+        AI
       </button>
     </div>
   </header>

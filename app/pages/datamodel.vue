@@ -8,8 +8,11 @@ import {
   Database, Download, Loader2, AlertCircle, Bug,
   GitMerge, Home, Trash2, Link2, X, Table2, ArrowRight,
   Shuffle, Plus, ChevronDown, ChevronRight, Layers, RotateCcw, Globe, Lock,
-  Calculator, BookMarked, RefreshCw,
+  Calculator, BookMarked, RefreshCw, Sparkles,
 } from 'lucide-vue-next'
+import { useAiContext } from '~/composables/datamodel/useAiContext'
+import { useAiChatStore } from '~/stores/ai-chat'
+import { useAiFeature } from '~/composables/useAiFeature'
 import {
   applyTransform, componentKey,
   accumulateRow, materializeAccumulators, matchFilters, normDateStr,
@@ -1740,6 +1743,10 @@ async function appendDmTemplate(id: string) {
   } catch (err) { console.error(err) }
   finally { tplAppending.value = null }
 }
+
+const { systemPrompt: aiSystemPrompt, contextLabel: aiContextLabel } = useAiContext()
+const aiStore = useAiChatStore()
+const { enabled: aiEnabled } = useAiFeature()
 </script>
 
 <template>
@@ -1802,6 +1809,21 @@ async function appendDmTemplate(id: string) {
             {{ t('bi_load_dm_title') }}
           </button>
         </div>
+
+        <!-- AI Assistant (paying customers only) -->
+        <button
+          v-if="aiEnabled"
+          @click="aiStore.togglePanel('datamodel')"
+          :class="[
+            'flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border font-medium transition-all',
+            aiStore.openPage === 'datamodel'
+              ? 'bg-violet-500 text-white border-violet-500'
+              : 'border-violet-300 text-violet-600 hover:bg-violet-50 dark:border-violet-700 dark:text-violet-400 dark:hover:bg-violet-950/30',
+          ]"
+        >
+          <Sparkles class="size-3.5" />
+          AI
+        </button>
 
         <!-- Export to Report -->
         <div class="flex items-center gap-2 border-l pl-3">
@@ -3808,6 +3830,14 @@ async function appendDmTemplate(id: string) {
         </div>
       </Transition>
     </Teleport>
+
+    <!-- AI Panel -->
+    <AiPanel
+      v-if="aiEnabled && aiStore.openPage === 'datamodel'"
+      page="datamodel"
+      :system-prompt="aiSystemPrompt"
+      :context-label="aiContextLabel"
+    />
 
   </div>
 </template>
