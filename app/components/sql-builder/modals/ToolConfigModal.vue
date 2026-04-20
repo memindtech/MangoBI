@@ -690,18 +690,9 @@ const sortItems = computed(() =>
   (store.modalNode?.data?.items ?? []) as Array<{ col: string; dir: 'ASC' | 'DESC' }>
 )
 
-// True after user explicitly presses "clear" — prevents empty-items from being read as "all selected"
-const sortExplicitlyCleared = ref(false)
-
-const sortItemCount = computed(() => {
-  if (sortItems.value.length) return sortItems.value.length
-  if (sortExplicitlyCleared.value) return 0
-  return upstreamCols.value.length  // all selected by default when not yet initialized
-})
+const sortItemCount = computed(() => sortItems.value.length)
 
 function isSortSelected(colName: string) {
-  // Empty items = "all selected" default, UNLESS user explicitly cleared
-  if (!sortItems.value.length && !sortExplicitlyCleared.value) return true
   return sortItems.value.some(s => s.col === colName)
 }
 
@@ -710,10 +701,7 @@ function getSortDir(colName: string): 'ASC' | 'DESC' {
 }
 
 function toggleSortCol(colName: string, checked: boolean) {
-  // If items is empty (all-selected default), materialize all cols first
-  const current = sortItems.value.length > 0
-    ? sortItems.value.map(s => ({ ...s }))
-    : upstreamCols.value.map(c => ({ col: c.name, dir: 'ASC' as 'ASC' | 'DESC' }))
+  const current = sortItems.value.map(s => ({ ...s }))
   if (checked) {
     if (!current.some(s => s.col === colName)) current.push({ col: colName, dir: 'ASC' })
   } else {
@@ -724,16 +712,11 @@ function toggleSortCol(colName: string, checked: boolean) {
 }
 
 function setSortDir(colName: string, dir: 'ASC' | 'DESC') {
-  // If items is empty (all-selected default), materialize all cols first
-  const base = sortItems.value.length > 0
-    ? sortItems.value.map(s => ({ ...s }))
-    : upstreamCols.value.map(c => ({ col: c.name, dir: 'ASC' as 'ASC' | 'DESC' }))
-  const current = base.map(s => s.col === colName ? { ...s, dir } : s)
+  const current = sortItems.value.map(s => s.col === colName ? { ...s, dir } : s)
   store.updateNodeData(store.modalNodeId!, { items: current })
 }
 
 function selectAllSortCols() {
-  sortExplicitlyCleared.value = false
   store.updateNodeData(store.modalNodeId!, {
     items: upstreamCols.value.map(c => ({
       col: c.name,
@@ -743,7 +726,6 @@ function selectAllSortCols() {
 }
 
 function clearSortCols() {
-  sortExplicitlyCleared.value = true
   store.updateNodeData(store.modalNodeId!, { items: [] })
 }
 
@@ -983,11 +965,13 @@ function selectCalcCol(i: number, colName: string) {
 
 // Auto-init on modal open
 // flush:'sync' ensures the init runs before first render so cols appear pre-checked
-watch(() => store.modalNode, (node) => {
+watch(() => store.modalNode, (node, oldNode) => {
   if (!node) { colSearch.value = ''; sortColSearch.value = ''; return }
   const type = node.data.nodeType
+  // True only when the modal just opened for a different node (not a data update on the same node)
+  const isNewOpen = node.id !== oldNode?.id
   if (type === 'group') {
-    colSearch.value = ''
+    if (isNewOpen) colSearch.value = ''
     // Clear junk groupCols from old auto-populate behavior, but only if the user
     // has never explicitly set them (_groupColsUserSet flag is absent)
     if (!node.data._groupColsUserSet && upstreamCols.value.length > 0) {
@@ -997,11 +981,7 @@ watch(() => store.modalNode, (node) => {
       }
     }
   } else if (type === 'sort') {
-    sortColSearch.value = ''
-    sortExplicitlyCleared.value = false
-    if (!node.data.items?.length && upstreamCols.value.length) {
-      store.updateNodeData(node.id, { items: upstreamCols.value.map((c: VisibleCol) => ({ col: c.name, dir: 'ASC' })) })
-    }
+    if (isNewOpen) sortColSearch.value = ''
   } else if (type === 'calc') {
     // Auto-add one empty item so user can start immediately
     if (!node.data.items?.length) {
@@ -1022,8 +1002,6 @@ watch(upstreamCols, (cols) => {
         store.updateNodeData(node.id, { groupCols: [], _groupColsUserSet: false })
       }
     }
-  } else if (node.data.nodeType === 'sort' && !node.data.items?.length && cols.length) {
-    store.updateNodeData(node.id, { items: cols.map((c: VisibleCol) => ({ col: c.name, dir: 'ASC' })) })
   }
 })
 
@@ -1085,11 +1063,6 @@ function selectAggCol(i: number, colName: string) {
 
 // ── Finish = apply sort defaults + generate SQL + close tool modal ────────
 function finish() {
-  if (nodeType.value === 'sort' && store.modalNodeId && !sortItems.value.length && !sortExplicitlyCleared.value && upstreamCols.value.length) {
-    store.updateNodeData(store.modalNodeId, {
-      items: upstreamCols.value.map((c: VisibleCol) => ({ col: c.name, dir: 'ASC' as 'ASC' | 'DESC' })),
-    })
-  }
   // Node is confirmed — clear the "new, unsaved" tracking
   store.newToolNodeId = null
   generateSQL()
