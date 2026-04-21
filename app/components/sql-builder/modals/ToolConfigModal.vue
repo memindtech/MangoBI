@@ -302,11 +302,24 @@ function collectNodeInfo(rootId: string): { tables: string[]; colNames: Set<stri
   return { tables, colNames }
 }
 
-// ── Union: ALL canvas nodes available as sources (except self) ───────────
+// ── IDs of sqlTable nodes that live inside a cteFrame (hidden from flat list)
+const cteChildTableIds = computed((): Set<string> => {
+  const ids = new Set<string>()
+  for (const node of store.nodes) {
+    if (node.type === 'cteFrame') {
+      for (const child of getCteFrameChildren(node)) {
+        ids.add(child.id as string)
+      }
+    }
+  }
+  return ids
+})
+
+// ── Union: ALL canvas nodes available as sources (except self & cte-children)
 const allUnionSources = computed(() => {
   if (!store.modalNodeId) return []
   return store.nodes
-    .filter((n: any) => n.id !== store.modalNodeId)
+    .filter((n: any) => n.id !== store.modalNodeId && !cteChildTableIds.value.has(n.id as string))
     .map((n: any) => {
       const nt  = n.data?.nodeType as string | undefined
       const tag = n.type === 'sqlTable' ? 'TABLE' : (nt ?? n.type ?? '').toUpperCase()
@@ -458,6 +471,7 @@ function collectVisibleCols(rootId: string): VisibleCol[] {
   const visited = new Set<string>()
 
   function addTableCols(node: any) {
+    const tableLabel = String(node.data.tableName || node.data.label || node.id)
     const visible = node.data.visibleCols as VisibleCol[] | undefined
     const details = node.data.details as any[] | undefined
     const src: VisibleCol[] = visible?.length
@@ -470,7 +484,10 @@ function collectVisibleCols(rootId: string): VisibleCol[] {
           alias:  '',
         }))
     for (const col of src) {
-      if (!seen.has(col.name)) { seen.add(col.name); cols.push(col) }
+      if (!seen.has(col.name)) {
+        seen.add(col.name)
+        cols.push({ ...col, sourceTableLabel: col.sourceTableLabel || tableLabel })
+      }
     }
   }
 
@@ -501,6 +518,54 @@ function collectVisibleCols(rootId: string): VisibleCol[] {
   return cols
 }
 
+// ── Union: collect table-grouped VisibleCol[] for expanded display ────────
+interface TableColGroup { tableId: string; tableLabel: string; cols: VisibleCol[] }
+
+function collectTableGroups(rootId: string): TableColGroup[] {
+  const groups: TableColGroup[] = []
+  const visited = new Set<string>()
+
+  function addGroup(node: any) {
+    const tableLabel = String(node.data.tableName || node.data.label || node.id)
+    const visible = node.data.visibleCols as VisibleCol[] | undefined
+    const details = node.data.details as any[] | undefined
+    const cols: VisibleCol[] = visible?.length
+      ? visible
+      : (details ?? []).map((c: any) => ({
+          name:   c.column_name,
+          type:   c.column_type || c.data_type,
+          remark: c.remark ?? '',
+          isPk:   c.data_pk === 'Y',
+          alias:  '',
+        }))
+    groups.push({ tableId: node.id as string, tableLabel, cols })
+  }
+
+  function walk(id: string) {
+    if (visited.has(id)) return
+    visited.add(id)
+    const node = store.nodes.find((n: any) => n.id === id)
+    if (!node) return
+    if (node.type === 'sqlTable') {
+      addGroup(node)
+    } else if (node.type === 'cteFrame') {
+      for (const child of getCteFrameChildren(node)) {
+        if (!visited.has(child.id as string)) {
+          visited.add(child.id as string)
+          addGroup(child)
+        }
+      }
+    } else {
+      store.edges
+        .filter((e: any) => e.target === id)
+        .forEach((e: any) => walk(e.source as string))
+    }
+  }
+
+  walk(rootId)
+  return groups
+}
+
 // ── Union: grouped cols — one group per connected source node ─────────────
 interface UnionColGroup {
   sourceId:  string
@@ -527,6 +592,167 @@ const unionGroupedCols = computed((): UnionColGroup[] => {
     .filter(Boolean) as UnionColGroup[]
 })
 
+// ── Union: expandable group cards ──────────────────────────────────────
+const unionExpandedSources = ref(new Set<string>())
+
+function toggleUnionSourceExpanded(id: string) {
+  const s = new Set(unionExpandedSources.value)
+  s.has(id) ? s.delete(id) : s.add(id)
+  unionExpandedSources.value = s
+}
+
+// Rich source list (all available nodes) including their visible cols
+const allUnionSourcesRich = computed(() =>
+  allUnionSources.value.map(src => ({
+    ...src,
+    cols:        collectVisibleCols(src.id),
+    tableGroups: collectTableGroups(src.id),
+  }))
+)
+
+// Track which table sub-groups are expanded (key = sourceId:tableId)
+const expandedTableGroups = ref(new Set<string>())
+function toggleTableGroup(sourceId: string, tableId: string) {
+  const key = `${sourceId}:${tableId}`
+  const s   = new Set(expandedTableGroups.value)
+  s.has(key) ? s.delete(key) : s.add(key)
+  expandedTableGroups.value = s
+}
+
+// ── Union: column mapping model ───────────────────────────────────────
+interface UnionColMap {
+  outputName: string
+  picks: Record<string, string>  // sourceId → fieldName ('' = NULL)
+}
+
+const unionColMapping = computed((): UnionColMap[] =>
+  (store.modalNode?.data?.columnMapping ?? []) as UnionColMap[]
+)
+
+function addUnionMappingRow() {
+  const current = unionColMapping.value.map(r => ({ ...r, picks: { ...r.picks } }))
+  current.push({ outputName: `column_${current.length + 1}`, picks: {} })
+  tn.setModalData({ columnMapping: current })
+}
+
+function removeUnionMappingRow(i: number) {
+  const current = unionColMapping.value.map(r => ({ ...r, picks: { ...r.picks } }))
+  current.splice(i, 1)
+  tn.setModalData({ columnMapping: current })
+}
+
+function setUnionMappingRowName(i: number, name: string) {
+  const current = unionColMapping.value.map(r => ({ ...r, picks: { ...r.picks } }))
+  if (current[i]) current[i]!.outputName = name
+  tn.setModalData({ columnMapping: current })
+}
+
+function setUnionMappingPick(rowIdx: number, sourceId: string, field: string) {
+  const current = unionColMapping.value.map(r => ({ ...r, picks: { ...r.picks } }))
+  if (current[rowIdx]) current[rowIdx]!.picks[sourceId] = field
+  tn.setModalData({ columnMapping: current })
+}
+
+function autoDetectUnionMapping() {
+  const sources = unionGroupedCols.value
+  if (!sources.length) return
+  const allColNames = new Set<string>()
+  for (const src of sources) {
+    for (const col of src.cols) allColNames.add(col.name)
+  }
+  const mapping: UnionColMap[] = []
+  for (const colName of allColNames) {
+    const picks: Record<string, string> = {}
+    for (const src of sources) {
+      picks[src.sourceId] = src.cols.some(c => c.name === colName) ? colName : ''
+    }
+    mapping.push({ outputName: colName, picks })
+  }
+  tn.setModalData({ columnMapping: mapping })
+}
+
+function clearUnionMapping() {
+  tn.setModalData({ columnMapping: [] })
+}
+
+const unionAllSourceCols = computed(() => {
+  const sources = unionGroupedCols.value
+  if (!sources.length) return []
+  const colMap = new Map<string, { name: string; type: string; coveredCount: number }>()
+  for (const src of sources) {
+    for (const col of src.cols) {
+      if (!colMap.has(col.name)) colMap.set(col.name, { name: col.name, type: col.type, coveredCount: 0 })
+    }
+  }
+  for (const [name, entry] of colMap) {
+    entry.coveredCount = sources.filter(s => s.cols.some(c => c.name === name)).length
+  }
+  return [...colMap.values()].sort((a, b) => b.coveredCount - a.coveredCount)
+})
+
+function isColumnMapped(colName: string): boolean {
+  return unionColMapping.value.some(r => r.outputName === colName)
+}
+
+function toggleColumnInMapping(colName: string) {
+  const current = unionColMapping.value.map(r => ({ ...r, picks: { ...r.picks } }))
+  const idx = current.findIndex(r => r.outputName === colName)
+  if (idx >= 0) {
+    current.splice(idx, 1)
+  } else {
+    const picks: Record<string, string> = {}
+    for (const src of unionGroupedCols.value) {
+      picks[src.sourceId] = src.cols.some(c => c.name === colName) ? colName : ''
+    }
+    current.push({ outputName: colName, picks })
+  }
+  tn.setModalData({ columnMapping: current })
+}
+
+function getUnionPickType(sourceId: string, fieldName: string): string {
+  const group = unionGroupedCols.value.find(g => g.sourceId === sourceId)
+  return group?.cols.find(c => c.name === fieldName)?.type ?? ''
+}
+
+function hasUnionTypeMismatch(row: UnionColMap): boolean {
+  const types = Object.entries(row.picks)
+    .filter(([, f]) => f)
+    .map(([srcId, field]) => {
+      const t = getUnionPickType(srcId, field).toLowerCase()
+      return t.split('(')[0] ?? ''
+    })
+    .filter(Boolean)
+  if (types.length < 2) return false
+  return !types.every(t => t === types[0])
+}
+
+function getUnionRowOutputType(row: UnionColMap): string {
+  for (const src of unionGroupedCols.value) {
+    const field = row.picks[src.sourceId]
+    if (field) return getUnionPickType(src.sourceId, field)
+  }
+  return ''
+}
+
+function groupColsByTable(cols: VisibleCol[]): { tableLabel: string; cols: VisibleCol[] }[] {
+  const order: string[] = []
+  const map = new Map<string, VisibleCol[]>()
+  for (const col of cols) {
+    const key = col.sourceTableLabel || col.sourceTable || ''
+    if (!map.has(key)) { map.set(key, []); order.push(key) }
+    map.get(key)!.push(col)
+  }
+  return order.map(k => ({ tableLabel: k, cols: map.get(k)! }))
+}
+
+const showAddSourceDropdown = ref(false)
+const showUnionSqlPreview   = ref(true)
+const unionViewMode         = ref<'output' | 'mapping'>('output')
+
+const availableUnconnectedSources = computed(() =>
+  allUnionSourcesRich.value.filter(src => !isUnionSourceConnected(src.id))
+)
+
 // ── Union: search + filtered groups ──────────────────────────────────────
 const unionColSearch = ref('')
 
@@ -541,20 +767,39 @@ const unionFilteredGroups = computed((): UnionColGroup[] => {
 // ── Union SQL preview (dynamic, per-source cols + WHERE) ─────────────────
 const unionSqlPreview = computed(() => {
   const uType   = store.modalNode?.data?.unionType ?? 'UNION ALL'
-  const colsMap = (store.modalNode?.data?.selectedColsMap ?? {}) as Record<string, string[]>
-  const global  = (store.modalNode?.data?.selectedCols ?? []) as string[]
   const conds   = ((store.modalNode?.data?.conditions ?? []) as any[]).filter(c => c.column && c.operator)
   const sources = unionSources.value.length
     ? unionSources.value
     : [{ id: '', label: 'source1' }, { id: '', label: 'source2' }]
 
-  const parts = sources.map(s => {
-    const srcCols = s.id ? (colsMap[s.id] ?? []).filter(Boolean) : []
-    const cols    = srcCols.length ? srcCols : global.filter(Boolean)
-    const sel     = cols.length ? `SELECT\n  ${cols.join(',\n  ')}` : 'SELECT *'
-    return `${sel}\nFROM ${s.label}`
-  })
-  const unionPart = parts.join(`\n${uType}\n`)
+  let unionPart: string
+  const mapping = unionColMapping.value
+
+  if (mapping.length > 0 && unionGroupedCols.value.length > 0) {
+    // Use columnMapping model
+    const parts = unionGroupedCols.value.map(group => {
+      const selects = mapping.map(row => {
+        const field = row.picks[group.sourceId] ?? ''
+        if (!field) return `  NULL AS ${row.outputName}`
+        const alias = field !== row.outputName ? ` AS ${row.outputName}` : ''
+        return `  ${field}${alias}`
+      })
+      return `SELECT\n${selects.join(',\n')}\nFROM ${group.label}`
+    })
+    unionPart = parts.join(`\n${uType}\n`)
+  } else {
+    // Fall back to selectedColsMap / selectedCols
+    const colsMap = (store.modalNode?.data?.selectedColsMap ?? {}) as Record<string, string[]>
+    const global  = (store.modalNode?.data?.selectedCols ?? []) as string[]
+    const parts = sources.map((s: any) => {
+      const srcCols = s.id ? (colsMap[s.id] ?? []).filter(Boolean) : []
+      const cols    = srcCols.length ? srcCols : global.filter(Boolean)
+      const sel     = cols.length ? `SELECT\n  ${cols.join(',\n  ')}` : 'SELECT *'
+      return `${sel}\nFROM ${s.label}`
+    })
+    unionPart = parts.join(`\n${uType}\n`)
+  }
+
   if (!conds.length) return unionPart
   const wherePart = conds.map((c: any) => condPreview(c)).join('\n  AND ')
   return `SELECT * FROM (\n  ${unionPart.replace(/\n/g, '\n  ')}\n) _u\nWHERE ${wherePart}`
@@ -1364,7 +1609,7 @@ const finishBtnStyle = computed(() => {
       <div
         :class="[
           'bg-background rounded-2xl border shadow-2xl flex flex-col overflow-hidden',
-          nodeType === 'union' ? 'w-full max-w-[1000px]' :
+          nodeType === 'union' ? 'w-full max-w-[860px]' :
           nodeType === 'cte'   ? 'w-full max-w-[900px]' :
           (nodeType === 'group' || nodeType === 'sort' || nodeType === 'calc' || nodeType === 'where') ? 'w-full max-w-[960px]' : 'w-[440px]',
         ]"
@@ -2380,257 +2625,480 @@ const finishBtnStyle = computed(() => {
 
           <!-- ── Union ───────────────────────────────────────────────── -->
           <template v-else-if="nodeType === 'union'">
+            <div class="grid grid-cols-[280px_1fr] gap-0 flex-1 min-h-0 -mx-5 -mb-5 overflow-hidden">
 
-            <!-- ── Row 1: UNION type + CTE name ────────────────────── -->
-            <div class="flex items-stretch gap-4">
-              <div class="flex gap-2 shrink-0">
-                <button @click="tn.setModalData({ unionType: 'UNION ALL' })"
-                  :class="[
-                    'flex flex-col items-center px-5 py-2.5 rounded-xl border text-xs font-bold transition-colors',
-                    store.modalNode.data.unionType === 'UNION ALL'
-                      ? 'border-yellow-500 bg-yellow-500/15 text-yellow-600'
-                      : 'border-border text-muted-foreground hover:bg-accent',
-                  ]">
-                  UNION ALL
-                  <span class="text-[9px] font-normal opacity-60 mt-0.5">รวมทุก rows</span>
-                </button>
-                <button @click="tn.setModalData({ unionType: 'UNION' })"
-                  :class="[
-                    'flex flex-col items-center px-5 py-2.5 rounded-xl border text-xs font-bold transition-colors',
-                    store.modalNode.data.unionType === 'UNION'
-                      ? 'border-yellow-500 bg-yellow-500/15 text-yellow-600'
-                      : 'border-border text-muted-foreground hover:bg-accent',
-                  ]">
-                  UNION
-                  <span class="text-[9px] font-normal opacity-60 mt-0.5">ตัด duplicates</span>
-                </button>
-              </div>
-              <div class="flex-1 flex flex-col justify-center gap-1">
-                <label class="text-[10px] font-semibold text-yellow-500 uppercase tracking-wide">
-                  CTE Name <span class="normal-case font-normal text-muted-foreground ml-1">(ไม่บังคับ — ใช้ซ้อน Union ได้)</span>
-                </label>
-                <input
-                  :value="store.modalNode?.data?.name ?? ''"
-                  @input="tn.setModalData({ name: ($event.target as HTMLInputElement).value })"
-                  class="h-9 px-3 rounded-lg border bg-background text-sm font-mono focus:outline-none focus:ring-2 focus:ring-yellow-500/40"
-                  placeholder="เช่น union_ap  (ว่าง = auto)"
-                  spellcheck="false"
-                />
-              </div>
-            </div>
+            <!-- ════ LEFT: Sources panel ══════════════════════════════ -->
+            <div class="flex flex-col border-r border-border/40 overflow-hidden">
 
-            <!-- ── Row 2: Sources | Column picker ───────────────────── -->
-            <div class="grid grid-cols-[minmax(0,260px)_minmax(0,1fr)] gap-4">
-
-            <!-- ── LEFT: Sources ──────────────────────────────────── -->
-            <div class="flex flex-col gap-2 min-w-0">
-              <div class="flex items-center gap-2">
-                <p class="text-[11px] font-semibold text-yellow-500 uppercase tracking-wide flex-1">Sources</p>
-                <span class="text-[10px] text-muted-foreground">{{ unionSources.length ? unionSources.length + ' selected' : 'none' }}</span>
-              </div>
-              <div v-if="!allUnionSources.length"
-                class="flex items-center gap-2 px-3 py-3 rounded-xl bg-yellow-500/5 border border-yellow-500/20 text-[10px] text-muted-foreground">
+              <!-- Left header -->
+              <div class="flex items-center gap-2 px-4 py-3 border-b border-border/40 bg-muted/20 shrink-0">
                 <GitMerge class="size-3.5 text-yellow-500 shrink-0" />
-                วาง Table / CTE node ลง canvas ก่อน
-              </div>
-              <div v-else class="border border-yellow-500/20 rounded-xl divide-y divide-yellow-500/10 overflow-hidden overflow-y-auto max-h-[340px]">
-                <label v-for="(src, si) in allUnionSources" :key="src.id"
-                  class="flex items-center gap-2 px-3 py-2.5 cursor-pointer select-none transition-colors hover:bg-yellow-500/5"
-                  :class="isUnionSourceConnected(src.id) ? 'bg-yellow-500/8' : ''">
-                  <div :class="[
-                    'size-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors',
-                    isUnionSourceConnected(src.id) ? 'bg-yellow-500 border-yellow-500' : 'border-border/60 bg-background',
-                  ]" @click.prevent="toggleUnionSource(src.id)">
-                    <svg v-if="isUnionSourceConnected(src.id)" class="size-2.5 text-white" fill="none" viewBox="0 0 10 10">
-                      <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-                    </svg>
-                    <input type="checkbox" class="sr-only" :checked="isUnionSourceConnected(src.id)" @change="toggleUnionSource(src.id)" />
+                <span class="text-[11px] font-bold text-yellow-500 uppercase tracking-wide flex-1">Sources</span>
+                <span class="text-[10px] font-semibold text-yellow-600 bg-yellow-500/10 px-2 py-0.5 rounded-full">
+                  {{ unionSources.length }}
+                </span>
+                <!-- Add source dropdown -->
+                <div class="relative">
+                  <button @click="showAddSourceDropdown = !showAddSourceDropdown"
+                    :disabled="!availableUnconnectedSources.length"
+                    :class="[
+                      'flex items-center gap-1 h-6 px-2 rounded-md border text-[10px] font-medium transition-colors',
+                      availableUnconnectedSources.length
+                        ? 'border-yellow-500/40 text-yellow-500 hover:bg-yellow-500/10'
+                        : 'border-border/20 text-muted-foreground/30 cursor-not-allowed',
+                    ]">
+                    <Plus class="size-3" /> เพิ่ม
+                  </button>
+                  <div v-if="showAddSourceDropdown && availableUnconnectedSources.length"
+                    class="absolute top-full right-0 mt-1 z-50 bg-background border rounded-xl shadow-xl overflow-hidden min-w-[200px]">
+                    <button v-for="src in availableUnconnectedSources" :key="src.id"
+                      @click="toggleUnionSource(src.id); showAddSourceDropdown = false"
+                      class="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-yellow-500/8 transition-colors">
+                      <span :class="[
+                        'text-[8px] font-bold px-1 py-0.5 rounded font-mono uppercase shrink-0',
+                        src.tag === 'TABLE' ? 'bg-sky-500/20 text-sky-400' :
+                        src.tag === 'CTE'   ? 'bg-violet-500/20 text-violet-400' :
+                        src.tag === 'UNION' ? 'bg-yellow-500/20 text-yellow-500' :
+                        src.tag === 'GROUP' ? 'bg-orange-500/20 text-orange-400' :
+                        src.tag === 'CALC'  ? 'bg-teal-500/20 text-teal-400' :
+                                              'bg-muted text-muted-foreground'
+                      ]">{{ src.tag }}</span>
+                      <span class="font-mono text-[11px] flex-1 truncate">{{ src.label }}</span>
+                      <span class="text-[9px] text-muted-foreground/50 font-mono shrink-0">{{ src.cols.length }}c</span>
+                    </button>
                   </div>
-                  <span :class="[
-                    'text-[8px] font-bold px-1.5 py-0.5 rounded font-mono uppercase shrink-0',
-                    src.tag === 'TABLE'  ? 'bg-sky-500/20 text-sky-400' :
-                    src.tag === 'CTE'    ? 'bg-violet-500/20 text-violet-400' :
-                    src.tag === 'UNION'  ? 'bg-yellow-500/20 text-yellow-500' :
-                    src.tag === 'GROUP'  ? 'bg-orange-500/20 text-orange-400' :
-                    src.tag === 'CALC'   ? 'bg-teal-500/20 text-teal-400' :
-                                           'bg-muted text-muted-foreground'
-                  ]">{{ src.tag }}</span>
-                  <div class="flex-1 min-w-0">
-                    <p class="font-mono text-[11px] truncate"
-                      :class="isUnionSourceConnected(src.id) ? 'text-yellow-500 font-semibold' : 'text-foreground/80'">
-                      {{ src.label }}
-                    </p>
-                    <p v-if="src.tables.length" class="text-[9px] text-muted-foreground/50 font-mono truncate">
-                      {{ src.tables.slice(0,2).join(', ') }}{{ src.tables.length > 2 ? ' +' + (src.tables.length-2) : '' }}
-                    </p>
-                  </div>
-                  <span v-if="isUnionSourceConnected(src.id) && si < allUnionSources.length-1 && allUnionSources.slice(si+1).some(s => isUnionSourceConnected(s.id))"
-                    class="text-[8px] font-bold text-yellow-500/50 shrink-0">▼</span>
-                </label>
+                  <div v-if="showAddSourceDropdown" class="fixed inset-0 z-40" @click="showAddSourceDropdown = false" />
+                </div>
               </div>
-              <div v-if="unionSources.length >= 2" class="text-center text-[9px] text-yellow-600/60 font-mono">
-                ▲ {{ store.modalNode.data.unionType ?? 'UNION ALL' }} ▲
+
+              <!-- Source cards list -->
+              <div class="flex-1 overflow-y-auto">
+                <!-- Empty state -->
+                <div v-if="!allUnionSourcesRich.length"
+                  class="flex flex-col items-center justify-center gap-2 h-full text-center px-4 py-8 text-[10px] text-muted-foreground/50">
+                  <GitMerge class="size-6 text-yellow-500/20" />
+                  วาง Table / CTE node<br>ลง canvas ก่อน
+                </div>
+
+                <!-- Source cards -->
+                <div v-else class="divide-y divide-border/20">
+                  <div v-for="src in allUnionSourcesRich" :key="src.id"
+                    class="transition-colors"
+                    :class="isUnionSourceConnected(src.id) ? 'bg-yellow-500/5' : 'bg-background hover:bg-muted/20'">
+
+                    <!-- Card header -->
+                    <div class="flex items-center gap-2 px-3 py-2.5 cursor-pointer"
+                      @click="toggleUnionSourceExpanded(src.id)">
+                      <svg :class="['size-3 text-muted-foreground/30 shrink-0 transition-transform', unionExpandedSources.has(src.id) ? 'rotate-90' : '']"
+                        fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                        <path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/>
+                      </svg>
+                      <span :class="[
+                        'text-[8px] font-bold px-1.5 py-0.5 rounded font-mono uppercase shrink-0',
+                        src.tag === 'TABLE' ? 'bg-sky-500/20 text-sky-400' :
+                        src.tag === 'CTE'   ? 'bg-violet-500/20 text-violet-400' :
+                        src.tag === 'UNION' ? 'bg-yellow-500/20 text-yellow-500' :
+                        src.tag === 'GROUP' ? 'bg-orange-500/20 text-orange-400' :
+                        src.tag === 'CALC'  ? 'bg-teal-500/20 text-teal-400' :
+                                              'bg-muted text-muted-foreground'
+                      ]">{{ src.tag }}</span>
+                      <div class="flex-1 min-w-0">
+                        <p class="font-mono text-[11px] font-medium truncate"
+                          :class="isUnionSourceConnected(src.id) ? 'text-yellow-500' : 'text-foreground/80'">
+                          {{ src.label }}
+                        </p>
+                        <p v-if="src.tables.length" class="text-[8px] text-muted-foreground/40 font-mono truncate">
+                          {{ src.tables.slice(0, 2).join(', ') }}{{ src.tables.length > 2 ? ` +${src.tables.length - 2}` : '' }}
+                        </p>
+                      </div>
+                      <span class="text-[9px] text-muted-foreground/40 font-mono shrink-0">{{ src.cols.length }}c</span>
+                      <!-- Connect toggle -->
+                      <div @click.stop="toggleUnionSource(src.id)"
+                        :class="[
+                          'size-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors cursor-pointer',
+                          isUnionSourceConnected(src.id) ? 'bg-yellow-500 border-yellow-500' : 'border-yellow-500/50 bg-background hover:border-yellow-400',
+                        ]">
+                        <svg v-if="isUnionSourceConnected(src.id)" class="size-2.5 text-white" fill="none" viewBox="0 0 10 10">
+                          <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                        </svg>
+                      </div>
+                    </div>
+
+                    <!-- Expanded: columns list -->
+                    <div v-if="unionExpandedSources.has(src.id)"
+                      class="pb-1 border-t border-border/15">
+                      <div v-if="!src.cols.length" class="px-4 py-2 text-[9px] text-muted-foreground/40 italic">
+                        ไม่พบ columns
+                      </div>
+
+                      <!-- CTE / CALC: show table sub-groups -->
+                      <div v-else-if="(src.tag === 'CTE' || src.tag === 'CALC') && src.tableGroups.length > 1"
+                        class="max-h-[240px] overflow-y-auto divide-y divide-border/10">
+                        <div v-for="tg in src.tableGroups" :key="tg.tableId">
+                          <!-- Table group header (collapsible) -->
+                          <button class="w-full flex items-center gap-1.5 px-3 py-1.5 hover:bg-muted/20 transition-colors text-left"
+                            @click="toggleTableGroup(src.id, tg.tableId)">
+                            <svg :class="['size-2.5 text-muted-foreground/40 shrink-0 transition-transform', expandedTableGroups.has(src.id+':'+tg.tableId) ? 'rotate-90' : '']"
+                              fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                              <path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/>
+                            </svg>
+                            <Database class="size-2.5 text-sky-400/60 shrink-0" />
+                            <span class="text-[9px] font-mono font-semibold text-foreground/70 truncate flex-1">{{ tg.tableLabel }}</span>
+                            <span class="text-[7px] text-muted-foreground/30 font-mono shrink-0 bg-muted/40 px-1.5 py-0.5 rounded">{{ tg.cols.length }}c</span>
+                          </button>
+                          <!-- Columns in this table -->
+                          <div v-if="expandedTableGroups.has(src.id+':'+tg.tableId)"
+                            class="bg-muted/5 border-t border-border/10">
+                            <div v-for="col in tg.cols" :key="col.name"
+                              class="flex items-center gap-2 px-5 py-1 hover:bg-muted/20 transition-colors">
+                              <span :class="['text-[8px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(col.type).cls]">
+                                {{ getColTypeBadge(col.type).label }}
+                              </span>
+                              <Key v-if="col.isPk" class="size-2.5 text-amber-400 shrink-0" />
+                              <span class="font-mono text-[10px] truncate flex-1"
+                                :class="col.isPk ? 'text-amber-400 font-semibold' : 'text-foreground/70'">
+                                {{ col.name }}
+                              </span>
+                              <span v-if="col.remark" class="text-[9px] text-muted-foreground/40 truncate max-w-[60px]">{{ col.remark }}</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <!-- TABLE / single-source: flat list -->
+                      <div v-else class="max-h-[220px] overflow-y-auto">
+                        <div v-for="col in src.cols" :key="col.name"
+                          class="flex items-center gap-2 px-4 py-1 hover:bg-muted/20 transition-colors">
+                          <span :class="['text-[8px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(col.type).cls]">
+                            {{ getColTypeBadge(col.type).label }}
+                          </span>
+                          <Key v-if="col.isPk" class="size-2.5 text-amber-400 shrink-0" />
+                          <span class="font-mono text-[10px] truncate flex-1"
+                            :class="col.isPk ? 'text-amber-400 font-semibold' : 'text-foreground/70'">
+                            {{ col.name }}
+                          </span>
+                          <span v-if="col.remark" class="text-[9px] text-muted-foreground/40 truncate max-w-[60px]">{{ col.remark }}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div><!-- /LEFT -->
 
-            <!-- ── RIGHT: Column picker ────────────────────────────── -->
-            <div class="flex flex-col gap-2 min-w-0">
-              <div class="flex items-center gap-2 flex-wrap">
-                <p class="text-[11px] font-semibold text-yellow-500 uppercase tracking-wide">Columns</p>
-                <span class="text-[10px] font-semibold text-yellow-600 bg-yellow-500/10 px-2 py-0.5 rounded-full shrink-0">{{ unionSelectedCount || '*' }}</span>
-                <button @click="selectUnionCommonCols()" :disabled="!unionCommonCols.length"
-                  :title="unionCommonCols.length ? 'เลือก ' + unionCommonCols.length + ' cols ที่มีในทุก source' : 'ยังไม่มี cols ร่วมกัน'"
-                  :class="[
-                    'text-[10px] font-bold px-2 py-0.5 rounded-md border transition-colors shrink-0',
-                    unionCommonCols.length ? 'border-emerald-500/50 text-emerald-600 bg-emerald-500/10 hover:bg-emerald-500/20' : 'border-border/30 text-muted-foreground/40 cursor-not-allowed',
-                  ]">Auto Match</button>
-                <div class="flex items-center gap-1.5 ml-auto">
-                  <button @click="tn.selectAllUnionSourcesWithCols(unionGroupedCols.map(g => g.sourceId), unionAvailableCols.map((c: any) => c.name))"
-                    class="text-[10px] text-yellow-600 hover:underline font-semibold">ทั้งหมด</button>
-                  <span class="text-muted-foreground text-[10px]">/</span>
-                  <button @click="unionGroupedCols.forEach(g => tn.clearUnionSourceCols(g.sourceId))"
-                    class="text-[10px] text-muted-foreground hover:underline">ล้าง</button>
-                </div>
-              </div>
-              <div v-if="unionColWarnings.size"
-                class="flex items-start gap-2 px-3 py-2 rounded-lg bg-rose-500/8 border border-rose-500/30 text-[10px] text-rose-400">
-                <span class="shrink-0 font-bold">⚠</span>
-                <span>column <span class="font-mono font-semibold">{{ [...unionColWarnings].join(', ') }}</span> ไม่มีในบาง source</span>
-              </div>
-              <div class="relative">
-                <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground/50" />
-                <input v-model="unionColSearch" placeholder="ค้นหา column..."
-                  class="w-full text-xs border rounded-lg pl-7 pr-3 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-yellow-400/50 font-mono" />
-              </div>
-              <div v-if="!unionGroupedCols.length"
-                class="flex items-center gap-2 px-3 py-3 rounded-lg bg-muted/30 text-[10px] text-muted-foreground italic">
-                เลือก Source ก่อนเพื่อดู columns
-              </div>
-              <div v-else class="flex flex-col gap-2 max-h-[340px] overflow-y-auto pr-0.5">
-                <div v-for="group in unionFilteredGroups" :key="group.sourceId"
-                  class="border border-yellow-500/20 rounded-xl overflow-hidden">
-                  <div class="flex items-center gap-2 px-3 py-2 bg-yellow-500/8 border-b border-yellow-500/15 sticky top-0 z-10">
-                    <span :class="[
-                      'text-[8px] font-bold px-1.5 py-0.5 rounded font-mono uppercase shrink-0',
-                      group.tag === 'TABLE'  ? 'bg-sky-500/20 text-sky-400' :
-                      group.tag === 'CTE'    ? 'bg-violet-500/20 text-violet-400' :
-                      group.tag === 'UNION'  ? 'bg-yellow-500/20 text-yellow-500' :
-                      group.tag === 'GROUP'  ? 'bg-orange-500/20 text-orange-400' :
-                      group.tag === 'CALC'   ? 'bg-teal-500/20 text-teal-400' :
-                                               'bg-muted text-muted-foreground'
-                    ]">{{ group.tag }}</span>
-                    <span class="font-mono text-[11px] font-semibold flex-1 truncate">{{ group.label }}</span>
-                    <span class="text-[9px] text-muted-foreground/50 font-mono shrink-0">
-                      {{ group.cols.filter(c => tn.isUnionSourceColSelected(group.sourceId, c.name)).length }}/{{ group.cols.length }}
-                    </span>
-                    <button @click="tn.selectAllUnionSourceCols(group.sourceId, group.cols.map(c => c.name))"
-                      class="text-[9px] font-semibold text-yellow-600 hover:underline ml-1">ทั้งหมด</button>
-                    <span class="text-muted-foreground text-[9px]">/</span>
-                    <button @click="tn.clearUnionSourceCols(group.sourceId)"
-                      class="text-[9px] text-muted-foreground hover:underline">ล้าง</button>
-                  </div>
-                  <div class="divide-y divide-border/20">
-                    <label v-for="col in group.cols" :key="col.name"
-                      class="flex items-center gap-2 px-3 py-1.5 cursor-pointer select-none transition-colors hover:bg-yellow-500/5"
-                      :class="[
-                        tn.isUnionSourceColSelected(group.sourceId, col.name) ? 'bg-yellow-500/5' : '',
-                        unionColWarnings.has(col.name) ? 'border-l-2 border-rose-500/50' : '',
-                      ]">
-                      <div :class="[
-                        'size-3.5 rounded border-2 flex items-center justify-center shrink-0 transition-colors',
-                        tn.isUnionSourceColSelected(group.sourceId, col.name) ? 'bg-yellow-500 border-yellow-500' : 'border-border/60 bg-background',
-                      ]">
-                        <svg v-if="tn.isUnionSourceColSelected(group.sourceId, col.name)" class="size-2 text-white" fill="none" viewBox="0 0 10 10">
-                          <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-                        </svg>
-                        <input type="checkbox" class="sr-only"
-                          :checked="tn.isUnionSourceColSelected(group.sourceId, col.name)"
-                          @change="tn.toggleUnionSourceCol(group.sourceId, col.name)" />
-                      </div>
-                      <Key v-if="col.isPk" class="size-2.5 text-amber-400 shrink-0" />
-                      <span :class="['text-[9px] px-1 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(col.type).cls]">
-                        {{ getColTypeBadge(col.type).label }}
-                      </span>
-                      <span class="font-mono text-[11px] flex-1 truncate" :class="col.isPk ? 'text-amber-500 font-semibold' : ''">{{ col.name }}</span>
-                      <span v-if="col.remark" class="text-[9px] text-muted-foreground/40 truncate max-w-[100px]">{{ col.remark }}</span>
-                      <span v-if="unionColWarnings.has(col.name)" class="text-[9px] text-rose-400 font-bold shrink-0">⚠</span>
-                    </label>
-                    <div v-if="group.cols.length === 0 && unionColSearch"
-                      class="px-3 py-2 text-[10px] text-muted-foreground/60 italic">ไม่พบ "{{ unionColSearch }}"</div>
-                  </div>
-                </div>
-              </div>
-            </div><!-- /RIGHT -->
-            </div><!-- /grid row2 -->
+            <!-- ════ RIGHT: Config panel ══════════════════════════════ -->
+            <div class="flex flex-col overflow-hidden min-w-0">
 
-            <!-- ── Row 3: WHERE + SQL preview ────────────────────────── -->
-            <div class="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-4 border-t pt-4">
-              <!-- WHERE filter -->
-              <div class="flex flex-col gap-2">
-                <div class="flex items-center justify-between">
-                  <label class="text-[11px] font-semibold text-yellow-500 uppercase tracking-wide">
-                    WHERE Filter
-                    <span v-if="(store.modalNode?.data?.conditions ?? []).filter((c: any) => c.column).length"
-                      class="ml-1 text-[10px] font-normal text-muted-foreground normal-case">
-                      {{ (store.modalNode?.data?.conditions ?? []).filter((c: any) => c.column).length }} conditions
-                    </span>
-                  </label>
-                  <button @click="tn.addUnionCondition()"
-                    class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-yellow-500/30 text-yellow-500 hover:bg-yellow-500/10 transition-colors">
-                    <Plus class="size-2.5" /> เพิ่ม
+              <!-- Right top bar: CTE name + UNION type + Auto Detect -->
+              <div class="flex items-center gap-3 px-4 py-3 border-b border-border/40 bg-muted/10 shrink-0">
+                <label class="text-[10px] font-semibold text-muted-foreground/60 shrink-0">CTE</label>
+                <input
+                  :value="store.modalNode?.data?.name ?? ''"
+                  @input="tn.setModalData({ name: ($event.target as HTMLInputElement).value })"
+                  class="flex-1 h-7 px-2.5 rounded-lg border bg-background text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-yellow-500/40"
+                  placeholder="ชื่อ CTE (ว่าง = auto)"
+                  spellcheck="false"
+                />
+                <div class="flex shrink-0 bg-muted/60 rounded-lg p-0.5 gap-0.5">
+                  <button @click="tn.setModalData({ unionType: 'UNION ALL' })"
+                    :class="['px-2.5 py-1 rounded-md text-[10px] font-bold transition-colors',
+                      store.modalNode.data.unionType !== 'UNION' ? 'bg-yellow-500 text-white shadow-sm' : 'text-muted-foreground hover:text-foreground']">
+                    UNION ALL
+                  </button>
+                  <button @click="tn.setModalData({ unionType: 'UNION' })"
+                    :class="['px-2.5 py-1 rounded-md text-[10px] font-bold transition-colors',
+                      store.modalNode.data.unionType === 'UNION' ? 'bg-yellow-500 text-white shadow-sm' : 'text-muted-foreground hover:text-foreground']">
+                    UNION
                   </button>
                 </div>
-                <div v-if="(store.modalNode?.data?.conditions ?? []).length" class="flex flex-col gap-2 max-h-[140px] overflow-y-auto">
-                  <div v-for="(cond, i) in (store.modalNode?.data?.conditions ?? [])" :key="i"
-                    class="flex items-center gap-2 px-2.5 py-2 rounded-xl border bg-yellow-500/3">
-                    <button @click="toggleUnionCondColDropdown(+i, $event)"
-                      :class="[
-                        'flex-1 h-7 px-2 rounded-lg border text-left text-[11px] font-mono flex items-center gap-1.5 min-w-0 transition-colors',
-                        openUnionCondColIdx === +i ? 'border-yellow-500/60 bg-yellow-500/5' : 'border-border bg-background hover:border-yellow-400/40',
-                      ]">
-                      <template v-if="cond.column">
-                        <span :class="['text-[9px] px-1 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(unionAvailableCols.find(c => c.name === cond.column)?.type ?? '').cls]">
-                          {{ getColTypeBadge(unionAvailableCols.find(c => c.name === cond.column)?.type ?? '').label }}
-                        </span>
-                        <span class="truncate">{{ cond.column }}</span>
-                      </template>
-                      <span v-else class="text-muted-foreground/50 truncate">column</span>
-                      <ChevronDown class="size-3 text-muted-foreground/50 ml-auto shrink-0" />
-                    </button>
-                    <select :value="cond.operator"
-                      @change="tn.setUnionCondition(+i, { operator: ($event.target as HTMLSelectElement).value })"
-                      class="h-7 px-1.5 rounded-lg border bg-background text-[11px] focus:outline-none focus:ring-1 focus:ring-yellow-500/40 shrink-0">
-                      <option v-for="op in ['=','!=','>','<','>=','<=','LIKE','IN','IS NULL','IS NOT NULL']" :key="op" :value="op">{{ op }}</option>
-                    </select>
-                    <input v-if="!['IS NULL','IS NOT NULL'].includes(cond.operator)"
-                      :value="cond.value"
-                      @input="tn.setUnionCondition(+i, { value: ($event.target as HTMLInputElement).value })"
-                      class="w-24 h-7 px-2 rounded-lg border bg-background text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-yellow-500/40 shrink-0"
-                      placeholder="value" />
-                    <button @click="tn.removeUnionCondition(+i)"
-                      class="size-6 flex items-center justify-center rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors shrink-0">
-                      <X class="size-3" />
-                    </button>
-                  </div>
-                </div>
-                <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">ไม่มี filter = ดึงข้อมูลทั้งหมดจาก union</p>
+                <button @click="autoDetectUnionMapping()"
+                  :disabled="!unionGroupedCols.length"
+                  :class="[
+                    'flex items-center gap-1 h-7 px-2.5 rounded-lg border text-[10px] font-bold transition-colors shrink-0',
+                    unionGroupedCols.length
+                      ? 'border-emerald-500/50 text-emerald-600 bg-emerald-500/10 hover:bg-emerald-500/20'
+                      : 'border-border/20 text-muted-foreground/30 cursor-not-allowed',
+                  ]">
+                  <Sparkles class="size-3" /> Auto Detect
+                </button>
               </div>
-              <!-- SQL Preview -->
-              <div class="flex flex-col gap-2">
-                <p class="text-[11px] font-semibold text-yellow-500 uppercase tracking-wide">SQL Preview</p>
-                <div v-if="unionSources.length"
-                  class="px-3 py-2 rounded-xl bg-yellow-500/5 border border-yellow-400/20 max-h-[140px] overflow-y-auto overflow-x-auto">
-                  <div class="flex items-start gap-1.5">
-                    <span class="text-[9px] font-bold text-yellow-600 shrink-0 mt-0.5">SQL</span>
-                    <code class="text-[9px] font-mono text-yellow-400/80 leading-relaxed whitespace-pre">{{ unionSqlPreview }}</code>
-                  </div>
-                </div>
-                <div v-else class="px-3 py-3 rounded-xl bg-muted/20 border text-[10px] text-muted-foreground/60 italic">
-                  เลือก Sources เพื่อดู SQL
-                </div>
-              </div>
-            </div><!-- /row3 -->
 
+              <!-- View mode tabs -->
+              <div class="flex items-center border-b border-border/30 bg-muted/5 shrink-0 px-2">
+                <button @click="unionViewMode = 'output'"
+                  :class="['px-3 py-2 text-[11px] font-semibold border-b-2 transition-colors -mb-px',
+                    unionViewMode === 'output'
+                      ? 'border-yellow-500 text-yellow-500'
+                      : 'border-transparent text-muted-foreground hover:text-foreground']">
+                  Output Columns
+                  <span v-if="unionColMapping.length" class="ml-1 text-[9px] font-normal opacity-70">{{ unionColMapping.length }}</span>
+                </button>
+                <button @click="unionViewMode = 'mapping'"
+                  :class="['px-3 py-2 text-[11px] font-semibold border-b-2 transition-colors -mb-px',
+                    unionViewMode === 'mapping'
+                      ? 'border-yellow-500 text-yellow-500'
+                      : 'border-transparent text-muted-foreground hover:text-foreground']">
+                  Column Mapping
+                </button>
+              </div>
+
+              <!-- Right body: scrollable content -->
+              <div class="flex-1 overflow-y-auto flex flex-col gap-4 px-4 py-4 min-h-0">
+
+                <!-- ── Output Columns selector ────────────────────────── -->
+                <template v-if="unionViewMode === 'output'">
+                  <div class="flex items-center justify-between shrink-0">
+                    <div>
+                      <p class="text-[11px] font-semibold text-yellow-500">Output Columns</p>
+                      <p class="text-[10px] text-muted-foreground/60 mt-0.5">คลิกแต่ละ card เพื่อเลือก / ยกเลิก column ใน UNION output</p>
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <span class="text-[10px] font-semibold text-yellow-500 bg-yellow-500/10 px-2 py-0.5 rounded-full">{{ unionColMapping.length }} selected</span>
+                      <button @click="autoDetectUnionMapping()"
+                        :disabled="!unionGroupedCols.length"
+                        class="text-[10px] px-2.5 py-1 rounded-lg border border-yellow-500/30 text-yellow-500 hover:bg-yellow-500/10 transition-colors font-medium disabled:opacity-30 disabled:cursor-not-allowed">
+                        เลือกทั้งหมด
+                      </button>
+                      <button v-if="unionColMapping.length" @click="clearUnionMapping()"
+                        class="text-[10px] text-muted-foreground hover:underline">ล้าง</button>
+                    </div>
+                  </div>
+
+                  <div v-if="!unionGroupedCols.length"
+                    class="px-4 py-6 text-center text-[10px] text-muted-foreground/50 italic rounded-xl border border-border/40 bg-muted/5">
+                    <GitMerge class="size-5 text-yellow-500/20 mx-auto mb-1.5" />
+                    เลือก Source ในแผงซ้ายก่อน
+                  </div>
+
+                  <!-- Card per output column -->
+                  <div v-else class="flex flex-col gap-2 overflow-y-auto max-h-[400px] pr-0.5">
+                    <div v-for="col in unionAllSourceCols" :key="col.name"
+                      @click="toggleColumnInMapping(col.name)"
+                      class="rounded-xl border overflow-hidden cursor-pointer transition-colors shrink-0"
+                      :class="isColumnMapped(col.name) ? 'border-yellow-500/40 bg-yellow-500/5' : 'border-border/40 hover:border-border/70'">
+
+                      <!-- Card header -->
+                      <div class="flex items-center gap-2 px-3 py-2 bg-muted/20 border-b border-border/20">
+                        <!-- Checkbox -->
+                        <div :class="[
+                          'size-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors',
+                          isColumnMapped(col.name) ? 'bg-yellow-500 border-yellow-500' : 'border-yellow-500/50 bg-background',
+                        ]">
+                          <svg v-if="isColumnMapped(col.name)" class="size-2.5 text-white" fill="none" viewBox="0 0 10 10">
+                            <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                          </svg>
+                        </div>
+                        <!-- Type badge -->
+                        <span :class="['text-[8px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(col.type).cls]">
+                          {{ getColTypeBadge(col.type).label }}
+                        </span>
+                        <!-- Column name -->
+                        <span class="font-mono text-[11px] flex-1 truncate font-semibold"
+                          :class="isColumnMapped(col.name) ? 'text-yellow-500' : 'text-foreground/80'">
+                          {{ col.name }}
+                        </span>
+                        <!-- Coverage fraction -->
+                        <span :class="[
+                          'text-[8px] font-mono px-1.5 py-0.5 rounded shrink-0',
+                          col.coveredCount === unionGroupedCols.length ? 'bg-emerald-500/15 text-emerald-500' : 'bg-amber-500/15 text-amber-400',
+                        ]">{{ col.coveredCount }}/{{ unionGroupedCols.length }}</span>
+                      </div>
+
+                      <!-- Source availability grid: 2 columns -->
+                      <div class="grid grid-cols-2 divide-x divide-y divide-border/15">
+                        <div v-for="grp in unionGroupedCols" :key="grp.sourceId"
+                          class="flex items-center gap-1.5 px-2.5 py-1.5 min-w-0">
+                          <!-- Source tag -->
+                          <span :class="[
+                            'text-[7px] font-bold px-1 py-0.5 rounded font-mono uppercase shrink-0',
+                            grp.tag === 'TABLE' ? 'bg-sky-500/20 text-sky-400' :
+                            grp.tag === 'CTE'   ? 'bg-violet-500/20 text-violet-400' :
+                            grp.tag === 'UNION' ? 'bg-yellow-500/20 text-yellow-500' :
+                            grp.tag === 'GROUP' ? 'bg-orange-500/20 text-orange-400' :
+                            grp.tag === 'CALC'  ? 'bg-teal-500/20 text-teal-400' :
+                                                  'bg-muted text-muted-foreground'
+                          ]">{{ grp.tag }}</span>
+                          <!-- Source label -->
+                          <span class="text-[9px] font-mono text-muted-foreground/55 truncate w-[50px] shrink-0">{{ grp.label }}</span>
+                          <!-- Mapped field name or status -->
+                          <template v-if="unionColMapping.find(r => r.outputName === col.name)?.picks[grp.sourceId]">
+                            <span :class="[
+                              'text-[7px] px-1 py-0.5 rounded font-bold font-mono shrink-0',
+                              getColTypeBadge(getUnionPickType(grp.sourceId, unionColMapping.find(r => r.outputName === col.name)!.picks[grp.sourceId]!)).cls
+                            ]">
+                              {{ getColTypeBadge(getUnionPickType(grp.sourceId, unionColMapping.find(r => r.outputName === col.name)!.picks[grp.sourceId]!)).label }}
+                            </span>
+                            <span class="text-[10px] font-mono text-yellow-500/90 truncate flex-1 font-semibold">
+                              {{ unionColMapping.find(r => r.outputName === col.name)!.picks[grp.sourceId] }}
+                            </span>
+                          </template>
+                          <template v-else>
+                            <span class="text-[9px] font-mono flex-1 truncate"
+                              :class="grp.cols.some(c => c.name === col.name) ? 'text-emerald-500/60' : 'text-muted-foreground/30 italic'">
+                              {{ grp.cols.some(c => c.name === col.name) ? col.name : '— NULL —' }}
+                            </span>
+                            <span :class="[
+                              'size-1.5 rounded-full shrink-0',
+                              grp.cols.some(c => c.name === col.name) ? 'bg-emerald-500/50' : 'bg-border/30',
+                            ]" />
+                          </template>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+
+                <!-- ── Column mapping (card-per-output) ───────────────── -->
+                <template v-if="unionViewMode === 'mapping'">
+
+                  <!-- Toolbar -->
+                  <div class="flex items-center gap-2 shrink-0">
+                    <p class="text-[10px] font-semibold text-yellow-500 uppercase tracking-wide flex-1">
+                      Output Columns
+                      <span class="ml-1.5 font-normal normal-case text-muted-foreground/60">{{ unionColMapping.length }} cols</span>
+                    </p>
+                    <button @click="addUnionMappingRow()"
+                      class="flex items-center gap-1 text-[10px] px-2.5 py-1 rounded-lg border border-border/40 text-muted-foreground hover:text-yellow-500 hover:border-yellow-500/40 transition-colors font-medium">
+                      <Plus class="size-3" /> เพิ่ม
+                    </button>
+                    <button v-if="unionColMapping.length" @click="clearUnionMapping()"
+                      class="text-[10px] text-muted-foreground hover:underline">ล้าง</button>
+                  </div>
+
+                  <!-- No sources -->
+                  <div v-if="!unionGroupedCols.length"
+                    class="px-4 py-6 text-center text-[10px] text-muted-foreground/50 italic rounded-xl border border-border/40 bg-muted/5">
+                    เลือก Source ในแผงซ้ายก่อน
+                  </div>
+
+                  <!-- Empty mapping -->
+                  <div v-else-if="!unionColMapping.length"
+                    class="px-4 py-6 text-center text-[10px] text-muted-foreground/50 italic rounded-xl border border-dashed border-border/40">
+                    คลิก "Auto Detect" หรือ "+ เพิ่ม" เพื่อกำหนด columns
+                  </div>
+
+                  <!-- Output column cards -->
+                  <div v-else class="flex flex-col gap-2">
+                    <div v-for="(row, ri) in unionColMapping" :key="ri"
+                      class="rounded-xl border overflow-hidden"
+                      :class="hasUnionTypeMismatch(row) ? 'border-amber-500/30 bg-amber-500/3' : 'border-border/40'">
+
+                      <!-- Card header: output name -->
+                      <div class="flex items-center gap-2 px-3 py-2 bg-muted/20 border-b border-border/20">
+                        <span v-if="getUnionRowOutputType(row)"
+                          :class="['text-[8px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(getUnionRowOutputType(row)).cls]">
+                          {{ getColTypeBadge(getUnionRowOutputType(row)).label }}
+                        </span>
+                        <span v-if="hasUnionTypeMismatch(row)" class="text-[9px] text-amber-400 shrink-0">⚠</span>
+                        <input :value="row.outputName"
+                          @input="setUnionMappingRowName(ri, ($event.target as HTMLInputElement).value)"
+                          class="flex-1 font-mono text-[11px] font-semibold bg-transparent focus:outline-none focus:bg-yellow-500/5 rounded px-1 py-0.5 min-w-0" />
+                        <button @click="removeUnionMappingRow(ri)"
+                          class="size-5 flex items-center justify-center rounded hover:bg-destructive/10 text-muted-foreground/40 hover:text-destructive transition-colors shrink-0">
+                          <X class="size-3" />
+                        </button>
+                      </div>
+
+                      <!-- Source picks grid: 2 columns -->
+                      <div class="grid grid-cols-2 divide-x divide-y divide-border/15">
+                        <div v-for="group in unionGroupedCols" :key="group.sourceId"
+                          class="flex items-center gap-1.5 px-2.5 py-1.5 min-w-0">
+                          <!-- Source tag + label -->
+                          <span :class="[
+                            'text-[7px] font-bold px-1 py-0.5 rounded font-mono uppercase shrink-0',
+                            group.tag === 'TABLE' ? 'bg-sky-500/20 text-sky-400' :
+                            group.tag === 'CTE'   ? 'bg-violet-500/20 text-violet-400' :
+                            group.tag === 'UNION' ? 'bg-yellow-500/20 text-yellow-500' :
+                            group.tag === 'GROUP' ? 'bg-orange-500/20 text-orange-400' :
+                            group.tag === 'CALC'  ? 'bg-teal-500/20 text-teal-400' :
+                                                    'bg-muted text-muted-foreground'
+                          ]">{{ group.tag }}</span>
+                          <span class="text-[9px] font-mono text-muted-foreground/55 truncate w-[55px] shrink-0">{{ group.label }}</span>
+                          <!-- Field select -->
+                          <div class="flex-1 flex items-center min-w-0 relative">
+                            <span v-if="row.picks[group.sourceId]"
+                              :class="[
+                                'text-[7px] px-1 py-0.5 rounded font-bold font-mono shrink-0 mr-1',
+                                hasUnionTypeMismatch(row)
+                                  ? 'bg-amber-500/20 text-amber-400'
+                                  : getColTypeBadge(getUnionPickType(group.sourceId, row.picks[group.sourceId]!)).cls
+                              ]">
+                              {{ getColTypeBadge(getUnionPickType(group.sourceId, row.picks[group.sourceId]!)).label }}
+                            </span>
+                            <select :value="row.picks[group.sourceId] ?? ''"
+                              @change="setUnionMappingPick(ri, group.sourceId, ($event.target as HTMLSelectElement).value)"
+                              class="flex-1 min-w-0 h-[22px] text-[10px] font-mono bg-background border border-border/30 rounded px-1 focus:outline-none focus:border-yellow-500/50 cursor-pointer"
+                              :class="!row.picks[group.sourceId] ? 'text-muted-foreground/30' : hasUnionTypeMismatch(row) ? 'text-amber-400' : 'text-foreground'"
+                              style="color-scheme: dark;">
+                              <option value="" style="background: hsl(var(--background)); color: hsl(var(--muted-foreground));">— NULL —</option>
+                              <option v-for="col in group.cols" :key="col.name" :value="col.name"
+                                style="background: hsl(var(--background)); color: hsl(var(--foreground));">{{ col.name }}</option>
+                            </select>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <span v-if="unionColMapping.some(r => hasUnionTypeMismatch(r))"
+                    class="text-[9px] text-amber-400/80 shrink-0">⚠ type mismatch บางแถว</span>
+                </template>
+
+                <!-- ── WHERE filter ───────────────────────────────────── -->
+                <div class="flex flex-col gap-2 border-t border-border/20 pt-4 shrink-0">
+                  <div class="flex items-center justify-between">
+                    <label class="text-[10px] font-semibold text-yellow-500 uppercase tracking-wide">
+                      WHERE Filter
+                      <span v-if="(store.modalNode?.data?.conditions ?? []).filter((c: any) => c.column).length"
+                        class="ml-1 font-normal text-muted-foreground normal-case">
+                        {{ (store.modalNode?.data?.conditions ?? []).filter((c: any) => c.column).length }} conds
+                      </span>
+                    </label>
+                    <button @click="tn.addUnionCondition()"
+                      class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-yellow-500/30 text-yellow-500 hover:bg-yellow-500/10 transition-colors">
+                      <Plus class="size-2.5" /> เพิ่ม
+                    </button>
+                  </div>
+                  <div v-if="(store.modalNode?.data?.conditions ?? []).length" class="flex flex-col gap-1.5 max-h-[100px] overflow-y-auto">
+                    <div v-for="(cond, i) in (store.modalNode?.data?.conditions ?? [])" :key="i"
+                      class="flex items-center gap-1.5 px-2 py-1.5 rounded-lg border bg-yellow-500/3">
+                      <button @click="toggleUnionCondColDropdown(+i, $event)"
+                        :class="[
+                          'flex-1 h-6 px-2 rounded-md border text-left text-[10px] font-mono flex items-center gap-1.5 min-w-0 transition-colors',
+                          openUnionCondColIdx === +i ? 'border-yellow-500/60 bg-yellow-500/5' : 'border-border bg-background hover:border-yellow-400/40',
+                        ]">
+                        <template v-if="cond.column">
+                          <span :class="['text-[8px] px-1 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(unionAvailableCols.find(c => c.name === cond.column)?.type ?? '').cls]">
+                            {{ getColTypeBadge(unionAvailableCols.find(c => c.name === cond.column)?.type ?? '').label }}
+                          </span>
+                          <span class="truncate">{{ cond.column }}</span>
+                        </template>
+                        <span v-else class="text-muted-foreground/50 truncate">column</span>
+                        <ChevronDown class="size-3 text-muted-foreground/50 ml-auto shrink-0" />
+                      </button>
+                      <select :value="cond.operator"
+                        @change="tn.setUnionCondition(+i, { operator: ($event.target as HTMLSelectElement).value })"
+                        class="h-6 px-1 rounded-md border bg-background text-[10px] focus:outline-none shrink-0">
+                        <option v-for="op in ['=','!=','>','<','>=','<=','LIKE','IN','IS NULL','IS NOT NULL']" :key="op" :value="op">{{ op }}</option>
+                      </select>
+                      <input v-if="!['IS NULL','IS NOT NULL'].includes(cond.operator)"
+                        :value="cond.value"
+                        @input="tn.setUnionCondition(+i, { value: ($event.target as HTMLInputElement).value })"
+                        class="w-20 h-6 px-2 rounded-md border bg-background text-[10px] font-mono focus:outline-none shrink-0"
+                        placeholder="value" />
+                      <button @click="tn.removeUnionCondition(+i)"
+                        class="size-5 flex items-center justify-center rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors shrink-0">
+                        <X class="size-3" />
+                      </button>
+                    </div>
+                  </div>
+                  <p v-else class="text-[10px] text-muted-foreground/50 italic">ไม่มี filter = ดึงข้อมูลทั้งหมด</p>
+                </div>
+
+              </div><!-- /right body -->
+            </div><!-- /RIGHT -->
+
+            </div><!-- /2-col grid -->
           </template>
 
           <!-- ── Where ───────────────────────────────────────────────── -->
@@ -2739,59 +3207,80 @@ const finishBtnStyle = computed(() => {
         </div>
 
         <!-- Footer -->
-        <div class="px-5 py-3.5 border-t shrink-0 flex items-center justify-between">
-          <p v-if="nodeType === 'group'" class="text-[10px] text-muted-foreground">
-            GROUP BY <span class="font-semibold text-orange-500">{{ groupColCount }}</span> fields
-            <span v-if="store.modalNode?.data?.aggs?.length">
-              + <span class="font-semibold text-orange-500">{{ store.modalNode.data.aggs.length }}</span> aggs
-            </span>
-            <span v-if="groupFilterCount">
-              + <span class="font-semibold text-amber-600">{{ groupFilterCount }}</span> HAVING
-            </span>
-            <span v-if="whereCondCount">
-              · WHERE <span class="font-semibold text-rose-500">{{ whereCondCount }}</span>
-            </span>
-          </p>
-          <p v-else-if="nodeType === 'sort'" class="text-[10px] text-muted-foreground">
-            ORDER BY <span class="font-semibold text-green-600">{{ sortItemCount }}</span> columns
-            <span v-if="whereCondCount">
-              · WHERE <span class="font-semibold text-rose-500">{{ whereCondCount }}</span>
-            </span>
-          </p>
-          <p v-else-if="nodeType === 'calc'" class="text-[10px] text-muted-foreground">
-            <span class="font-semibold text-teal-500">{{ calcItemCount }}</span> calculated columns
-            <span v-if="calcFilterCount"> + <span class="font-semibold text-rose-500">{{ calcFilterCount }}</span> filters</span>
-            <span v-if="whereCondCount"> · WHERE <span class="font-semibold text-rose-500">{{ whereCondCount }}</span></span>
-          </p>
-          <p v-else-if="nodeType === 'where'" class="text-[10px] text-muted-foreground">
-            WHERE <span class="font-semibold text-rose-500">{{ whereCondCount }}</span> conditions
-          </p>
-          <p v-else-if="nodeType === 'union'" class="text-[10px] text-muted-foreground">
-            {{ store.modalNode?.data?.unionType ?? 'UNION ALL' }}
-            <span class="font-semibold text-yellow-500">
-              {{ (store.modalNode?.data?.selectedCols ?? []).length || 'SELECT *' }}
-            </span>
-            <span v-if="(store.modalNode?.data?.selectedCols ?? []).length"> cols</span>
-          </p>
-          <span v-else />
-          <div class="flex flex-col gap-2 items-end">
-            <button v-if="nodeType !== 'group'" @click="generateSQL()"
-              class="text-xs px-4 py-2 border rounded-lg hover:bg-accent transition-colors flex items-center gap-1.5 w-full justify-center">
-              <Play class="size-3.5" />
-              Generate SQL
-            </button>
-            <div class="flex gap-2">
-              <button @click="close"
-                class="text-xs px-4 py-2 border rounded-lg hover:bg-accent transition-colors">
-                ยกเลิก
+        <div class="border-t shrink-0 flex flex-col">
+          <!-- Status + buttons row -->
+          <div class="px-5 py-3 flex items-center justify-between">
+            <p v-if="nodeType === 'group'" class="text-[10px] text-muted-foreground">
+              GROUP BY <span class="font-semibold text-orange-500">{{ groupColCount }}</span> fields
+              <span v-if="store.modalNode?.data?.aggs?.length">
+                + <span class="font-semibold text-orange-500">{{ store.modalNode.data.aggs.length }}</span> aggs
+              </span>
+              <span v-if="groupFilterCount">
+                + <span class="font-semibold text-amber-600">{{ groupFilterCount }}</span> HAVING
+              </span>
+              <span v-if="whereCondCount">
+                · WHERE <span class="font-semibold text-rose-500">{{ whereCondCount }}</span>
+              </span>
+            </p>
+            <p v-else-if="nodeType === 'sort'" class="text-[10px] text-muted-foreground">
+              ORDER BY <span class="font-semibold text-green-600">{{ sortItemCount }}</span> columns
+              <span v-if="whereCondCount">
+                · WHERE <span class="font-semibold text-rose-500">{{ whereCondCount }}</span>
+              </span>
+            </p>
+            <p v-else-if="nodeType === 'calc'" class="text-[10px] text-muted-foreground">
+              <span class="font-semibold text-teal-500">{{ calcItemCount }}</span> calculated columns
+              <span v-if="calcFilterCount"> + <span class="font-semibold text-rose-500">{{ calcFilterCount }}</span> filters</span>
+              <span v-if="whereCondCount"> · WHERE <span class="font-semibold text-rose-500">{{ whereCondCount }}</span></span>
+            </p>
+            <p v-else-if="nodeType === 'where'" class="text-[10px] text-muted-foreground">
+              WHERE <span class="font-semibold text-rose-500">{{ whereCondCount }}</span> conditions
+            </p>
+            <div v-else-if="nodeType === 'union'" class="flex items-center gap-3 flex-1 min-w-0">
+              <p class="text-[10px] text-muted-foreground">
+                <span class="font-semibold text-yellow-500">{{ unionSources.length }}</span> groups
+                · {{ store.modalNode?.data?.unionType ?? 'UNION ALL' }}
+                · <span class="font-semibold text-yellow-500">{{ unionColMapping.length || '*' }}</span> cols
+                <span v-if="unionColMapping.some(r => hasUnionTypeMismatch(r))" class="text-amber-400 ml-1">⚠ type mismatch</span>
+              </p>
+              <button @click="showUnionSqlPreview = !showUnionSqlPreview"
+                class="flex items-center gap-1 text-[10px] text-yellow-500/70 hover:text-yellow-500 transition-colors shrink-0">
+                <ChevronDown :class="['size-3 transition-transform', showUnionSqlPreview ? '' : '-rotate-90']" />
+                SQL Preview
               </button>
-              <button @click="nodeType === 'group' ? finish() : finishAndSave()"
-                class="text-xs px-5 py-2 text-white rounded-lg font-semibold hover:opacity-90 transition-opacity flex items-center gap-1.5"
-                :style="finishBtnStyle"
-              >
-                <Sparkles class="size-3.5" />
-                Finish
+            </div>
+            <span v-else />
+            <div class="flex flex-col gap-2 items-end shrink-0 ml-4">
+              <button v-if="nodeType !== 'group'" @click="generateSQL()"
+                class="text-xs px-4 py-2 border rounded-lg hover:bg-accent transition-colors flex items-center gap-1.5 w-full justify-center">
+                <Play class="size-3.5" />
+                Generate SQL
               </button>
+              <div class="flex gap-2">
+                <button @click="close"
+                  class="text-xs px-4 py-2 border rounded-lg hover:bg-accent transition-colors">
+                  ยกเลิก
+                </button>
+                <button @click="nodeType === 'group' ? finish() : finishAndSave()"
+                  class="text-xs px-5 py-2 text-white rounded-lg font-semibold hover:opacity-90 transition-opacity flex items-center gap-1.5"
+                  :style="finishBtnStyle"
+                >
+                  <Sparkles class="size-3.5" />
+                  Finish
+                </button>
+              </div>
+            </div>
+          </div><!-- /status+buttons row -->
+
+          <!-- SQL Preview panel (union only, below status row) -->
+          <div v-if="nodeType === 'union' && showUnionSqlPreview"
+            class="px-5 pb-3 border-t border-border/20">
+            <div v-if="unionSources.length"
+              class="px-3 py-2.5 rounded-lg bg-muted/20 border border-border/30 max-h-[120px] overflow-y-auto overflow-x-auto">
+              <code class="text-[10px] font-mono text-foreground/60 leading-relaxed whitespace-pre">{{ unionSqlPreview }}</code>
+            </div>
+            <div v-else class="px-3 py-2 rounded-lg bg-muted/10 border border-border/20 text-[10px] text-muted-foreground/40 italic">
+              เลือก Sources เพื่อดู SQL
             </div>
           </div>
         </div>

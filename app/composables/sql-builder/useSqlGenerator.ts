@@ -341,19 +341,24 @@ export function useSqlGenerator() {
         lastCTE = cteName
         // Track output cols for this CTE
         if (nt === 'union') {
-          // union output = union of all per-source selections, or global, or intersection
-          const colsMap = (node.data.selectedColsMap ?? {}) as Record<string, string[]>
-          const perSourceCols = [...new Set(Object.values(colsMap).flat().filter(Boolean))]
-          const globalSel = (node.data.selectedCols ?? []).filter(Boolean) as string[]
-          if (perSourceCols.length) {
-            cteOutputCols.set(cteName, perSourceCols)
-          } else if (globalSel.length) {
-            cteOutputCols.set(cteName, globalSel)
+          // union output — prefer new columnMapping model, fall back to legacy
+          const columnMapping = (node.data.columnMapping ?? []) as Array<{ outputName: string; picks: Record<string, string> }>
+          if (columnMapping.length) {
+            cteOutputCols.set(cteName, columnMapping.map(r => r.outputName))
           } else {
-            const upNames = upIds.map(id => nodeOutput.get(id)).filter((n): n is string => !!n)
-            const sets = upNames.map(n => cteOutputCols.get(n) ?? [])
-            const common = sets.length ? sets.reduce((a, b) => a.filter(c => b.includes(c))) : []
-            cteOutputCols.set(cteName, common)
+            const colsMap = (node.data.selectedColsMap ?? {}) as Record<string, string[]>
+            const perSourceCols = [...new Set(Object.values(colsMap).flat().filter(Boolean))]
+            const globalSel = (node.data.selectedCols ?? []).filter(Boolean) as string[]
+            if (perSourceCols.length) {
+              cteOutputCols.set(cteName, perSourceCols)
+            } else if (globalSel.length) {
+              cteOutputCols.set(cteName, globalSel)
+            } else {
+              const upNames = upIds.map(id => nodeOutput.get(id)).filter((n): n is string => !!n)
+              const sets = upNames.map(n => cteOutputCols.get(n) ?? [])
+              const common = sets.length ? sets.reduce((a, b) => a.filter(c => b.includes(c))) : []
+              cteOutputCols.set(cteName, common)
+            }
           }
         } else if (nt === 'cte' || nt === 'where' || nt === 'calc') {
           const sel = (node.data.selectedCols ?? []).filter(Boolean) as string[]
@@ -854,10 +859,35 @@ export function useSqlGenerator() {
     upstreams: { id: string; name: string }[],
     cteOutputCols?: Map<string, string[]>,
   ): string {
-    const uType        = node.data.unionType ?? 'UNION ALL'
-    const colsMap      = (node.data.selectedColsMap ?? {}) as Record<string, string[]>
-    const globalCols   = (node.data.selectedCols ?? []).filter(Boolean) as string[]
+    const uType         = node.data.unionType ?? 'UNION ALL'
     const upstreamNames = upstreams.map(u => u.name)
+
+    // ── columnMapping model (new) ─────────────────────────────────────
+    const columnMapping = (node.data.columnMapping ?? []) as Array<{
+      outputName: string
+      picks: Record<string, string>  // sourceId → fieldName ('' = NULL)
+    }>
+
+    if (columnMapping.length > 0 && upstreams.length > 0) {
+      const parts = upstreams.map(({ id, name }) => {
+        const selects = columnMapping.map(row => {
+          const field = row.picks[id] ?? ''
+          if (!field) return `  NULL AS ${row.outputName}`
+          const alias = field !== row.outputName ? ` AS ${row.outputName}` : ''
+          return `  ${field}${alias}`
+        })
+        return `SELECT\n${selects.join(',\n')}\nFROM ${name}`
+      })
+      if (parts.length === 0) return `SELECT * FROM ${upstreamNames[0] ?? '_src'}`
+      const unionSql = parts.join(`\n${uType}\n`)
+      const conditions = (node.data.conditions ?? []).filter((c: any) => c.column && c.operator)
+      if (!conditions.length) return unionSql
+      return `SELECT * FROM (\n${indent(unionSql)}\n) _u\nWHERE ${conditions.map(formatCondClause).join('\n  AND ')}`
+    }
+
+    // ── Legacy selectedColsMap / selectedCols model ───────────────────
+    const colsMap    = (node.data.selectedColsMap ?? {}) as Record<string, string[]>
+    const globalCols = (node.data.selectedCols ?? []).filter(Boolean) as string[]
 
     // Auto-intersect fallback (used when neither per-source nor global cols set)
     let autoIntersect: string[] = []
