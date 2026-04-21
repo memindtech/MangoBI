@@ -33,20 +33,38 @@ const columnGroups = computed((): { nodeId: string; table: string; cols: ColEntr
     const n = store.nodes.find((n: any) => n.id === id)
     if (!n || n.type !== 'sqlTable') continue
     const details = (n.data.details ?? []) as any[]
-    if (!details.length) continue
-    const label = (n.data.tableName || n.data.label || id) as string
-    groups.push({
-      nodeId: id,
-      table:  label,
-      cols: details.map((d: any) => ({
-        nodeId:      id,
-        column_name: d.column_name ?? '',
-        column_type: d.column_type ?? d.data_type ?? '',
-        data_pk:     d.data_pk,
-        remark:      d.remark ?? '',
-        table_label: label,
-      })),
-    })
+    const label   = (n.data.tableName || n.data.label || id) as string
+
+    if (details.length) {
+      groups.push({
+        nodeId: id,
+        table:  label,
+        cols: details.map((d: any) => ({
+          nodeId:      id,
+          column_name: d.column_name ?? '',
+          column_type: d.column_type ?? d.data_type ?? '',
+          data_pk:     d.data_pk,
+          remark:      d.remark ?? '',
+          table_label: label,
+        })),
+      })
+    } else {
+      // details not loaded — fall back to visibleCols so the modal is still usable
+      const visible = (n.data.visibleCols ?? []) as VisibleCol[]
+      if (!visible.length) continue
+      groups.push({
+        nodeId: id,
+        table:  label,
+        cols: visible.map(v => ({
+          nodeId:      id,
+          column_name: v.name,
+          column_type: v.type ?? '',
+          data_pk:     v.isPk ? 'Y' : undefined,
+          remark:      v.remark ?? '',
+          table_label: label,
+        })),
+      })
+    }
   }
   return groups
 })
