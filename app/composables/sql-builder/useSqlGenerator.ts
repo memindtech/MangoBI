@@ -329,8 +329,15 @@ export function useSqlGenerator() {
           const upPairs = upIds
             .map(id => ({ id, name: nodeOutput.get(id) ?? '' }))
             .filter(p => p.name)
-          if (!upPairs.length) upPairs.push({ id: '', name: lastCTE })
-          cteSql = buildUnionBlock(node, upPairs, cteOutputCols)
+          // Deduplicate by CTE name — two edges pointing to same upstream CTE → one arm
+          const seenCte = new Set<string>()
+          const dedupedPairs = upPairs.filter(p => {
+            if (seenCte.has(p.name)) return false
+            seenCte.add(p.name)
+            return true
+          })
+          if (!dedupedPairs.length) dedupedPairs.push({ id: '', name: lastCTE })
+          cteSql = buildUnionBlock(node, dedupedPairs, cteOutputCols)
           break
         }
       }
@@ -1000,8 +1007,21 @@ export function useSqlGenerator() {
       ? `${col} ${op} ${val}`
       : `${col} ${op} '${escapeSQL(val)}'`
   }
+  const SQL_RESERVED = new Set([
+    'ALL','AND','ANY','AS','ASC','BEGIN','BETWEEN','BY','CASE','CHECK',
+    'COALESCE','COLUMN','COMMIT','CONVERT','CREATE','CROSS','CURSOR',
+    'DATABASE','DEFAULT','DELETE','DESC','DISTINCT','DROP','ELSE','END',
+    'EXEC','EXISTS','FETCH','FOR','FOREIGN','FROM','FULL','FUNCTION',
+    'GO','GRANT','GROUP','HAVING','IN','INDEX','INNER','INSERT','INTO',
+    'IS','JOIN','KEY','LEFT','LIKE','NOT','NULL','ON','OR','ORDER',
+    'OUTER','PRIMARY','PROCEDURE','REFERENCES','RETURN','RIGHT','ROLLBACK',
+    'SELECT','SET','SOME','TABLE','THEN','TO','TRANSACTION','TRIGGER',
+    'UNION','UNIQUE','UPDATE','USE','VALUES','VIEW','WHEN','WHERE','WITH',
+  ])
+
   function sanitizeCteName(name: string): string {
-    return name.trim().replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '').replace(/^([0-9])/, '_$1') || 'cte_group'
+    const clean = name.trim().replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '').replace(/^([0-9])/, '_$1') || 'cte_group'
+    return SQL_RESERVED.has(clean.toUpperCase()) ? `cte_${clean}` : clean
   }
 
   function copySQL() {

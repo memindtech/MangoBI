@@ -48,6 +48,7 @@ export default defineNuxtConfig({
   devtools: { enabled: true },
   css: [
     '~/assets/css/tailwind.css',
+    '~/assets/css/main.css',
     'ag-grid-community/styles/ag-grid.css',
     'ag-grid-community/styles/ag-theme-quartz.css',
   ],
