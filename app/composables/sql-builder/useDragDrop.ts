@@ -10,7 +10,7 @@
 import { nextTick } from 'vue'
 import { MarkerType, useVueFlow } from '@vue-flow/core'
 import {
-  TOOL_NODE_DEFAULTS, getEdgeStyle,
+  TOOL_NODE_DEFAULTS, getEdgeStyle, getToolEdgeStyle,
   OBJECT_TYPE_LABELS, USE_TYPE_LABELS,
 } from '~/types/sql-builder'
 import type { ToolId, VisibleCol, GroupRelation } from '~/types/sql-builder'
@@ -287,7 +287,7 @@ export function useDragDrop() {
   // ── Add tool node ────────────────────────────────────────────────────────
   // If a node is currently selected, the tool node is placed to its right
   // and auto-connected so that upstream columns are immediately available.
-  function addToolNode(toolId: string, viewportX: number, viewportY: number, zoom: number) {
+  async function addToolNode(toolId: string, viewportX: number, viewportY: number, zoom: number) {
     const id = store.nextNodeId('tool')
     const defaults = TOOL_NODE_DEFAULTS[toolId as ToolId]
     if (!defaults) return
@@ -369,52 +369,23 @@ export function useDragDrop() {
       return
     }
 
-    // ── Find anchor node (selected or last-selected) ────────────────────────
-    const anchorId = store.selectedNodeId
-      ?? store.selectedNodeIds[store.selectedNodeIds.length - 1]
-      ?? null
-    const anchorNode = anchorId
-      ? store.nodes.find((n: any) => n.id === anchorId) ?? null
+    // ── Collect source nodes ──────────────────────────────────────────────
+    // selectedNodeId = the node the user last explicitly clicked — use it alone.
+    // selectedNodeIds can drift (stale multi-select from VueFlow events) so don't union them.
+    // No selection → fallback: biggest JOIN cluster on canvas.
+    const sourceNodes: any[] = []
+    const anchorNode = store.selectedNodeId
+      ? store.nodes.find((n: any) => n.id === store.selectedNodeId) ?? null
       : null
 
-    // ── Collect source nodes ───────────────────────────────────────────────
-    // 1. If anchor is a sqlTable → flood-fill all JOIN-connected tables
-    // 2. If anchor is a toolNode → use it directly
-    // 3. No selection → connect to ALL sqlTable nodes on canvas (fallback)
-    const sourceNodes: any[] = []
-
-    function floodFillJoinCluster(startNode: any) {
-      const visited = new Set<string>()
-      const q: any[] = [startNode]
-      while (q.length) {
-        const n = q.shift()!
-        if (visited.has(n.id)) continue
-        visited.add(n.id)
-        sourceNodes.push(n)
-        for (const e of store.edges) {
-          if ((e as any).data?.isTool) continue
-          if ((e as any).source === n.id) {
-            const tgt = store.nodes.find((x: any) => x.id === (e as any).target)
-            if (tgt?.type === 'sqlTable' && !visited.has(tgt.id)) q.push(tgt)
-          }
-          if ((e as any).target === n.id) {
-            const src2 = store.nodes.find((x: any) => x.id === (e as any).source)
-            if (src2?.type === 'sqlTable' && !visited.has(src2.id)) q.push(src2)
-          }
-        }
-      }
+    if (anchorNode && (anchorNode.type === 'sqlTable' || anchorNode.type === 'toolNode')) {
+      sourceNodes.push(anchorNode)
     }
 
-    if (anchorNode?.type === 'sqlTable') {
-      floodFillJoinCluster(anchorNode)
-    } else if (anchorNode?.type === 'toolNode') {
-      sourceNodes.push(anchorNode)
-    } else {
-      // No selection — auto-connect to all sqlTable nodes on canvas
-      // Group by JOIN cluster: pick the largest cluster
+    if (!sourceNodes.length) {
+      // No selection — auto-connect to the biggest JOIN cluster
       const allTables = store.nodes.filter((n: any) => n.type === 'sqlTable')
       if (allTables.length > 0) {
-        // Find the biggest JOIN cluster among canvas tables
         const seen = new Set<string>()
         let biggestCluster: any[] = []
         for (const tbl of allTables) {
@@ -485,6 +456,7 @@ export function useDragDrop() {
 
     // ── Connect every source → new tool node ──────────────────────────────
     // Build the edge objects now (before nextTick so IDs are captured)
+    const toolEdgeStyle = getToolEdgeStyle(toolId)
     const edgesToAdd: any[] = []
     for (const src of sourceNodes) {
       const edgeId = `e-${src.id}-${id}`
@@ -494,8 +466,7 @@ export function useDragDrop() {
         source:    src.id,
         target:    id,
         type:      'sqlEdge',
-        animated:  false,
-        style:     { stroke: 'hsl(var(--muted-foreground) / 0.4)', strokeWidth: 1.5, strokeDasharray: '5 4' },
+        ...toolEdgeStyle,
         markerEnd: MarkerType.ArrowClosed,
         data:      {
           joinType: 'LEFT JOIN', mappings: [], isTool: true,
@@ -507,15 +478,14 @@ export function useDragDrop() {
     // Open modal immediately
     store.modalNodeId = id
 
-    // Add edges AFTER the node is mounted (nextTick #1 = Vue DOM update,
-    // nextTick #2 = VueFlow internal layout that measures handle positions).
-    // Without this delay the new node's handles are unmeasured and VueFlow
-    // cannot calculate edge paths, so edges are invisible.
+    // nextTick() resolves after ALL pre-flush watchers complete, including VueFlow's internal
+    // nodes watcher that runs setNodes() and populates nodeLookup. Only after that point will
+    // VueFlow's createGraphEdges accept the new tool node as a valid edge target.
     if (edgesToAdd.length) {
-      nextTick(() => {
-        store.edges = [...store.edges, ...edgesToAdd]
-        nextTick(() => updateNodeInternals([id]))
-      })
+      await nextTick()
+      if (!store.nodes.some((n: any) => n.id === id)) return  // node was cancelled
+      store.edges = [...store.edges, ...edgesToAdd]
+      nextTick(() => updateNodeInternals(store.nodes.map((n: any) => n.id)))
     }
   }
 

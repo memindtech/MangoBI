@@ -296,11 +296,11 @@ export function useSqlGenerator() {
 
       // sort node: ORDER BY goes to final SELECT; WHERE pre-filter (if any) gets its own CTE
       if (nt === 'sort') {
-        const items = (node.data.items ?? []).filter((s: any) => s.col)
+        const items = (node.data.items ?? []).filter((s: any) => s.col && s.dir)
         if (items.length) {
           sortOrder = items.map((s: any) => `${s.col} ${s.dir}`).join(', ')
         }
-        const sortConds = (node.data.conditions ?? []).filter((c: any) => c.column && c.operator)
+        const sortConds = (node.data.conditions ?? []).filter(hasCondValue)
         if (sortConds.length) {
           // Pre-filter: create a WHERE CTE so the conditions are actually applied
           const filterName = nextCteIdx()
@@ -320,10 +320,16 @@ export function useSqlGenerator() {
         : nextCteIdx()
 
       let cteSql = ''
+      let _groupResolvedCols: string[] | null = null
       switch (nt) {
         case 'cte':    cteSql = buildCteToolBlock(node, upName); break
         case 'where':  cteSql = buildWhereBlock(node, upName);   break
-        case 'group':  cteSql = buildGroupBlock(node, upName, cteOutputCols.get(upName) ?? []);   break
+        case 'group': {
+          const gr = buildGroupBlock(node, upName, cteOutputCols.get(upName) ?? [])
+          cteSql = gr.sql
+          _groupResolvedCols = gr.resolvedCols
+          break
+        }
         case 'calc':   cteSql = buildCalcBlock(node, upName, cteOutputCols.get(upName) ?? []);    break
         case 'union': {
           const upPairs = upIds
@@ -371,10 +377,18 @@ export function useSqlGenerator() {
           const sel = (node.data.selectedCols ?? []).filter(Boolean) as string[]
           cteOutputCols.set(cteName, sel.length ? sel : (cteOutputCols.get(upName) ?? []))
         } else if (nt === 'group') {
-          const grpCols = (node.data.groupCols ?? []).filter(Boolean) as string[]
-          const aggAliases = (node.data.aggs ?? []).filter((a: any) => a.col && a.func)
-            .map((a: any) => a.alias || `${a.func}_${a.col}`)
-          cteOutputCols.set(cteName, [...grpCols, ...aggAliases])
+          const resolvedCols = _groupResolvedCols ?? []
+          // Fallback to raw groupCols + agg aliases when custom SQL used (resolvedCols empty)
+          if (resolvedCols.length) {
+            cteOutputCols.set(cteName, resolvedCols)
+          } else {
+            const rawGrp = (node.data.groupCols ?? []).filter(Boolean) as string[]
+            const aggAliases = (node.data.aggs ?? []).filter((a: any) => a.col && a.func)
+              .map((a: any) => a.alias || `${a.func}_${a.col}`)
+            cteOutputCols.set(cteName, [...rawGrp, ...aggAliases])
+          }
+          // Persist resolved col names so modalNodeUpstreamCols (store) stays in sync
+          store.updateNodeData(node.id, { _resolvedGroupCols: cteOutputCols.get(cteName) })
         }
       }
     }
@@ -461,20 +475,21 @@ export function useSqlGenerator() {
     for (const tn of orderedNodes) {
       if (!tn || !joinedTableIds.has(tn.id)) continue
       const tbl     = alias(tn)
+      const qtbl    = q(tbl)
       const visible = tn.data.visibleCols as VisibleCol[] | undefined
       if (visible?.length) {
         for (const col of visible) {
           if (col.alias) {
-            selectCols.push(`  ${tbl}.${col.name} AS ${col.alias}`)
+            selectCols.push(`  ${qtbl}.${col.name} AS ${col.alias}`)
             ciAdd(col.alias)
           } else if (ciHas(col.name)) {
             let aliasName = `${tbl}_${col.name}`
             let idx = 2
             while (ciHas(aliasName)) aliasName = `${tbl}_${col.name}_${idx++}`
-            selectCols.push(`  ${tbl}.${col.name} AS ${aliasName}`)
+            selectCols.push(`  ${qtbl}.${col.name} AS ${aliasName}`)
             ciAdd(aliasName)
           } else {
-            selectCols.push(`  ${tbl}.${col.name}`)
+            selectCols.push(`  ${qtbl}.${col.name}`)
             ciAdd(col.name)
           }
         }
@@ -488,22 +503,22 @@ export function useSqlGenerator() {
               let aliasName = `${tbl}_${colName}`
               let idx = 2
               while (ciHas(aliasName)) aliasName = `${tbl}_${colName}_${idx++}`
-              selectCols.push(`  ${tbl}.${colName} AS ${aliasName}`)
+              selectCols.push(`  ${qtbl}.${colName} AS ${aliasName}`)
               ciAdd(aliasName)
             } else {
-              selectCols.push(`  ${tbl}.${colName}`)
+              selectCols.push(`  ${qtbl}.${colName}`)
               ciAdd(colName)
             }
           }
         } else {
           // No metadata at all — fall back to wildcard (may cause ambiguity if cols overlap)
-          selectCols.push(`  ${tbl}.*`)
+          selectCols.push(`  ${qtbl}.*`)
         }
       }
     }
 
     const useAlias = primaryA !== primaryT
-    let sql = `SELECT\n${selectCols.join(',\n')}\nFROM ${primaryT}${useAlias ? ` AS ${primaryA}` : ''}`
+    let sql = `SELECT\n${selectCols.join(',\n')}\nFROM ${q(primaryT)}${useAlias ? ` AS ${q(primaryA)}` : ''}`
 
     // ── JOINs in topological order ────────────────────────────────────────
     for (const e of sortedEdges) {
@@ -520,7 +535,7 @@ export function useSqlGenerator() {
       let onClause: string
       if (userMappings.length) {
         onClause = userMappings.map((m: any) =>
-          `${tgtA}.${m.target} ${m.operator || '='} ${srcA}.${m.source}`
+          `${q(tgtA)}.${m.target} ${m.operator || '='} ${q(srcA)}.${m.source}`
         ).join(' AND ')
       } else {
         // Auto-detect from common column names (details first, fall back to visibleCols)
@@ -535,15 +550,15 @@ export function useSqlGenerator() {
         const tgtNames = new Set(tgtColNames)
         const autoMaps = srcColNames.filter((name: string) => tgtNames.has(name))
         onClause = autoMaps.length
-          ? autoMaps.map((name: string) => `${tgtA}.${name} = ${srcA}.${name}`).join(' AND ')
-          : `/* TODO: กำหนด JOIN mapping สำหรับ ${tgtT} */ 1=1`
+          ? autoMaps.map((name: string) => `${q(tgtA)}.${name} = ${q(srcA)}.${name}`).join(' AND ')
+          : `/* ⚠ ไม่พบ common columns — กรุณากำหนด JOIN mapping สำหรับ ${tgtT} */ 1=1`
       }
 
-      const aliasClause = tgtA !== tgtT ? ` AS ${tgtA}` : ''
+      const aliasClause = tgtA !== tgtT ? ` AS ${q(tgtA)}` : ''
       if (jt === 'CROSS JOIN') {
-        sql += `\n  CROSS JOIN ${tgtT}${aliasClause}`
+        sql += `\n  CROSS JOIN ${q(tgtT)}${aliasClause}`
       } else {
-        sql += `\n  ${jt} ${tgtT}${aliasClause} ON ${onClause}`
+        sql += `\n  ${jt} ${q(tgtT)}${aliasClause} ON ${onClause}`
       }
     }
 
@@ -557,7 +572,7 @@ export function useSqlGenerator() {
   // ── Named CTE tool block ──────────────────────────────────────────────
   function buildCteToolBlock(node: Node, upstream: string): string {
     const rawCols    = (node.data.selectedCols ?? []) as string[]
-    const conditions = (node.data.conditions  ?? []).filter((c: any) => c.column && c.operator)
+    const conditions = (node.data.conditions  ?? []).filter(hasCondValue)
 
     // selectedCols may be "tableName.colName" (from CTE frame picker) — strip prefix
     // when referencing the upstream CTE (which already resolved the real column names).
@@ -598,7 +613,10 @@ export function useSqlGenerator() {
 
   // ── CTE Frame block: JOIN from child tables + optional col/filter ────
   function buildCteFrameBlock(frame: Node, childTables: Node[], childEdges: Edge[]): string {
-    if (!childTables.length) return 'SELECT NULL AS _empty_frame -- ไม่มี Table ในกรอบ CTE นี้'
+    if (!childTables.length) {
+      const frameName = (frame.data as any).name ?? 'CTE Frame'
+      return `SELECT NULL AS _empty_frame -- ⚠ "${frameName}" ไม่มี Table อยู่ในกรอบ กรุณาลาก Table เข้ามา`
+    }
 
     // ── Build BFS-ordered node list starting from header ─────────────────
     const nodeIds  = new Set(childTables.map(n => n.id))
@@ -659,25 +677,28 @@ export function useSqlGenerator() {
       const colTableMap = buildColTableMap()
       const qualifiedCols = selectedCols.map(c => {
         if (c.includes('.')) {
-          // Already qualified — use as-is: "table.col" → "  table.col"
           return `  ${c}`
         }
         const tbl = colTableMap.get(c)
-        return tbl ? `  ${tbl}.${c}` : `  ${c}`
+        return tbl ? `  ${q(tbl)}.${c}` : `  ${c}`
       })
-      // Replace SELECT … FROM with the user-chosen columns
-      sql = sql.replace(/^SELECT\n[\s\S]*?\nFROM /, `SELECT\n${qualifiedCols.join(',\n')}\nFROM `)
+      // Replace SELECT … FROM with the user-chosen columns using indexOf to avoid
+      // regex issues with special characters or multi-join FROM patterns (Bug 5 fix).
+      const fromIdx = sql.indexOf('\nFROM ')
+      if (fromIdx > -1) {
+        sql = `SELECT\n${qualifiedCols.join(',\n')}${sql.slice(fromIdx)}`
+      }
     }
 
     // ── Append WHERE conditions (qualify column names) ────────────────────
-    const conditions = ((frame.data as any).conditions ?? []).filter((c: any) => c.column && c.operator)
+    const conditions = ((frame.data as any).conditions ?? []).filter(hasCondValue)
     if (conditions.length) {
       const colTableMap = buildColTableMap()
       const whereClauses = conditions.map((c: any) => {
         let col = c.column as string
         if (!col.includes('.')) {
           const tbl = colTableMap.get(col)
-          if (tbl) col = `${tbl}.${col}`
+          if (tbl) col = `${q(tbl)}.${col}`
         }
         return formatCondClause({ ...c, column: col })
       })
@@ -693,7 +714,7 @@ export function useSqlGenerator() {
 
   // ── WHERE CTE block ───────────────────────────────────────────────────
   function buildWhereBlock(node: Node, upstream: string): string {
-    const conds = (node.data.conditions ?? []).filter((c: any) => c.column && c.operator)
+    const conds = (node.data.conditions ?? []).filter(hasCondValue)
     if (!conds.length) return `SELECT * FROM ${upstream}`
     return `SELECT *\nFROM ${upstream}\nWHERE ${conds.map(formatCondClause).join('\n  AND ')}`
   }
@@ -702,22 +723,25 @@ export function useSqlGenerator() {
   // upstreamColNames: actual output column names of the upstream CTE.
   // Used to remap stored groupCol names (which may be raw DB names) to the
   // collision-aliased names that the upstream CTE actually outputs (e.g. b_dd).
-  function buildGroupBlock(node: Node, upstream: string, upstreamColNames: string[] = []): string {
-    // If user has manually edited the SQL in the modal, use it directly
+  // Returns { sql, resolvedCols } so the caller can track exact CTE output names.
+  function buildGroupBlock(
+    node: Node, upstream: string, upstreamColNames: string[] = [],
+  ): { sql: string; resolvedCols: string[] } {
     const custom = (node.data.customGroupSql as string | undefined)?.trim()
-    if (custom) return custom
+    if (custom) return { sql: custom, resolvedCols: [] }
 
     const rawGroupCols = (node.data.groupCols ?? []).filter(Boolean) as string[]
     const aggs         = (node.data.aggs ?? []).filter((a: any) => a.col && a.func)
 
-    if (!rawGroupCols.length && !aggs.length) return `SELECT * FROM ${upstream}`
+    if (!rawGroupCols.length && !aggs.length)
+      return { sql: `SELECT * FROM ${upstream}`, resolvedCols: [] }
 
     // Map each stored groupCol name to the actual column name in the upstream CTE.
     // Case-insensitive: 'DD_mango' and 'dd_mango' are treated as the same column.
     // Uses assignedUpstream to prevent two occurrences of the same raw name from
     // both resolving to the same upstream column
     // (e.g. groupCols ['ac_code_ic','ac_code_ic'] → ['ac_code_ic','ibrcode_ac_code_ic']).
-    const upstreamMap = new Map(upstreamColNames.map(n => [n.toLowerCase(), n]))
+    const upstreamMap      = new Map(upstreamColNames.map(n => [n.toLowerCase(), n]))
     const assignedUpstream = new Set<string>()   // stores lowercase keys
     function resolveCol(raw: string): string | null {
       if (!upstreamColNames.length) return raw
@@ -734,7 +758,6 @@ export function useSqlGenerator() {
       //    but only if the full name is specifically tableName_colName format
       const aliased = upstreamColNames.find(n => {
         const nLower = n.toLowerCase()
-        // Must end with _rawLower AND have a non-empty prefix (real alias form)
         return !assignedUpstream.has(nLower)
           && nLower.endsWith(`_${rawLower}`)
           && nLower.length > rawLower.length + 1
@@ -743,26 +766,28 @@ export function useSqlGenerator() {
         assignedUpstream.add(aliased.toLowerCase())
         return aliased
       }
-      // 3. Nothing matched — return null so caller can drop it
       return null
     }
 
-    // Resolve, validate against upstream, and deduplicate
-    // Columns that can't be matched to any upstream output are silently dropped
-    // (prevents invalid SQL when stored names don't match actual CTE output)
-    const seen = new Set<string>()
+    // Resolve, validate against upstream, and deduplicate.
+    // Track dropped cols so we can emit a SQL comment warning (Bug 4 fix).
+    const seenResolved = new Set<string>()
+    const droppedCols:  string[] = []
     const groupCols = rawGroupCols
-      .map(resolveCol)
-      .filter((c): c is string => {
-        if (c === null) return false
-        // If upstreamColNames is available, validate resolved name actually exists
-        if (upstreamColNames.length > 0 && !upstreamMap.has(c.toLowerCase())) return false
-        if (seen.has(c.toLowerCase())) return false
-        seen.add(c.toLowerCase()); return true
+      .map(raw => ({ raw, resolved: resolveCol(raw) }))
+      .filter(({ raw, resolved }) => {
+        if (resolved === null) { droppedCols.push(raw); return false }
+        if (upstreamColNames.length > 0 && !upstreamMap.has(resolved.toLowerCase())) {
+          droppedCols.push(raw); return false
+        }
+        if (seenResolved.has(resolved.toLowerCase())) return false
+        seenResolved.add(resolved.toLowerCase()); return true
       })
+      .map(({ resolved }) => resolved as string)
 
     // Remap agg column references too (fall back to raw name if resolveCol returns null)
     const resolvedAggs = aggs.map((a: any) => ({ ...a, col: resolveCol(a.col) ?? a.col }))
+    const aggAliases   = resolvedAggs.map((a: any) => a.alias || `${a.func}_${a.col}`)
 
     const selectParts = [
       ...groupCols.map((c: string) => `  ${c}`),
@@ -774,21 +799,24 @@ export function useSqlGenerator() {
       }),
     ]
 
-    let sql = `SELECT\n${selectParts.join(',\n')}\nFROM ${upstream}`
+    let sql = ''
+    // Warn in generated SQL when stored GROUP BY columns couldn't be matched to upstream
+    if (droppedCols.length) {
+      sql += `-- ⚠ GROUP BY: columns not found in upstream CTE and were dropped: ${droppedCols.join(', ')}\n`
+    }
+    sql += `SELECT\n${selectParts.join(',\n')}\nFROM ${upstream}`
 
-    // WHERE pre-filter (applied before GROUP BY)
-    const preConds = (node.data.conditions ?? []).filter((c: any) => c.column && c.operator)
+    const preConds = (node.data.conditions ?? []).filter(hasCondValue)
     if (preConds.length) sql += `\nWHERE ${preConds.map(formatCondClause).join('\n  AND ')}`
 
     if (groupCols.length) sql += `\nGROUP BY ${groupCols.join(', ')}`
 
-    // HAVING from agg filters
     const having = (node.data.filters ?? [])
-      .filter((f: any) => f.column && f.operator)
+      .filter(hasCondValue)
       .map(formatCondClause)
     if (having.length) sql += `\nHAVING ${having.join('\n  AND ')}`
 
-    return sql
+    return { sql, resolvedCols: [...groupCols, ...aggAliases] }
   }
 
   // ── CALC CTE block ────────────────────────────────────────────────────
@@ -797,7 +825,12 @@ export function useSqlGenerator() {
   // including JOIN-aliased columns (e.g. tbl_id), not just the subset stored at node creation.
   function buildCalcBlock(node: Node, upstream: string, upstreamColNames: string[] = []): string {
     const items = (node.data.items ?? []).filter((c: any) => c.col && c.op)
-    if (!items.length) return `SELECT * FROM ${upstream}`
+    const filters = (node.data.filters ?? []).filter(hasCondValue)
+
+    if (!items.length) {
+      if (!filters.length) return `SELECT * FROM ${upstream}`
+      return `SELECT *\nFROM ${upstream}\nWHERE ${filters.map(formatCondClause).join('\n  AND ')}`
+    }
 
     const calcItems = items.map((c: any) => {
       const expr  = calcExpr(c.op, c.col, c.value ?? '')
@@ -832,7 +865,6 @@ export function useSqlGenerator() {
       sql = `SELECT *,\n${safeExprs.join(',\n')}\nFROM ${upstream}`
     }
 
-    const filters = (node.data.filters ?? []).filter((f: any) => f.column && f.operator)
     if (filters.length) {
       sql += `\nWHERE ${filters.map(formatCondClause).join('\n  AND ')}`
     }
@@ -887,7 +919,7 @@ export function useSqlGenerator() {
       })
       if (parts.length === 0) return `SELECT * FROM ${upstreamNames[0] ?? '_src'}`
       const unionSql = parts.join(`\n${uType}\n`)
-      const conditions = (node.data.conditions ?? []).filter((c: any) => c.column && c.operator)
+      const conditions = (node.data.conditions ?? []).filter(hasCondValue)
       if (!conditions.length) return unionSql
       return `SELECT * FROM (\n${indent(unionSql)}\n) _u\nWHERE ${conditions.map(formatCondClause).join('\n  AND ')}`
     }
@@ -920,7 +952,7 @@ export function useSqlGenerator() {
     const unionSql = parts.join(`\n${uType}\n`)
 
     // Optional WHERE filter — wrap in subquery
-    const conditions = (node.data.conditions ?? []).filter((c: any) => c.column && c.operator)
+    const conditions = (node.data.conditions ?? []).filter(hasCondValue)
     if (!conditions.length) return unionSql
 
     return `SELECT * FROM (\n${indent(unionSql)}\n) _u\nWHERE ${conditions.map(formatCondClause).join('\n  AND ')}`
@@ -960,13 +992,12 @@ export function useSqlGenerator() {
       const fallbackTbl = alias(tn)
 
       for (const f of filters) {
-        if (!f.column || !f.operator) continue
-        // Look up the actual owning table across all joined tables
+        if (!hasCondValue(f)) continue
         const owner   = colOwner.get(f.column)
         const tbl     = owner?.tbl ?? fallbackTbl
         const rawType = owner?.rawType ?? f.type ?? ''
         clauses.push(formatCondClause({
-          column: `${tbl}.${f.column}`,
+          column: `${q(tbl)}.${f.column}`,
           operator: f.operator,
           value: f.value,
           colType: rawType,
@@ -979,8 +1010,25 @@ export function useSqlGenerator() {
   // ── Helpers ───────────────────────────────────────────────────────────
   function tableName(n: Node): string { return n.data.tableName ?? n.data.label ?? '' }
   function alias(n: Node): string     { return tableName(n) }  // can extend to t1/t2 aliases
+  // SQL Server bracket-quote: wraps name in [brackets], escaping any embedded ].
+  // Applied to table/alias references in FROM, JOIN, ON, and WHERE qualifiers so that
+  // names containing spaces, reserved words, or special characters are always safe.
+  function q(name: string): string {
+    if (!name) return name
+    if (name.startsWith('[') && name.endsWith(']')) return name   // already quoted
+    return `[${name.replace(/\]/g, ']]')}]`
+  }
   function escapeSQL(v: string): string { return String(v ?? '').replace(/'/g, "''") }
   function indent(sql: string): string  { return sql.split('\n').map(l => `    ${l}`).join('\n') }
+
+  // Returns true when a condition has a usable value (or doesn't need one).
+  // Prevents generating broken SQL like `[col] = ` when value is empty.
+  function hasCondValue(c: { column?: any; operator?: any; value?: any }): boolean {
+    if (!c.column || !c.operator) return false
+    if (c.operator === 'IS NULL' || c.operator === 'IS NOT NULL') return true
+    const v = c.value
+    return v !== undefined && v !== null && String(v) !== ''
+  }
 
   // ── Shared condition clause formatter ─────────────────────────────────
   // Handles IS NULL, IS NOT NULL, LIKE (N'...'), IN (...), and smart numeric quoting.
@@ -998,6 +1046,11 @@ export function useSqlGenerator() {
     if (op === 'LIKE')        return `${col} LIKE N'${escapeSQL(val)}'`
     if (op === 'IN')          return `${col} IN (${val})`
     const ct = c.colType ?? ''
+    // Boolean/BIT: convert true/false strings to 1/0
+    if (ct === 'boolean') {
+      const boolVal = ['true', 'yes', '1'].includes(val.toLowerCase()) ? '1' : '0'
+      return `${col} ${op} ${boolVal}`
+    }
     // Explicit numeric type → no quotes
     if (ct && NUMERIC_TYPES.test(ct))  return `${col} ${op} ${val}`
     // Explicit date/string type → always quote

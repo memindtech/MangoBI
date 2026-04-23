@@ -238,12 +238,19 @@ export const useSqlBuilderStore = defineStore('sql-builder', () => {
       }
     }
 
-    // Collect output columns of a GROUP BY node (groupCols + agg aliases)
-    // These are the only columns visible to nodes downstream of a GROUP BY.
+    // Collect output columns of a GROUP BY node (groupCols + agg aliases).
+    // Prefers _resolvedGroupCols (written by generateSQL) so names match the
+    // actual CTE output (collision-aliased). Falls back to raw groupCols before
+    // first SQL generation.
     function collectGroupOutputCols(groupNode: Node) {
-      const label     = 'GROUP BY'
-      const groupCols = (groupNode.data.groupCols ?? []) as string[]
-      const aggs      = ((groupNode.data.aggs ?? []) as any[]).filter((a: any) => a.col && a.func)
+      const label = 'GROUP BY'
+      // _resolvedGroupCols is populated by useSqlGenerator after each generateSQL() call
+      const resolvedCols = (groupNode.data._resolvedGroupCols ?? []) as string[]
+      const groupCols    = resolvedCols.length
+        ? resolvedCols
+        : (groupNode.data.groupCols ?? []) as string[]
+      const aggs = ((groupNode.data.aggs ?? []) as any[]).filter((a: any) => a.col && a.func)
+
       for (const col of groupCols) {
         const key = `grp:${col}`
         if (!seen.has(key)) {

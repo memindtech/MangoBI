@@ -70,11 +70,15 @@ function syncNodeToVueFlow(nodeId: string) {
 watch(() => store.modalNodeId, (val, oldVal) => {
   if (!val && oldVal) {
     syncNodeToVueFlow(oldVal)
+    if (store.sqlPanelOpen) generateSQL()
   }
 })
 
 watch(() => store.filterNodeId, (val, oldVal) => {
-  if (!val && oldVal) syncNodeToVueFlow(oldVal)
+  if (!val && oldVal) {
+    syncNodeToVueFlow(oldVal)
+    if (store.sqlPanelOpen) generateSQL()
+  }
 })
 
 function onAddTool(toolId: string) {
