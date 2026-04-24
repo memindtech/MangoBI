@@ -113,6 +113,15 @@ const JOIN_DESC: Record<JoinType, string> = {
   'CROSS JOIN': 'ผลคูณคาร์ทีเชียนของสองตาราง',
 }
 
+// C5: concrete examples using ลูกค้า/ออเดอร์ so non-tech users can picture it.
+const JOIN_EXAMPLE: Record<JoinType, string> = {
+  'INNER JOIN': 'เช่น: ลูกค้าที่มีออเดอร์เท่านั้น',
+  'LEFT JOIN':  'เช่น: ลูกค้าทั้งหมด + ออเดอร์ (ถ้ามี)',
+  'RIGHT JOIN': 'เช่น: ออเดอร์ทั้งหมด + ลูกค้า (ถ้ามี)',
+  'FULL JOIN':  'เช่น: ลูกค้าทุกคน + ออเดอร์ทุกใบ (แม้ไม่ตรงกัน)',
+  'CROSS JOIN': 'เช่น: ลูกค้าทุกคน × ตัวเลือกสินค้าทุกตัว (ใช้ระวัง แถวเยอะมาก)',
+}
+
 function addMapping() {
   mappings.value.push({ _id: ++mappingIdSeq, source: '', target: '', operator: '=' })
 }
@@ -272,11 +281,27 @@ function colDetail(details: typeof sourceDetails.value, colName: string) {
                     ? { borderColor: JOIN_EDGE_COLORS[jt], backgroundColor: JOIN_EDGE_COLORS[jt] + '15' }
                     : { borderColor: 'transparent', backgroundColor: 'hsl(var(--muted)/0.3)' }"
                 >
-                  <svg width="44" height="14" viewBox="0 0 44 14">
-                    <line x1="2" y1="7" x2="36" y2="7"
-                      :stroke="JOIN_EDGE_COLORS[jt]" stroke-width="2"
-                      :stroke-dasharray="JOIN_DASH[jt] || undefined" stroke-linecap="round" />
-                    <polygon points="33,4 42,7 33,10" :fill="JOIN_EDGE_COLORS[jt]" />
+                  <!-- Venn diagram: filled regions show which rows are kept (C5) -->
+                  <svg width="44" height="22" viewBox="0 0 44 22" aria-hidden="true">
+                    <defs>
+                      <clipPath :id="`venn-left-${jt}`"><circle cx="17" cy="11" r="8" /></clipPath>
+                      <clipPath :id="`venn-right-${jt}`"><circle cx="27" cy="11" r="8" /></clipPath>
+                    </defs>
+                    <!-- Base outlines -->
+                    <circle cx="17" cy="11" r="8" fill="none" :stroke="JOIN_EDGE_COLORS[jt]" stroke-width="1" opacity="0.5" />
+                    <circle cx="27" cy="11" r="8" fill="none" :stroke="JOIN_EDGE_COLORS[jt]" stroke-width="1" opacity="0.5" />
+                    <!-- LEFT: fill left circle -->
+                    <circle v-if="jt === 'LEFT JOIN' || jt === 'FULL JOIN'"
+                      cx="17" cy="11" r="8" :fill="JOIN_EDGE_COLORS[jt]" opacity="0.55" />
+                    <!-- RIGHT: fill right circle -->
+                    <circle v-if="jt === 'RIGHT JOIN' || jt === 'FULL JOIN'"
+                      cx="27" cy="11" r="8" :fill="JOIN_EDGE_COLORS[jt]" opacity="0.55" />
+                    <!-- INNER: intersection only -->
+                    <circle v-if="jt === 'INNER JOIN'"
+                      cx="27" cy="11" r="8" :fill="JOIN_EDGE_COLORS[jt]" opacity="0.7" :clip-path="`url(#venn-left-${jt})`" />
+                    <!-- CROSS: both circles separated + X between -->
+                    <text v-if="jt === 'CROSS JOIN'" x="22" y="14" text-anchor="middle"
+                      :fill="JOIN_EDGE_COLORS[jt]" font-size="8" font-weight="bold">×</text>
                   </svg>
                   <span class="text-[9px] font-bold leading-tight text-center"
                     :style="{ color: joinType === jt ? JOIN_EDGE_COLORS[jt] : 'hsl(var(--muted-foreground))' }">
@@ -284,10 +309,15 @@ function colDetail(details: typeof sourceDetails.value, colName: string) {
                   </span>
                 </button>
               </div>
-              <div class="mt-2.5 px-3 py-2 rounded-lg text-xs text-center"
+              <div class="mt-2.5 px-3 py-2 rounded-lg text-xs flex flex-col gap-0.5"
                 :style="{ backgroundColor: JOIN_EDGE_COLORS[joinType] + '12', color: JOIN_EDGE_COLORS[joinType] }">
-                <span class="font-semibold">{{ joinType }}</span>
-                <span class="text-muted-foreground ml-2">— {{ JOIN_DESC[joinType] }}</span>
+                <div class="text-center">
+                  <span class="font-semibold">{{ joinType }}</span>
+                  <span class="text-muted-foreground ml-2">— {{ JOIN_DESC[joinType] }}</span>
+                </div>
+                <div class="text-center text-[10px] text-muted-foreground italic">
+                  {{ JOIN_EXAMPLE[joinType] }}
+                </div>
               </div>
             </div>
 
@@ -305,8 +335,17 @@ function colDetail(details: typeof sourceDetails.value, colName: string) {
                     auto
                   </span>
                 </p>
-                <button @click="addMapping"
-                  class="flex items-center gap-1 text-xs font-semibold text-sky-500 hover:text-sky-400 transition-colors">
+                <button
+                  @click="addMapping"
+                  :disabled="isLoadingDetails"
+                  :title="isLoadingDetails ? 'รอโหลด column ก่อน' : ''"
+                  :class="[
+                    'flex items-center gap-1 text-xs font-semibold transition-colors',
+                    isLoadingDetails
+                      ? 'text-muted-foreground/50 cursor-not-allowed'
+                      : 'text-sky-500 hover:text-sky-400',
+                  ]"
+                >
                   <Plus class="size-3" /> เพิ่มเงื่อนไข
                 </button>
               </div>

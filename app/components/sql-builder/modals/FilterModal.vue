@@ -206,14 +206,24 @@ const OP_GROUPS = [
     { value: '<=', label: '≤',  title: 'น้อยกว่าหรือเท่ากับ' },
   ]},
   { label: 'ข้อความ / ช่วง', ops: [
-    { value: 'LIKE', label: 'LIKE', title: 'มีข้อความ (% wildcard)' },
-    { value: 'IN',   label: 'IN',   title: 'อยู่ในชุด (a,b,c)' },
+    { value: 'LIKE', label: 'LIKE', title: 'มีข้อความ (% = ตัวอักษรอะไรก็ได้)' },
+    { value: 'IN',   label: 'IN',   title: 'อยู่ในชุด (เช่น 10,20,30)' },
   ]},
   { label: 'ว่างเปล่า', ops: [
     { value: 'IS NULL',     label: 'NULL',  title: 'ว่างเปล่า' },
     { value: 'IS NOT NULL', label: '!NULL', title: 'ไม่ว่างเปล่า' },
   ]},
 ]
+
+// C4: rich placeholder text per operator so users don't have to know SQL
+// wildcard syntax. Shown inside the value input when no value is set yet.
+function valuePlaceholder(op: string, type: string): string {
+  if (op === 'LIKE') return 'เช่น %mango% = มีคำว่า mango ที่ไหนก็ได้'
+  if (op === 'IN')   return 'เช่น 10,20,30 (คั่นด้วย ,)'
+  if (type === 'date') return 'เลือกวันที่'
+  if (type === 'int' || type === 'decimal') return 'เช่น 100'
+  return 'พิมพ์ค่าที่ต้องการ'
+}
 
 const localFilters   = ref<FilterCondition[]>([])
 const whereExpanded  = ref(false)
@@ -549,7 +559,7 @@ function close() { store.filterNodeId = null }
                       </div>
                       <input v-else :value="f.value"
                         @input="localFilters[i] = { ...f, value: ($event.target as HTMLInputElement).value }"
-                        :placeholder="f.operator === 'IN' ? 'a, b, c' : f.operator === 'LIKE' ? '%keyword%' : 'ค่า...'"
+                        :placeholder="valuePlaceholder(f.operator, f.type)"
                         :type="f.type === 'int' ? 'number' : 'text'"
                         class="flex-1 text-xs border rounded-lg px-2.5 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-amber-400/50 font-mono"
                         :class="f.value ? 'border-amber-400/40' : ''" />

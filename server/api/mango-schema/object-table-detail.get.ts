@@ -26,13 +26,17 @@ export default defineEventHandler(async (event): Promise<unknown> => {
     await writeCache(cacheKey, res, CACHE_TTL.detail)
     setHeader(event, 'X-Cache', 'miss')
     return res
-  } catch {
+  } catch (err: any) {
     if (cached) {
       setHeader(event, 'X-Cache', 'stale')
       setHeader(event, 'X-Cache-Age', String(Math.round((Date.now() - cached.ts) / 1000)))
       return cached.data
     }
     setHeader(event, 'X-Cache', 'miss-error')
-    return { data: [], error: 'Mango API unreachable' }
+    // ADDSPEC remarks are optional — returning empty data lets the primary
+    // column load still succeed (legitimate case: table with no ADDSPEC rows).
+    // Header signals degradation so clients can log if curious.
+    setHeader(event, 'X-Mango-Status', 'unreachable')
+    return { data: [] }
   }
 })

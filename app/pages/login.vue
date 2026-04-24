@@ -121,10 +121,19 @@ const submitLogin = async (target: 'standard' | 'microsoft') => {
     const resp = await $fetch('/api/auth/login', {
       method: 'POST',
       body: { ...form, attempt },
-    }).catch((err: any) => err?.data ?? { error: err?.message ?? 'Login failed' }) as any
+    }).catch((err: any) => {
+      // Preserve the server's error shape when available; fall back to the
+      // HTTP error's message, then a generic label. Avoids losing real error
+      // context in a "Login failed" catch-all.
+      if (err?.data && typeof err.data === 'object') return err.data
+      return { error: err?.data?.message ?? err?.message ?? err?.statusMessage ?? 'ไม่สามารถล็อกอินได้ ลองอีกครั้ง' }
+    }) as any
 
     if (resp.error) {
-      if (resp.error.indexOf('Request OTP;') === 0) {
+      // Normalize to string before calling string methods — backend may send
+      // { error: { message, code } } and we don't want to crash on indexOf.
+      const errStr = typeof resp.error === 'string' ? resp.error : String(resp.error?.message ?? resp.error)
+      if (errStr.indexOf('Request OTP;') === 0) {
         showAlert(t('login_err_title_otp'), t('login_err_otp'), 'info')
         return
       }
@@ -132,27 +141,29 @@ const submitLogin = async (target: 'standard' | 'microsoft') => {
       if (resp.error_type === 'L') {
         let nextAttempt = (parseInt(attempt) + 1).toString()
         sessionStorage.setItem('attempt', nextAttempt)
-        showAlert(t('login_err_title_error'), `${resp.error}: ${t('login_err_locked', { limit: resp.lock_limit_login })}`, 'danger')
+        showAlert(t('login_err_title_error'), `${errStr}: ${t('login_err_locked', { limit: resp.lock_limit_login })}`, 'danger')
         return
       }
 
       if (resp.error_type === 'L1') {
         sessionStorage.clear()
-        showAlert(t('login_err_title_admin'), resp.error, 'warning')
+        showAlert(t('login_err_title_admin'), errStr, 'warning')
         return
       }
 
       if (resp.error_type === 'C') {
-        showAlert(t('login_err_title_error'), resp.error, 'danger')
+        showAlert(t('login_err_title_error'), errStr, 'danger')
         return
       }
 
       if (resp.error_type === 'F') {
-        showAlert(t('login_err_title_full'), resp.error, 'warning')
+        showAlert(t('login_err_title_full'), errStr, 'warning')
         return
       }
 
-      throw resp.error
+      // No matching error_type — show the raw message so user knows what happened
+      showAlert(t('login_err_title_error'), errStr, 'danger')
+      return
     }
 
     // Login Success — bi_session cookie ถูก set โดย server แล้ว

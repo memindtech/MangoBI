@@ -752,10 +752,20 @@ const shareCopied = ref(false)
 function copyShareUrl() {
   if (!rpSavedId.value) return
   const url = `${globalThis.location.origin}/view/${rpSavedId.value}`
-  navigator.clipboard.writeText(url).then(() => {
-    shareCopied.value = true
-    setTimeout(() => { shareCopied.value = false }, 2000)
-  })
+  navigator.clipboard.writeText(url).then(
+    () => {
+      shareCopied.value = true
+      setTimeout(() => { shareCopied.value = false }, 2000)
+    },
+    // Clipboard write can be rejected by the browser (e.g. non-HTTPS,
+    // focus lost). Fall back to a prompt so the user still gets the URL
+    // instead of a silent no-op they can't explain.
+    (err) => {
+      console.warn('[copyShareUrl] clipboard write failed', err)
+      try { globalThis.prompt('คัดลอกลิงก์ไม่สำเร็จ — กด Ctrl+C เพื่อคัดลอกด้วยตนเอง', url) }
+      catch { /* prompt not available */ }
+    },
+  )
 }
 
 async function doSaveRp() {

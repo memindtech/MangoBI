@@ -26,13 +26,20 @@ export default defineEventHandler(async (event): Promise<unknown> => {
     await writeCache(cacheKey, res, CACHE_TTL.columns)
     setHeader(event, 'X-Cache', 'miss')
     return res
-  } catch {
+  } catch (err: any) {
     if (cached) {
       setHeader(event, 'X-Cache', 'stale')
       setHeader(event, 'X-Cache-Age', String(Math.round((Date.now() - cached.ts) / 1000)))
       return cached.data
     }
     setHeader(event, 'X-Cache', 'miss-error')
-    return { data: null, error: 'Mango API unreachable' }
+    // B2: throw a real 502 so the client's catch branch runs instead of
+    // treating null as "no columns". Previously returned a 200 body with
+    // `{ data: null, error: '...' }` which callers silently ignored.
+    throw createError({
+      statusCode: 502,
+      statusMessage: 'Upstream Mango API unreachable',
+      data: { table, reason: err?.message ?? 'timeout or network error' },
+    })
   }
 })

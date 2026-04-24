@@ -2985,6 +2985,17 @@ const finishBtnStyle = computed(() => {
             <!-- ════ STEP 1: เลือก Sources ═══════════════════════════ -->
             <div v-if="unionStep === 1" class="flex flex-col overflow-hidden">
 
+              <!-- C3: plain-Thai hint explaining UNION in one line so users who
+                   don't know SQL understand what they're about to do. -->
+              <div class="mx-5 mt-3 px-3 py-2 rounded-lg bg-yellow-500/10 border border-yellow-500/25 text-[10px] text-yellow-700 dark:text-yellow-400 flex items-start gap-2 shrink-0">
+                <GitMerge class="size-3.5 mt-0.5 shrink-0" />
+                <span>
+                  <span class="font-bold">UNION</span> คือการเอาข้อมูลจากหลายตาราง/CTE
+                  มา "ต่อท้ายกัน" เป็นชุดเดียว —
+                  ทุก source ต้องมีจำนวน column เท่ากันและชนิดตรงกัน
+                </span>
+              </div>
+
               <!-- Step 1 header -->
               <div class="flex items-center gap-2 px-5 py-3 border-b border-border/40 bg-muted/10 shrink-0">
                 <GitMerge class="size-4 text-yellow-500 shrink-0" />

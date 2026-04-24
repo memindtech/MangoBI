@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Handle, Position, useVueFlow } from '@vue-flow/core'
-import { Database, X, Filter, ChevronDown, ChevronUp, Key, SlidersHorizontal, Network } from 'lucide-vue-next'
+import { Database, X, Filter, ChevronDown, ChevronUp, Key, SlidersHorizontal, Network, RefreshCw, AlertTriangle } from 'lucide-vue-next'
 import type { VisibleCol } from '~/types/sql-builder'
 import { getColTypeBadgeSolid } from '~/types/sql-builder'
 import { useSqlBuilderStore } from '~/stores/sql-builder'
@@ -189,9 +189,17 @@ const connectedTools = computed(() => {
         </span>
         <span class="text-[10px] text-muted-foreground truncate flex-1">{{ data.module }}</span>
 
-        <!-- Column count badge -->
-        <span v-if="visibleCols.length" class="text-[9px] px-1.5 py-0.5 bg-sky-500/15 text-sky-500 rounded-full font-semibold shrink-0">
-          {{ visibleCols.length }}
+        <!-- Column count badge (C6): shows selected / total so user knows
+             both what they've picked AND how many are available. -->
+        <span
+          v-if="details.length"
+          class="text-[9px] px-1.5 py-0.5 bg-sky-500/15 text-sky-500 rounded-full font-semibold shrink-0 font-mono"
+          :title="visibleCols.length
+            ? `เลือก ${visibleCols.length} จาก ${details.length} คอลัมน์`
+            : `มีทั้งหมด ${details.length} คอลัมน์ (ยังไม่ได้เลือก)`"
+        >
+          <template v-if="visibleCols.length">{{ visibleCols.length }}/{{ details.length }}</template>
+          <template v-else>📋 {{ details.length }}</template>
         </span>
         <!-- Header badge -->
         <span v-if="data.isHeaderNode" class="text-[8px] px-1 py-0.5 bg-emerald-500/20 text-emerald-600 rounded font-bold shrink-0">H</span>
@@ -342,7 +350,23 @@ const connectedTools = computed(() => {
       <!-- ── Loading state ───────────────────────────────────── -->
       <div v-if="data.columnsLoading !== false && !details.length" class="px-3 py-2 text-[9px] text-muted-foreground/60 flex items-center gap-1.5">
         <div class="size-2 rounded-full border border-muted-foreground/30 border-t-sky-400 animate-spin" />
-        Loading columns…
+        กำลังโหลดคอลัมน์…
+      </div>
+      <!-- Load failed: clearly flag and offer retry (A5, C2) -->
+      <div
+        v-else-if="data.columnsLoadFailed === true"
+        class="px-3 py-2 flex items-center justify-between gap-2 bg-amber-500/10 border-t border-amber-500/30"
+      >
+        <div class="flex items-center gap-1.5 text-[10px] text-amber-500">
+          <AlertTriangle class="size-3" />
+          <span>โหลดคอลัมน์ไม่สำเร็จ</span>
+        </div>
+        <button
+          class="flex items-center gap-1 px-2 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/30 text-[9px] text-amber-300 font-medium"
+          @click.stop="dragDrop.retryLoadColumns(id)"
+        >
+          <RefreshCw class="size-2.5" /> ลองใหม่
+        </button>
       </div>
       <div v-else-if="data.columnsLoading === false && !details.length" class="px-3 py-2 text-[9px] text-muted-foreground/60 italic">
         ไม่พบ columns

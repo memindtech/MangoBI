@@ -19,6 +19,10 @@ export const useSqlBuilderStore = defineStore('sql-builder', () => {
   // ── UI State ────────────────────────────────────────────────────────────
   const generatedSQL   = ref('')
   const sqlPanelOpen   = ref(true)
+  // Warnings from the last SQL generation run (e.g. missing upstream CTE,
+  // dropped GROUP BY cols). Surfaced in SqlBuilderSqlPanel as a banner so
+  // users can see why generated SQL may be incomplete.
+  const lastGenerationWarnings = ref<string[]>([])
   const savedId           = ref<string | null>(null)   // current cloud-saved record id
   const savedName         = ref('')
   const savedIsPublic     = ref(false)
@@ -441,7 +445,8 @@ export const useSqlBuilderStore = defineStore('sql-builder', () => {
 
   return {
     // State
-    nodes, edges, generatedSQL, sqlPanelOpen, savedId, savedName, savedIsPublic, showFinishModal,
+    nodes, edges, generatedSQL, sqlPanelOpen, lastGenerationWarnings,
+    savedId, savedName, savedIsPublic, showFinishModal,
     activeEdgeId, selectedNodeId, selectedNodeIds,
     modalNodeId, filterNodeId, pendingToolId, pendingVp, relationEdgeId, newToolNodeId, search, clipboard, groupModalData,
     modules, objects, expandedMods, loadingMods, loadingObjs, searchLoading,

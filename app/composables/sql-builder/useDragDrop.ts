@@ -262,12 +262,36 @@ export function useDragDrop() {
   }
 
   // ── Load columns for a node (Addspec_Table_Read) ─────────────────────────
+  // A5: on failure (empty result due to network/API error, or thrown error)
+  //     mark node with `columnsLoadFailed=true` and surface a retry UI in
+  //     SqlTableNode. SQL generation is gated on this flag so we never
+  //     produce SQL using a table with unknown schema.
   async function loadColumnsForNode(nodeId: string, tableName: string) {
     if (!tableName) {
-      store.updateNodeData(nodeId, { columnsLoading: false })
+      store.updateNodeData(nodeId, { columnsLoading: false, columnsLoadFailed: false })
       return
     }
-    const cols = await erpData.loadTableColumnsEnriched(tableName)
+    store.updateNodeData(nodeId, { columnsLoading: true, columnsLoadFailed: false })
+    let cols: Awaited<ReturnType<typeof erpData.loadTableColumnsEnriched>> = []
+    let failed = false
+    try {
+      // loadTableColumnsEnriched now throws on network / shape errors (B2+B4).
+      // Empty cols = table legitimately has no columns (rare but valid), not
+      // an error state — so don't set failed on empty.
+      cols = await erpData.loadTableColumnsEnriched(tableName)
+    } catch (err) {
+      console.error('[loadColumnsForNode] failed', tableName, err)
+      failed = true
+    }
+    if (failed) {
+      store.updateNodeData(nodeId, {
+        details:           [],
+        visibleCols:       [],
+        columnsLoading:    false,
+        columnsLoadFailed: true,
+      })
+      return
+    }
     const visibleCols: VisibleCol[] = cols
       .filter(c => c.data_pk === 'Y')
       .map(c => ({
@@ -278,10 +302,20 @@ export function useDragDrop() {
         alias:  '',
       }))
     store.updateNodeData(nodeId, {
-      details:        cols,
+      details:           cols,
       visibleCols,
-      columnsLoading: false,
+      columnsLoading:    false,
+      columnsLoadFailed: false,
     })
+  }
+
+  // Expose so UI (SqlTableNode retry button) can re-trigger a failed load
+  // without needing to know about the onRead flow.
+  async function retryLoadColumns(nodeId: string) {
+    const node = store.nodes.find((n: any) => n.id === nodeId)
+    const tableName = node?.data?.tableName as string | undefined
+    if (!tableName) return
+    await loadColumnsForNode(nodeId, tableName)
   }
 
   // ── Add tool node ────────────────────────────────────────────────────────
@@ -513,5 +547,5 @@ export function useDragDrop() {
     }, objectTable)
   }
 
-  return { onDragStart, onDrop, addToolNode, loadColumnsForNode, createGroupFromSelection, expandNodeRelations }
+  return { onDragStart, onDrop, addToolNode, loadColumnsForNode, retryLoadColumns, createGroupFromSelection, expandNodeRelations }
 }

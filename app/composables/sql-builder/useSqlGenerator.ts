@@ -17,6 +17,15 @@ import { useSqlBuilderStore } from '~/stores/sql-builder'
 export function useSqlGenerator() {
   const store = useSqlBuilderStore()
 
+  // Warnings accumulated during a single generateSQL() run (cleared at the
+  // start of each run). Populated by buildCTESQL / buildJoinBlock when they
+  // notice a problem that would otherwise fail silently (e.g. unreachable
+  // upstream CTE). Surfaced to the user via store.lastGenerationWarnings.
+  const runWarnings: string[] = []
+  function pushWarning(msg: string) {
+    if (!runWarnings.includes(msg)) runWarnings.push(msg)
+  }
+
   // ── Main generate function ────────────────────────────────────────────
   function generateSQL() {
     const { nodes, edges } = store
@@ -25,8 +34,22 @@ export function useSqlGenerator() {
     const toolNodes      = nodes.filter((n: Node) => n.type === 'toolNode')
     const cteFrameNodes  = nodes.filter((n: Node) => n.type === 'cteFrame')
 
+    runWarnings.length = 0
+
+    // A5: block SQL generation when any table still has a pending column-load
+    // failure — user should click retry before we regenerate with stale schema.
+    const failedTables = tableNodes.filter((n: Node) => n.data?.columnsLoadFailed === true)
+    if (failedTables.length) {
+      const names = failedTables.map((n: Node) => n.data?.label ?? n.data?.tableName ?? n.id).join(', ')
+      store.generatedSQL = `-- ⚠ โหลดคอลัมน์ไม่สำเร็จ: ${names}\n-- กรุณากด "ลองใหม่" ที่ตารางนั้น ๆ ก่อนสร้าง SQL`
+      store.lastGenerationWarnings = [`โหลดคอลัมน์ไม่สำเร็จ: ${names}`]
+      store.sqlPanelOpen = true
+      return
+    }
+
     if (!tableNodes.length && !cteFrameNodes.length) {
       store.generatedSQL = '-- ลาก Table ลงบน Canvas ก่อน'
+      store.lastGenerationWarnings = []
       store.sqlPanelOpen = true
       return
     }
@@ -34,12 +57,14 @@ export function useSqlGenerator() {
     // No tool/frame nodes → simple flat SQL
     if (!toolNodes.length && !cteFrameNodes.length) {
       store.generatedSQL = buildDirectSQL(tableNodes, edges)
+      store.lastGenerationWarnings = [...runWarnings]
       store.sqlPanelOpen = true
       return
     }
 
     // CTE pipeline
     store.generatedSQL = buildCTESQL(nodes, edges, tableNodes, cteFrameNodes)
+    store.lastGenerationWarnings = [...runWarnings]
     store.sqlPanelOpen = true
   }
 
@@ -193,17 +218,25 @@ export function useSqlGenerator() {
     }
 
     // ── Bounds helper: find sqlTable nodes inside a cteFrame ────────────
+    // Uses Vue Flow's measured `dimensions` when available (more accurate
+    // than the hardcoded 224×160 assumption). Falls back to 112/80 half-sizes.
+    // 8px tolerance on all sides so sub-pixel drag positions don't drop
+    // a node out of its frame silently.
     function getFrameChildren(frame: Node): Node[] {
       const fw = parseFloat(String((frame.style as any)?.width  ?? '420'))
       const fh = parseFloat(String((frame.style as any)?.height ?? '280'))
       const fx = frame.position.x
       const fy = frame.position.y
-      const NW = 112   // half node card width
-      const NH = 80    // half node card height
-      return tableNodes.filter((n: Node) =>
-        (n.position.x + NW) >= fx && (n.position.x + NW) <= fx + fw &&
-        (n.position.y + NH) >= fy && (n.position.y + NH) <= fy + fh
-      )
+      const TOL = 8
+      return tableNodes.filter((n: Node) => {
+        const dim = (n as any).dimensions as { width?: number; height?: number } | undefined
+        const nw = (dim?.width  && dim.width  > 0) ? dim.width  / 2 : 112
+        const nh = (dim?.height && dim.height > 0) ? dim.height / 2 : 80
+        const cx = n.position.x + nw
+        const cy = n.position.y + nh
+        return cx >= (fx - TOL) && cx <= (fx + fw + TOL)
+          && cy >= (fy - TOL) && cy <= (fy + fh + TOL)
+      })
     }
 
     // ── Step 1: cteFrame nodes → each builds its own JOIN CTE ──────────
@@ -312,9 +345,32 @@ export function useSqlGenerator() {
     for (const node of sorted) {
       if (node.type !== 'toolNode') continue
 
-      // Determine upstream CTE name
-      const upIds  = upstreamOf.get(node.id) ?? []
-      const upName = upIds.length ? (nodeOutput.get(upIds[0]!) ?? lastCTE) : lastCTE
+      // Determine upstream CTE name.
+      // A1: previously `nodeOutput.get(upIds[0]!) ?? lastCTE` silently
+      //     fell back to the last CTE when the user's actual upstream hadn't
+      //     produced a CTE yet (e.g. upstream was a table not in any component
+      //     or topologically unreachable). This produced syntactically valid
+      //     SQL that referenced the wrong upstream. Now we warn instead.
+      const upIds = upstreamOf.get(node.id) ?? []
+      const toolLabel = (node.data?.label ?? node.data?.nodeType ?? node.id) as string
+      let upName: string
+      if (upIds.length) {
+        const resolved = nodeOutput.get(upIds[0]!)
+        if (resolved) {
+          upName = resolved
+        } else if (lastCTE) {
+          pushWarning(`เครื่องมือ "${toolLabel}" ต่อกับ node ที่ยังไม่ได้สร้าง CTE — กำลังใช้ "${lastCTE}" แทน ตรวจเส้นเชื่อมอีกครั้ง`)
+          upName = lastCTE
+        } else {
+          pushWarning(`เครื่องมือ "${toolLabel}" ไม่พบ upstream ที่ใช้งานได้ — ข้ามเครื่องมือนี้`)
+          continue
+        }
+      } else if (lastCTE) {
+        upName = lastCTE
+      } else {
+        pushWarning(`เครื่องมือ "${toolLabel}" ไม่มี upstream — ลาก Table มาเชื่อมต่อก่อน`)
+        continue
+      }
 
       const nt = node.data.nodeType as string
 
@@ -733,11 +789,15 @@ export function useSqlGenerator() {
         ciAdd2(colPart)
         return ref
       })
-      // Replace SELECT … FROM with the user-chosen columns using indexOf to avoid
-      // regex issues with special characters or multi-join FROM patterns (Bug 5 fix).
-      const fromIdx = sql.indexOf('\nFROM ')
-      if (fromIdx > -1) {
-        sql = `SELECT\n${qualifiedCols.join(',\n')}${sql.slice(fromIdx)}`
+      // Replace SELECT … FROM with the user-chosen columns.
+      // A2: line-by-line search for the top-level FROM (a line that starts
+      // with "FROM " and has no leading whitespace). buildJoinBlock always
+      // emits column lines indented with two spaces, so this cannot match
+      // inside the SELECT list even if a col expression contains "\nFROM".
+      const lines = sql.split('\n')
+      const fromLine = lines.findIndex(l => l.startsWith('FROM '))
+      if (fromLine > -1) {
+        sql = `SELECT\n${qualifiedCols.join(',\n')}\n${lines.slice(fromLine).join('\n')}`
       }
     }
 
@@ -789,18 +849,26 @@ export function useSqlGenerator() {
 
     // Map each stored groupCol name to the actual column name in the upstream CTE.
     // Case-insensitive: 'DD_mango' and 'dd_mango' are treated as the same column.
-    // Uses assignedUpstream to prevent two occurrences of the same raw name from
-    // both resolving to the same upstream column
-    // (e.g. groupCols ['ac_code_ic','ac_code_ic'] → ['ac_code_ic','ibrcode_ac_code_ic']).
+    //
+    // A4: resolveCol is now *idempotent per raw name*. Previous behavior
+    //     claimed on every call, so calling resolveCol('id') for a groupCol
+    //     and then again for SUM(id) would return different columns (the
+    //     second call would fall through to a suffix match on 'tbl_id').
+    //     Now we cache (raw lowercase → resolved) so the same raw always
+    //     returns the same column. Duplicate raw entries in groupCols still
+    //     map to the same resolution and will be deduplicated by the caller.
     const upstreamMap      = new Map(upstreamColNames.map(n => [n.toLowerCase(), n]))
     const assignedUpstream = new Set<string>()   // stores lowercase keys
+    const resolveCache     = new Map<string, string | null>()
     function resolveCol(raw: string): string | null {
       if (!upstreamColNames.length) return raw
       const rawLower = raw.toLowerCase()
+      if (resolveCache.has(rawLower)) return resolveCache.get(rawLower)!
       // 1. Exact match (case-insensitive) that hasn't been claimed yet
       const exactOrig = upstreamMap.get(rawLower)
       if (exactOrig && !assignedUpstream.has(rawLower)) {
         assignedUpstream.add(rawLower)
+        resolveCache.set(rawLower, exactOrig)
         return exactOrig
       }
       // 2. Exact match already claimed or missing →
@@ -815,8 +883,10 @@ export function useSqlGenerator() {
       })
       if (aliased) {
         assignedUpstream.add(aliased.toLowerCase())
+        resolveCache.set(rawLower, aliased)
         return aliased
       }
+      resolveCache.set(rawLower, null)
       return null
     }
 
