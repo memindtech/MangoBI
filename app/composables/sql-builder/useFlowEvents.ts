@@ -48,7 +48,7 @@ export function useFlowEvents() {
       : getEdgeStyle('LEFT JOIN')
 
     const edgeData = isToolEdge
-      ? { joinType: 'LEFT JOIN' as JoinType, mappings: [], isTool: true, unionSrc: true, srcCat: isSrcFrame ? 'cte' : isSrcTool ? 'other' : 'table' }
+      ? { joinType: 'LEFT JOIN' as JoinType, mappings: [], isTool: true, tgtToolId: toolId, srcCat: isSrcFrame ? 'cte' : isSrcTool ? 'other' : 'table' }
       : { joinType: 'LEFT JOIN' as JoinType, mappings: [] }
 
     const finalEdge = {

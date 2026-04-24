@@ -409,7 +409,15 @@ export const useSqlBuilderStore = defineStore('sql-builder', () => {
           ? { ...n, data: { ...n.data, columnsLoading: false } }
           : n
       )
-      edges.value = state.edges
+      edges.value = state.edges.map((e: Edge) => {
+        // Migrate old edges that have isTool but are missing tgtToolId
+        if ((e as any).data?.isTool && !(e as any).data?.tgtToolId) {
+          const tgtNode = state.nodes.find((n: Node) => n.id === e.target) as any
+          const tgtToolId = tgtNode?.data?._toolId
+          if (tgtToolId) return { ...e, data: { ...(e as any).data, tgtToolId } }
+        }
+        return e
+      })
       return true
     } catch { return false }
   }

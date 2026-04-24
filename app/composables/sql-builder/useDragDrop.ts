@@ -470,6 +470,7 @@ export function useDragDrop() {
         markerEnd: MarkerType.ArrowClosed,
         data:      {
           joinType: 'LEFT JOIN', mappings: [], isTool: true,
+          tgtToolId: toolId,
           srcCat: src.type === 'toolNode' ? 'other' : 'table',
         },
       })

@@ -28,6 +28,35 @@ const condCount    = computed(() =>
   ((props.data.conditions ?? []) as any[]).filter((c: any) => c.column).length
 )
 
+const TOOL_BADGE_META: Record<string, { color: string; label: string }> = {
+  cte:   { color: '#8b5cf6', label: 'CTE'      },
+  calc:  { color: '#14b8a6', label: 'CALC'     },
+  group: { color: '#f97316', label: 'GROUP BY' },
+  sort:  { color: '#22c55e', label: 'ORDER BY' },
+  union: { color: '#eab308', label: 'UNION'    },
+  where: { color: '#f43f5e', label: 'WHERE'    },
+}
+
+const connectedTools = computed(() => {
+  const seen = new Set<string>()
+  const result: Array<{ id: string; label: string; color: string }> = []
+  for (const edge of store.edges as any[]) {
+    if (edge.source === props.id && edge.data?.isTool) {
+      let toolId = edge.data?.tgtToolId as string | undefined
+      if (!toolId) {
+        const tgtNode = store.nodes.find((n: any) => n.id === edge.target) as any
+        toolId = tgtNode?.data?._toolId
+      }
+      if (toolId && !seen.has(toolId)) {
+        seen.add(toolId)
+        const meta = TOOL_BADGE_META[toolId] ?? { color: '#94a3b8', label: toolId.toUpperCase() }
+        result.push({ id: toolId, ...meta })
+      }
+    }
+  }
+  return result
+})
+
 // Nodes inside this frame by bounds (no parentNode — pure position check)
 const nodesInFrame = computed(() => {
   const self = store.nodes.find((n: any) => n.id === props.id)
@@ -124,6 +153,11 @@ function toggleOpen() {
         class="text-[9px] font-bold px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-400 font-mono shrink-0">
         {{ condCount }} cond{{ condCount > 1 ? 's' : '' }}
       </span>
+      <span
+        v-for="tool in connectedTools" :key="tool.id"
+        class="text-[8px] px-1.5 py-0.5 rounded-full font-bold font-mono leading-none shrink-0"
+        :style="{ backgroundColor: tool.color + '28', color: tool.color, border: `1px solid ${tool.color}55` }"
+      >→ {{ tool.label }}</span>
 
       <button @click.stop="openModal"
         class="size-5 flex items-center justify-center rounded-md hover:bg-violet-500/20 text-violet-400 transition-colors shrink-0"
@@ -184,6 +218,15 @@ function toggleOpen() {
         +{{ childTables.length - 2 }}
       </span>
       <span v-if="!childTables.length" class="text-[9px] text-violet-400/40 italic font-mono">empty</span>
+    </div>
+
+    <!-- Connected tool badges -->
+    <div v-if="connectedTools.length" class="flex items-center gap-1 shrink-0">
+      <span
+        v-for="tool in connectedTools" :key="tool.id"
+        class="text-[8px] px-1.5 py-0.5 rounded-full font-bold font-mono leading-none"
+        :style="{ backgroundColor: tool.color + '28', color: tool.color, border: `1px solid ${tool.color}55` }"
+      >→ {{ tool.label }}</span>
     </div>
 
     <button @click.stop="openModal"

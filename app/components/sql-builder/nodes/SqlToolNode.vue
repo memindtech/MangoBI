@@ -82,6 +82,21 @@ const WHERE_OP_BADGE: Record<string, string> = {
   'IS NULL': 'bg-amber-500', 'IS NOT NULL': 'bg-amber-600',
 }
 
+const connectedSources = computed(() => {
+  const seen = new Set<string>()
+  const result: Array<{ id: string; label: string }> = []
+  for (const edge of store.edges as any[]) {
+    if (edge.target === props.id && !seen.has(edge.source)) {
+      seen.add(edge.source)
+      const srcNode = store.nodes.find((n: any) => n.id === edge.source) as any
+      if (srcNode) {
+        result.push({ id: srcNode.id, label: srcNode.data?.label ?? srcNode.id })
+      }
+    }
+  }
+  return result
+})
+
 const hasContent = computed(() => {
   if (isCte.value)   return true
   if (props.data._toolId === 'union') return true
@@ -127,6 +142,17 @@ function removeNode()  { store.removeNode(props.id) }
           class="size-5 flex items-center justify-center rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors shrink-0 ml-0.5">
           <X class="size-3" />
         </button>
+      </div>
+
+      <!-- ── Connected sources ─────────────────────────────────────── -->
+      <div v-if="connectedSources.length" :class="['flex flex-wrap items-center gap-1 px-3 py-1 border-b', meta.border]">
+        <span :class="['text-[8px] font-bold uppercase tracking-wider shrink-0 opacity-60 mr-0.5', meta.color]">from</span>
+        <span
+          v-for="src in connectedSources.slice(0, 3)" :key="src.id"
+          class="text-[8px] px-1.5 py-0.5 rounded font-mono bg-black/20 text-foreground/70 truncate max-w-[80px]"
+          :title="src.label"
+        >{{ src.label }}</span>
+        <span v-if="connectedSources.length > 3" :class="['text-[8px] opacity-50', meta.color]">+{{ connectedSources.length - 3 }}</span>
       </div>
 
       <!-- ── CTE rich summary ─────────────────────────────────────── -->

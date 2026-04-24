@@ -100,6 +100,50 @@ function selectAll() {
 function clearAll() {
   store.updateNodeData(props.id, { visibleCols: [] })
 }
+
+// Detect if this table is currently inside a cteFrame (bounds-based, mirrors CteFrameNode logic)
+const parentCteFrame = computed(() => {
+  const me = store.nodes.find((n: any) => n.id === props.id) as any
+  if (!me) return null
+  const cx = me.position.x + 112
+  const cy = me.position.y + 80
+  return (store.nodes as any[]).find((n: any) => {
+    if (n.type !== 'cteFrame') return false
+    const fw = parseFloat(String(n.style?.width  ?? '420'))
+    const fh = parseFloat(String(n.style?.height ?? '280'))
+    return cx >= n.position.x && cx <= n.position.x + fw &&
+           cy >= n.position.y && cy <= n.position.y + fh
+  }) ?? null
+})
+
+const TOOL_BADGE_META: Record<string, { color: string; label: string }> = {
+  cte:   { color: '#8b5cf6', label: 'CTE'      },
+  calc:  { color: '#14b8a6', label: 'CALC'     },
+  group: { color: '#f97316', label: 'GROUP BY' },
+  sort:  { color: '#22c55e', label: 'ORDER BY' },
+  union: { color: '#eab308', label: 'UNION'    },
+  where: { color: '#f43f5e', label: 'WHERE'    },
+}
+
+const connectedTools = computed(() => {
+  const seen = new Set<string>()
+  const result: Array<{ id: string; label: string; color: string }> = []
+  for (const edge of store.edges as any[]) {
+    if (edge.source === props.id && edge.data?.isTool) {
+      let toolId = edge.data?.tgtToolId as string | undefined
+      if (!toolId) {
+        const tgtNode = store.nodes.find((n: any) => n.id === edge.target) as any
+        toolId = tgtNode?.data?._toolId
+      }
+      if (toolId && !seen.has(toolId)) {
+        seen.add(toolId)
+        const meta = TOOL_BADGE_META[toolId] ?? { color: '#94a3b8', label: toolId.toUpperCase() }
+        result.push({ id: toolId, ...meta })
+      }
+    }
+  }
+  return result
+})
 </script>
 
 <template>
@@ -151,6 +195,12 @@ function clearAll() {
         </span>
         <!-- Header badge -->
         <span v-if="data.isHeaderNode" class="text-[8px] px-1 py-0.5 bg-emerald-500/20 text-emerald-600 rounded font-bold shrink-0">H</span>
+        <!-- CTE frame membership badge -->
+        <span v-if="parentCteFrame"
+          class="text-[8px] px-1.5 py-0.5 bg-violet-500/20 text-violet-400 rounded font-bold shrink-0 border border-violet-500/30"
+          :title="`อยู่ใน CTE: ${parentCteFrame.data?.name ?? 'my_cte'}`">
+          CTE
+        </span>
 
         <!-- Expand related tables button -->
         <button
@@ -296,6 +346,15 @@ function clearAll() {
       </div>
       <div v-else-if="data.columnsLoading === false && !details.length" class="px-3 py-2 text-[9px] text-muted-foreground/60 italic">
         ไม่พบ columns
+      </div>
+
+      <!-- ── Connected tools ───────────────────────────────── -->
+      <div v-if="connectedTools.length" class="flex flex-wrap gap-1 px-3 py-1.5 border-t border-border/30">
+        <span
+          v-for="tool in connectedTools" :key="tool.id"
+          class="text-[8px] px-1.5 py-0.5 rounded-full font-bold font-mono leading-none"
+          :style="{ backgroundColor: tool.color + '28', color: tool.color, border: `1px solid ${tool.color}55` }"
+        >→ {{ tool.label }}</span>
       </div>
     </div>
   </div>

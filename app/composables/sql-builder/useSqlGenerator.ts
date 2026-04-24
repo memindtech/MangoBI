@@ -114,7 +114,8 @@ export function useSqlGenerator() {
     // ── Compute output column names for a set of table nodes ─────────────
     // Must mirror buildJoinBlock's primary selection + BFS order exactly so that
     // auto-aliased duplicate column names (e.g. tbl_id) match the actual SELECT output.
-    function computeOutputCols(tNodes: Node[], tEdges: Edge[]): string[] {
+    // strictCols mirrors buildJoinBlock's strictCols param: skip tables with no visibleCols.
+    function computeOutputCols(tNodes: Node[], tEdges: Edge[], strictCols = false): string[] {
       if (!tNodes.length) return []
 
       // Same smart primary selection as buildJoinBlock
@@ -173,8 +174,8 @@ export function useSqlGenerator() {
               cols.push(col.name); uAdd(col.name)
             }
           }
-        } else if (details?.length) {
-          // full DB metadata — mirror buildJoinBlock details path
+        } else if (!strictCols && details?.length) {
+          // full DB metadata — mirror buildJoinBlock details path (skip in strict mode)
           for (const col of details) {
             const colName: string = col.column_name
             if (uHas(colName)) {
@@ -186,7 +187,7 @@ export function useSqlGenerator() {
             }
           }
         }
-        // no metadata at all (wildcard) → column names unknown, skip
+        // no metadata or strictCols with no visibleCols → skip this table
       }
       return cols
     }
@@ -225,9 +226,32 @@ export function useSqlGenerator() {
       ctes.push({ name: frameName, sql: frameSql })
       nodeOutput.set(frame.id, frameName)
       lastCTE = frameName
-      // Track output cols: selectedCols override takes priority
+      // Track output cols: selectedCols override takes priority.
+      // Strip "tableName." prefix and deduplicate to get the actual SQL output column names
+      // (mirrors the aliasing logic in buildCteFrameBlock's selectedCols path above).
       const frameSelected = ((frame.data as any).selectedCols ?? []) as string[]
-      cteOutputCols.set(frameName, frameSelected.length ? frameSelected : computeOutputCols(childTables, childEdges))
+      if (frameSelected.length) {
+        const usedNames = new Set<string>()
+        const nHas = (n: string) => usedNames.has(n.toLowerCase())
+        const nAdd = (n: string) => usedNames.add(n.toLowerCase())
+        const outputCols = frameSelected.map(c => {
+          const dot = c.indexOf('.')
+          const tblPart = dot > -1 ? c.slice(0, dot) : ''
+          const colPart = dot > -1 ? c.slice(dot + 1) : c
+          if (nHas(colPart)) {
+            let alias = tblPart ? `${tblPart}_${colPart}` : `${colPart}_2`
+            let i = 2
+            while (nHas(alias)) alias = `${tblPart ? tblPart + '_' : ''}${colPart}_${i++}`
+            nAdd(alias)
+            return alias
+          }
+          nAdd(colPart)
+          return colPart
+        })
+        cteOutputCols.set(frameName, outputCols)
+      } else {
+        cteOutputCols.set(frameName, computeOutputCols(childTables, childEdges, true))
+      }
     }
 
     // ── Step 1b: table nodes NOT inside any cteFrame → one _src per connected component ──
@@ -409,7 +433,10 @@ export function useSqlGenerator() {
   }
 
   // ── JOIN block (SELECT … FROM … JOIN … WHERE …) ───────────────────────
-  function buildJoinBlock(tableNodes: Node[], edges: Edge[]): string {
+  // strictCols=true → tables with no visibleCols contribute NO columns to SELECT
+  //   (used inside CTE frames so only explicitly-ticked cols appear)
+  // strictCols=false (default) → falls through to DB details or * wildcard
+  function buildJoinBlock(tableNodes: Node[], edges: Edge[], strictCols = false): string {
     if (!tableNodes.length) return 'SELECT 1'
 
     // ── Fix 1: Smart primary selection ──────────────────────────────────
@@ -493,7 +520,7 @@ export function useSqlGenerator() {
             ciAdd(col.name)
           }
         }
-      } else {
+      } else if (!strictCols) {
         // No visibleCols — try details metadata to generate explicit cols (avoid ambiguous * when joining)
         const details = tn.data.details as any[] | undefined
         if (details?.length) {
@@ -515,7 +542,11 @@ export function useSqlGenerator() {
           selectCols.push(`  ${qtbl}.*`)
         }
       }
+      // strictCols + no visibleCols → this table contributes nothing to SELECT
     }
+
+    // strictCols safety: if no table had visibleCols, nothing was added → fall back to SELECT *
+    if (strictCols && selectCols.length === 0) selectCols.push('  *')
 
     const useAlias = primaryA !== primaryT
     let sql = `SELECT\n${selectCols.join(',\n')}\nFROM ${q(primaryT)}${useAlias ? ` AS ${q(primaryA)}` : ''}`
@@ -667,20 +698,40 @@ export function useSqlGenerator() {
       return map
     }
 
-    // Build the JOIN SQL
-    let sql = buildJoinBlock(childTables, childEdges)
+    // Build the JOIN SQL — strict mode: only visibleCols, no details fallback
+    let sql = buildJoinBlock(childTables, childEdges, true)
 
     // ── Apply selectedCols override ───────────────────────────────────────
     // selectedCols may be stored as "tableName.colName" (qualified) or plain "colName" (legacy).
     const selectedCols = ((frame.data as any).selectedCols ?? []) as string[]
     if (selectedCols.length) {
       const colTableMap = buildColTableMap()
+      // Duplicate-aware column list: same ciHas/ciAdd pattern as buildJoinBlock
+      const usedOut = new Set<string>()
+      const ciHas2  = (n: string) => usedOut.has(n.toLowerCase())
+      const ciAdd2  = (n: string) => usedOut.add(n.toLowerCase())
       const qualifiedCols = selectedCols.map(c => {
+        let tblPart: string
+        let colPart: string
         if (c.includes('.')) {
-          return `  ${c}`
+          const dot = c.indexOf('.')
+          tblPart = c.slice(0, dot)
+          colPart = c.slice(dot + 1)
+        } else {
+          colPart = c
+          tblPart = colTableMap.get(c) ?? ''
         }
-        const tbl = colTableMap.get(c)
-        return tbl ? `  ${q(tbl)}.${c}` : `  ${c}`
+        const ref = tblPart ? `  ${q(tblPart)}.${colPart}` : `  ${colPart}`
+        if (ciHas2(colPart)) {
+          // Duplicate column name across tables → auto-alias
+          let aliasName = tblPart ? `${tblPart}_${colPart}` : `${colPart}_2`
+          let i = 2
+          while (ciHas2(aliasName)) aliasName = `${tblPart ? tblPart + '_' : ''}${colPart}_${i++}`
+          ciAdd2(aliasName)
+          return `${ref} AS ${aliasName}`
+        }
+        ciAdd2(colPart)
+        return ref
       })
       // Replace SELECT … FROM with the user-chosen columns using indexOf to avoid
       // regex issues with special characters or multi-join FROM patterns (Bug 5 fix).
