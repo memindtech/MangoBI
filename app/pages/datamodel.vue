@@ -1268,7 +1268,7 @@ function joinStep(
   return { result, truncated }
 }
 
-function buildJoinedDatasets(): { id: string; name: string; rows: any[]; columnLabels?: ReturnType<typeof parseColumnMapping>; columnSources?: Record<string, string>; numericFormat?: import('~/utils/formatValue').NumericFormat }[] {
+function buildJoinedDatasets(): { id: string; name: string; rows: any[]; columnLabels?: ReturnType<typeof parseColumnMapping>; columnSources?: Record<string, string>; numericFormat?: import('~/utils/formatValue').NumericFormat; sqlText?: string; columnMapping?: string }[] {
   const tables = dmStore.tables
   if (!tables.length) return []
 
@@ -1283,7 +1283,8 @@ function buildJoinedDatasets(): { id: string; name: string; rows: any[]; columnL
       const rows   = cfg && (cfg.filters.length || cfg.groupByField || cfg.computedColumns?.length) ? applyTransform(base, cfg) : base
       const rawFmt = dmStore.getNumericFormat(t.id)
       const fmt    = Object.keys(rawFmt).length ? rawFmt : undefined
-      return { id: `dm_${t.id}_${Date.now()}`, name: t.name, rows, columnLabels: t.columnLabels, numericFormat: fmt }
+      const dsId = dmSavedId.value ? `dm_${dmSavedId.value}_${t.id}` : `dm_${t.id}_${Date.now()}`
+      return { id: dsId, name: t.name, rows, columnLabels: t.columnLabels, numericFormat: fmt, sqlText: t.sqlText, columnMapping: t.columnMapping }
     })
   }
 
@@ -1335,7 +1336,8 @@ function buildJoinedDatasets(): { id: string; name: string; rows: any[]; columnL
       const isoRows = isoCfg && (isoCfg.filters.length || isoCfg.groupByField || isoCfg.computedColumns?.length)
         ? applyTransform(baseRows, isoCfg)
         : baseRows
-      datasets.push({ id: `dm_${t.id}_${Date.now()}`, name: t.name, rows: isoRows, columnLabels, numericFormat: fmt })
+      const dsId = dmSavedId.value ? `dm_${dmSavedId.value}_${t.id}` : `dm_${t.id}_${Date.now()}`
+      datasets.push({ id: dsId, name: t.name, rows: isoRows, columnLabels, numericFormat: fmt, sqlText: t.sqlText, columnMapping: t.columnMapping })
       continue
     }
 
@@ -1398,8 +1400,9 @@ function buildJoinedDatasets(): { id: string; name: string; rows: any[]; columnL
     }
 
     const joinedRawFmt = dmStore.getNumericFormat(compKey)
+    const joinId = dmSavedId.value ? `dm_joined_${dmSavedId.value}_${compKey}` : `dm_joined_${Date.now()}_${Math.random().toString(36).slice(2)}`
     datasets.push({
-      id: `dm_joined_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      id: joinId,
       name, rows, columnLabels,
       numericFormat:  Object.keys(joinedRawFmt).length ? joinedRawFmt : undefined,
       columnSources:  Object.keys(columnSources).length > 0 ? columnSources : undefined,
@@ -1416,8 +1419,7 @@ function buildJoinedDatasets(): { id: string; name: string; rows: any[]; columnL
 function exportToReport() {
   exportWarning.value = ''
   const datasets = buildJoinedDatasets()
-  reportStore.resetAll()
-  for (const ds of datasets) reportStore.addDataset(ds)
+  for (const ds of datasets) reportStore.upsertDataset(ds as any)
   router.push('/report')
 }
 
@@ -1541,7 +1543,8 @@ async function doSaveDm() {
       labelBgPadding: e.labelBgPadding,
     }))
     const tablesPayload = dmStore.tables.map(t => ({
-      id: t.id, name: t.name, rows: t.rows, columnLabels: t.columnLabels,
+      id: t.id, name: t.name, columnLabels: t.columnLabels,
+      sqlText: t.sqlText, columnMapping: t.columnMapping,
     }))
     const nodesJson = JSON.stringify({
       nodes:         nodesPayload,
@@ -1609,7 +1612,7 @@ async function doLoadDm(id: string) {
     for (const k of Object.keys(dmStore.nodeFilters))    delete dmStore.nodeFilters[k]
     for (const k of Object.keys(dmStore.numericFormats)) delete dmStore.numericFormats[k]
 
-    for (const t of (payload.tables ?? [])) dmStore.addTable(t)
+    for (const t of (payload.tables ?? [])) dmStore.addTable({ ...t, rows: t.rows ?? [] })
     for (const [k, v] of Object.entries(relPay.relations        ?? {})) dmStore.setRelation(k, v as any)
     for (const [k, v] of Object.entries(payload.transforms      ?? {})) dmStore.setTransform(k, v as any)
     for (const [k, v] of Object.entries(payload.nodeFilters     ?? {})) dmStore.setNodeFilters(k, v as any)
@@ -1634,19 +1637,19 @@ async function doLoadDm(id: string) {
     selectedNodeId.value = null
     selectedEdgeId.value = null
 
-    // Re-execute SQL for fresh data — run in parallel, fall back to saved rows on error
+    // Re-execute SQL for fresh data — run in parallel, fall back to empty rows on error
+    const sqlTables = dmStore.tables.filter(t => t.sqlText)
+    sqlTables.forEach(t => dmStore.setTableLoading(t.id, true))
     await Promise.all(
-      dmStore.tables
-        .filter(t => t.sqlText)
-        .map(async (t) => {
-          try {
-            const result = await biApi.executeQuery(t.sqlText!)
-            if (!result?.rows?.length) return
-            const rows = applyColumnMapping(result.rows as any[], t.columnMapping)
-            const tbl = dmStore.getTable(t.id)
-            if (tbl) tbl.rows = rows
-          } catch { /* keep stale rows */ }
-        }),
+      sqlTables.map(async (t) => {
+        try {
+          const result = await biApi.executeQuery(t.sqlText!)
+          if (!result?.rows?.length) return
+          const rows = applyColumnMapping(result.rows as any[], t.columnMapping)
+          dmStore.updateTableRows(t.id, rows)
+        } catch (e) { console.error('[doLoadDm] SQL re-execute failed for', t.id, e) }
+        finally { dmStore.setTableLoading(t.id, false) }
+      }),
     )
   } catch (err) { console.error(err) }
   finally { dmLoadBusy.value = false }
@@ -1720,7 +1723,7 @@ async function appendDmTemplate(id: string) {
 
     // Append tables with remapped IDs
     for (const t of (payload.tables ?? [])) {
-      dmStore.addTable({ ...t, id: idMap.get(t.id) ?? t.id })
+      dmStore.addTable({ ...t, id: idMap.get(t.id) ?? t.id, rows: t.rows ?? [] })
     }
 
     // Append relations with remapped keys + fromTable/toTable
@@ -1762,19 +1765,19 @@ async function appendDmTemplate(id: string) {
     edges.value = [...edges.value, ...newEdges]
 
     // Re-execute SQL for appended tables that have sqlText
+    const appendSqlTables = (payload.tables ?? []).filter((t: any) => t.sqlText)
+    appendSqlTables.forEach((t: any) => dmStore.setTableLoading(idMap.get(t.id) ?? t.id, true))
     await Promise.all(
-      (payload.tables ?? [])
-        .filter((t: any) => t.sqlText)
-        .map(async (t: any) => {
-          const newId = idMap.get(t.id) ?? t.id
-          try {
-            const result = await biApi.executeQuery(t.sqlText)
-            if (!result?.rows?.length) return
-            const rows = applyColumnMapping(result.rows as any[], t.columnMapping)
-            const tbl = dmStore.getTable(newId)
-            if (tbl) tbl.rows = rows
-          } catch { /* keep stale rows */ }
-        }),
+      appendSqlTables.map(async (t: any) => {
+        const newId = idMap.get(t.id) ?? t.id
+        try {
+          const result = await biApi.executeQuery(t.sqlText)
+          if (!result?.rows?.length) return
+          const rows = applyColumnMapping(result.rows as any[], t.columnMapping)
+          dmStore.updateTableRows(newId, rows)
+        } catch (e) { console.error('[appendDmTemplate] SQL re-execute failed for', newId, e) }
+        finally { dmStore.setTableLoading(newId, false) }
+      }),
     )
   } catch (err) { console.error(err) }
   finally { tplAppending.value = null }

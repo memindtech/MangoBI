@@ -74,8 +74,15 @@ onMounted(async () => {
     const row = await biApi.loadPublicReport(route.params.id as string)
     if (!row) { error.value = 'Report not found'; return }
     reportName.value = row.name ?? ''
-    const payload = JSON.parse(row.widgetsJson ?? '{}')
-    datasets.value  = payload.datasets ?? []
+    const payload     = JSON.parse(row.widgetsJson  ?? '{}')
+    const cachedRows: any[] = row.datasetsJson ? JSON.parse(row.datasetsJson) : []
+
+    // Merge: config metadata from widgetsJson, rows from cache snapshot
+    const configDs: any[] = payload.datasets ?? []
+    datasets.value = configDs.map((ds: any) => {
+      const cached = cachedRows.find((c: any) => c.id === ds.id)
+      return cached ? { ...ds, rows: cached.rows ?? [] } : ds
+    })
     widgets.value   = payload.widgets  ?? []
     // Init view filters from defaults set by report sender
     if (payload.defaultViewFilters && Object.keys(payload.defaultViewFilters).length) {

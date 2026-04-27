@@ -79,6 +79,12 @@ export const useReportStore = defineStore('report', () => {
     if (!datasets.value.some(d => d.id === ds.id)) datasets.value.push(ds)
   }
 
+  function upsertDataset(ds: ReportDataset) {
+    const idx = datasets.value.findIndex(d => d.id === ds.id)
+    if (idx !== -1) datasets.value[idx] = ds
+    else datasets.value.push(ds)
+  }
+
   function removeDataset(id: string) {
     datasets.value = datasets.value.filter(d => d.id !== id)
     widgets.value  = widgets.value.filter(w => w.datasetId !== id)
@@ -150,7 +156,7 @@ export const useReportStore = defineStore('report', () => {
 
   return {
     datasets, widgets,
-    addDataset, removeDataset, updateDatasetRows, columnsOf, rowsOf, labelOf, numericFormatOf,
+    addDataset, upsertDataset, removeDataset, updateDatasetRows, columnsOf, rowsOf, labelOf, numericFormatOf,
     addWidget, updateWidget, updateFields, updateFilters, removeWidget, resetAll,
   }
 })

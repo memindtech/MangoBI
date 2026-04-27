@@ -41,6 +41,7 @@ export const useDataModelStore = defineStore('datamodel', () => {
   const canvasEdges    = ref<CanvasEdge[]>([])
   const canvasSavedId  = ref<string | null>(null)
   const canvasSaveName = ref('')
+  const tableLoading   = ref<Record<string, boolean>>({})
 
   function saveCanvas(ns: CanvasNode[], es: CanvasEdge[], savedId?: string | null, saveName?: string) {
     canvasNodes.value  = ns
@@ -70,10 +71,25 @@ export const useDataModelStore = defineStore('datamodel', () => {
     }
     delete nodeFilters.value[id]
     delete numericFormats.value[id]
+    delete tableLoading.value[id]
+  }
+
+  function setTableLoading(id: string, val: boolean) {
+    if (val) tableLoading.value[id] = true
+    else delete tableLoading.value[id]
+  }
+
+  function isTableLoading(id: string): boolean {
+    return !!tableLoading.value[id]
   }
 
   function getTable(id: string) {
     return tables.value.find(t => t.id === id)
+  }
+
+  function updateTableRows(id: string, rows: DataRow[]) {
+    const idx = tables.value.findIndex(t => t.id === id)
+    if (idx !== -1) tables.value[idx] = { ...tables.value[idx]!, rows }
   }
 
   function columnsOf(tableId: string): { name: string; label: string; type: 'number' | 'string' | 'date' }[] {
@@ -133,7 +149,8 @@ export const useDataModelStore = defineStore('datamodel', () => {
   return {
     tables, relations, transforms, nodeFilters, numericFormats,
     canvasNodes, canvasEdges, canvasSavedId, canvasSaveName,
-    addTable, removeTable, getTable, columnsOf,
+    addTable, removeTable, getTable, updateTableRows, columnsOf,
+    tableLoading, setTableLoading, isTableLoading,
     setRelation, removeRelation,
     setTransform, getTransform, removeTransform,
     setNodeFilters, getNodeFilters, removeNodeFilters,

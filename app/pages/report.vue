@@ -765,12 +765,18 @@ async function doSaveRp() {
   rpSaveMsg.value = ''
   try {
     const datasetsPayload = store.datasets.map(d => ({
-      id: d.id, name: d.name, rows: d.rows,
+      id: d.id, name: d.name,
       columnLabels:  d.columnLabels,
       columnSources: d.columnSources,
       numericFormat: d.numericFormat,
       sqlText:       d.sqlText,
       columnMapping: d.columnMapping,
+    }))
+    const cachePayload = store.datasets.map(d => ({
+      id: d.id, name: d.name, rows: d.rows,
+      columnLabels:  d.columnLabels,
+      columnSources: d.columnSources,
+      numericFormat: d.numericFormat,
     }))
     const widgetsJson = JSON.stringify({ widgets: store.widgets, datasets: datasetsPayload })
     const savedId = await biApi.saveReport({
@@ -780,6 +786,7 @@ async function doSaveRp() {
     })
     if (savedId) {
       rpSavedId.value = savedId
+      biApi.refreshReportCache(savedId, JSON.stringify(cachePayload))
       rpSaveMsg.value = t('bi_save_success')
       setTimeout(() => { rpSaveMsg.value = ''; showRpSave.value = false }, 1200)
     } else {
@@ -805,7 +812,7 @@ async function doLoadRp(id: string) {
     if (!row) return
     const payload = JSON.parse(row.widgetsJson ?? '{}')
     store.resetAll()
-    for (const ds of (payload.datasets ?? [])) store.addDataset(ds)
+    for (const ds of (payload.datasets ?? [])) store.addDataset({ ...ds, rows: ds.rows ?? [] })
     for (const w  of (payload.widgets  ?? [])) store.addWidget(w)
     rpSavedId.value  = id
     rpSaveName.value = row.name ?? ''

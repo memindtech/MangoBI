@@ -155,24 +155,16 @@ User → Login (Anywhere) → token
 - **Scheduler** — LINE/Email scheduled delivery (backend)
 - **Diagnostics** — Admin page (`/mango-grove`)
 - **Auth** — Azure MSAL + Mango Token + Company selection
+- **Data Refresh** — re-execute SQL on load ใน DataModel + Report pages (ดู Section 6)
 
 ### ⚠️ ยังขาด / กำลังทำ
-- **Data Refresh on Page Load** — ดูรายละเอียดใน Section 6
-- **Raw Data Source สำหรับ AI** — ดูรายละเอียดใน Section 6
-- Backend endpoint สำหรับ execute SQL (DataModel) และ return rows จริง
+- **AI Raw Data Context** — `useAiContext.ts` ยังส่งแค่ aggregated totals → ต้องเพิ่ม raw rows summary
 - Composable `view/useViewAiContext.ts` เพิ่งสร้าง (ยังไม่ได้ integrate กับ `/view/:id`)
+- DataModel-exported datasets ใน Report ยังไม่ auto-refresh (ต้อง re-export จาก DataModel page)
 
 ---
 
-## 6. งานที่ต้องปรับ: Data Refresh + AI Raw Data
-
-### ปัญหาปัจจุบัน
-ระบบปัจจุบัน **execute SQL ครั้งเดียว** แล้วบันทึก rows ลงฐานข้อมูลพร้อมกับ config (NodesJson / WidgetsJson)
-→ เมื่อ user เปิดหน้า DataModel หรือ Report จะโหลดข้อมูลชุดเดิมที่บันทึกไว้ ไม่ใช่ข้อมูล ณ ปัจจุบัน
-
-**ผลคือ:** data ที่แสดงอาจเก่า ไม่ reflect ข้อมูลล่าสุดจาก Mango ERP
-
----
+## 6. Data Refresh + AI Raw Data
 
 ### หลักการสำคัญ: CONFIG กับ DATA แยกกัน
 
@@ -192,7 +184,7 @@ FilterConfig (per widget)
 
 ---
 
-### Transform Pipeline (ไม่เปลี่ยน logic เดิม)
+### Transform Pipeline (logic ไม่เปลี่ยน)
 
 ```
 rawRows  ← SQL execute fresh ทุกครั้ง
@@ -207,56 +199,41 @@ applyTransform(enrichedRows, transformConfig)   ← groupBy, aggregations, date 
   └── [Report page]     แต่ละ widget apply FilterConfig + fieldMapping → displayRows
 ```
 
-**สิ่งที่ไม่ต้องเปลี่ยน:**
-- `utils/transformData.ts` → `applyTransform()` ทำงานเหมือนเดิม
-- `utils/computedColumn.ts` → `applyComputedColumns()` เหมือนเดิม
-- Config ทั้งหมดใน Pinia stores → บันทึก/โหลดจาก DB เหมือนเดิม
+---
 
-**สิ่งที่เปลี่ยน:**
-- `ModelTable.rows` และ `ReportDataset.rows` มาจาก SQL execute ใหม่ ไม่ใช่ saved state
-- DB **ไม่เก็บ rows** อีกต่อไป — เก็บแค่ config
-- เพิ่ม `rawRows` ref แยกไว้ก่อน transform (สำหรับ AI)
+### ✅ Implementation เสร็จแล้ว (2025-04-27)
+
+**Backend:** ไม่ต้องสร้าง endpoint ใหม่ — ใช้ `POST /Planning/MangoBI/ExecuteCustomSql` ที่มีอยู่แล้ว
+- รับ `{ sql: string }` → validate (SELECT/WITH only) → execute → return rows
+
+**Frontend — files ที่เปลี่ยน:**
+
+| File | การเปลี่ยนแปลง |
+|------|----------------|
+| `app/stores/datamodel.ts` | เพิ่ม `sqlText?` + `columnMapping?` ใน `ModelTable` |
+| `app/stores/report.ts` | เพิ่ม `sqlText?` + `columnMapping?` ใน `ReportDataset`; เพิ่ม `updateDatasetRows()` |
+| `app/composables/useMangoBIApi.ts` | เพิ่ม `executeQuery()` + `applyColumnMapping<T>()` helper |
+| `app/pages/datamodel.vue` | `placeTableNode()` รับ sqlText; `doLoadDm()` + `appendDmTemplate()` re-execute SQL หลัง restore config |
+| `app/pages/report.vue` | `doSaveRp()` บันทึก sqlText; `doLoadRp()` re-execute SQL หลัง restore |
+
+**ขอบเขต Refresh:**
+
+| แหล่งข้อมูล | Auto Refresh? |
+|-------------|--------------|
+| SQLBuilder template (saved) | ✅ |
+| Raw SQL input | ✅ |
+| SQL Template (passcode-based) | ❌ SQL อยู่ server-side |
+| Mock data | ❌ ข้อมูลทดสอบ |
+| DataModel export → Report | ✅ ผ่านการ re-load DataModel แล้ว re-export |
 
 ---
 
-### Solution Design
+### ⏳ งานที่ยังเหลือ (AI Raw Data)
 
-**Step 1: Backend — Execute Query Endpoint**
-สร้าง endpoint ใหม่:
-```
-POST /Planning/MangoBI/ExecuteQuery
-Body: { sqlText: string }
-Returns: { rows: object[], columns: { name: string, dataType: string }[] }
-```
-- รับ `sqlText` โดยตรง → execute กับ SQL Server (Mango ERP) → return rows + column metadata
-- ใช้ `sqlText` แทน `dataModelId` เพื่อ flexibility (frontend extract SQL จาก config เองได้)
-
-**Step 2: Frontend — แยก loading config กับ data**
-```typescript
-// เดิม: โหลด config + rows รวมกัน (rows เก่า)
-const saved = await api.loadDataModel(id)
-dmStore.tables = saved.tables  // rows stale
-
-// ใหม่: โหลด config แล้ว execute SQL แยก
-const config = await api.loadDataModel(id)       // config only
-const result = await api.executeQuery(config.sqlText)  // fresh rows
-
-rawRows.value     = result.rows                  // เก็บไว้ให้ AI
-dmStore.tables    = [{ ...config.tableMeta, rows: result.rows }]
-// transforms pipeline ทำงานต่อเหมือนปกติทุกอย่าง
-```
-
-**Step 3: เพิ่ม rawRows ใน store**
-```typescript
-// datamodel.ts store
-const rawRows    = ref<DataRow[]>([])   // rows ก่อน applyComputedColumns
-const rawColMeta = ref<{ name: string; dataType: string }[]>([])
-```
-
-**Step 4: AI Context — ส่ง raw data เพิ่ม**
-อัปเดต `composables/datamodel/useAiContext.ts` และ `composables/report/useAiContext.ts`:
-- เพิ่ม raw rows summary (sample + column stats) เข้า system prompt
-- ปัจจุบันส่งแค่ aggregated totals → AI จะได้เห็นโครงสร้างข้อมูลจริงด้วย
+อัปเดต AI context composables ให้ส่ง raw data เพิ่มเติม:
+- `app/composables/datamodel/useAiContext.ts` — เพิ่ม sample rows + column stats
+- `app/composables/report/useAiContext.ts` — เพิ่ม raw dataset summary
+- ปัจจุบัน `useViewAiContext.ts` ส่งเฉพาะ aggregated totals — ต้องเพิ่ม raw access สำหรับ AI ใน viewer ด้วย
 
 ---
 

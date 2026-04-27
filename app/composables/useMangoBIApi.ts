@@ -121,6 +121,13 @@ export function useMangoBIApi() {
     return res?.data?.deleted === true
   }
 
+  async function refreshReportCache(reportId: string, datasetsJson: string): Promise<boolean> {
+    try {
+      const res: any = await $xt.postServerJson(`${BASE}/RefreshReportCache`, { reportId, datasetsJson })
+      return !!res?.data?.refreshedAt
+    } catch { return false }
+  }
+
   // ── DataModel ─────────────────────────────────────────────────────────────
 
   async function listDataModels(): Promise<BIListItem[]> {
@@ -201,14 +208,16 @@ export function useMangoBIApi() {
     try {
       const res: any = await $xt.postServerJson(`${BASE}/ExecuteCustomSql`, { sql: sqlText })
       if (res?.error) return null
-      // backend returns { data: rows[] } or { data: { rows, column_mapping_json } }
+      // Nitro proxy wraps backend response: res.data = backend's { data: rows[] }
+      // so actual rows are at res.data.data — fall back to res.data if already array
       const inner = res?.data
       if (!inner) return null
       if (Array.isArray(inner)) return { rows: inner }
-      return {
-        rows:               Array.isArray(inner.rows) ? inner.rows : inner,
-        column_mapping_json: inner.column_mapping_json,
-      }
+      const rows = Array.isArray(inner.data)
+        ? inner.data
+        : Array.isArray(inner.rows) ? inner.rows : null
+      if (!rows) return null
+      return { rows, column_mapping_json: inner.column_mapping_json }
     } catch {
       return null
     }
@@ -224,7 +233,7 @@ export function useMangoBIApi() {
 
   return {
     loadPublicReport,
-    listReports, loadReport, saveReport, deleteReport,
+    listReports, loadReport, saveReport, deleteReport, refreshReportCache,
     prefetchReport, invalidateReport,
     listDataModels, listPublicDataModels, loadDataModel, saveDataModel, deleteDataModel,
     listSQLBuilders, listPublicSQLBuilders, loadSQLBuilder, saveSQLBuilder, deleteSQLBuilder,
