@@ -8,10 +8,12 @@ import type { NumericFormat } from '~/utils/formatValue'
 export type { NumericFormat }
 
 export interface ModelTable {
-  id:            string
-  name:          string
-  rows:          DataRow[]
-  columnLabels?: Record<string, ColMeta>   // ColumnName → { label, dataType }
+  id:             string
+  name:           string
+  rows:           DataRow[]
+  columnLabels?:  Record<string, ColMeta>   // ColumnName → { label, dataType }
+  sqlText?:       string                    // SQL ที่ใช้ดึงข้อมูล — ใช้ re-execute เพื่อ fresh data
+  columnMapping?: string                    // JSON ColumnMapEntry[] สำหรับ rename columns
 }
 
 export type JoinType    = 'inner' | 'left' | 'right'

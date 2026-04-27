@@ -1,12 +1,13 @@
 import { defineStore } from 'pinia'
+import { useAuthStore } from '~/stores/auth'
 
-export type AiPageKey = 'sql-builder' | 'datamodel' | 'report'
+export type AiPageKey = 'sql-builder' | 'datamodel' | 'report' | 'view'
 
 export interface AiUsageStats {
-  promptTokens:  number   // prompt_eval_count
-  outputTokens:  number   // eval_count
-  totalMs:       number   // total_duration ns → ms
-  genMs:         number   // eval_duration ns → ms (time to generate)
+  promptTokens:  number
+  outputTokens:  number
+  totalMs:       number
+  genMs:         number
   model?:        string
 }
 
@@ -19,31 +20,77 @@ export interface AiMessage {
   stats?:   AiUsageStats
 }
 
-const EMPTY_HISTORY = (): AiMessage[] => []
+const PAGES: AiPageKey[] = ['sql-builder', 'datamodel', 'report', 'view']
+
+function storageKey(userId: string | null | undefined): string {
+  return `mangobiAiChat:${userId ?? 'guest'}`
+}
+
+function loadFromStorage(userId: string | null | undefined) {
+  if (!import.meta.client) return null
+  try {
+    const raw = localStorage.getItem(storageKey(userId))
+    return raw ? JSON.parse(raw) : null
+  } catch { return null }
+}
+
+function saveToStorage(userId: string | null | undefined, data: object) {
+  if (!import.meta.client) return
+  try {
+    localStorage.setItem(storageKey(userId), JSON.stringify(data))
+  } catch { /* quota exceeded — ignore */ }
+}
+
+function emptyHistories(): Record<AiPageKey, AiMessage[]> {
+  return { 'sql-builder': [], 'datamodel': [], 'report': [], 'view': [] }
+}
 
 export const useAiChatStore = defineStore('ai-chat', () => {
-  // Per-page chat histories
-  const histories = ref<Record<AiPageKey, AiMessage[]>>({
-    'sql-builder': [],
-    'datamodel':   [],
-    'report':      [],
-  })
+  const authStore = useAuthStore()
+  const userId    = computed(() => authStore.profile?.userId ?? authStore.profile?.empno?.toString() ?? null)
 
-  // Which page's panel is open
-  const openPage = ref<AiPageKey | null>(null)
-
-  // Selected model (shared across all pages)
-  const selectedModel = ref<string | null>(null)
-
-  function togglePanel(page: AiPageKey) {
-    openPage.value = openPage.value === page ? null : page
+  // ── Hydrate from localStorage on first access ────────────────────────────
+  function hydrate() {
+    const saved = loadFromStorage(userId.value)
+    if (!saved) return { histories: emptyHistories(), selectedModel: null }
+    // Strip loading:true from any messages saved mid-stream
+    const histories = emptyHistories()
+    for (const page of PAGES) {
+      histories[page] = ((saved.histories?.[page] ?? []) as AiMessage[])
+        .filter(m => m.id && m.role && !m.loading)
+    }
+    return { histories, selectedModel: saved.selectedModel ?? null }
   }
 
-  function openPanel(page: AiPageKey)  { openPage.value = page }
-  function closePanel()                { openPage.value = null }
+  const init           = hydrate()
+  const histories      = ref<Record<AiPageKey, AiMessage[]>>(init.histories)
+  const selectedModel  = ref<string | null>(init.selectedModel)
+  const openPage       = ref<AiPageKey | null>(null)
 
+  // ── Persist whenever histories or model change ───────────────────────────
+  watch(
+    [histories, selectedModel],
+    () => saveToStorage(userId.value, { histories: histories.value, selectedModel: selectedModel.value }),
+    { deep: true },
+  )
+
+  // ── Re-hydrate when user switches account ────────────────────────────────
+  watch(userId, (newId, oldId) => {
+    if (newId === oldId) return
+    const fresh = hydrate()
+    histories.value     = fresh.histories
+    selectedModel.value = fresh.selectedModel
+    openPage.value      = null
+  })
+
+  // ── Panel control ────────────────────────────────────────────────────────
+  function togglePanel(page: AiPageKey) { openPage.value = openPage.value === page ? null : page }
+  function openPanel (page: AiPageKey)  { openPage.value = page }
+  function closePanel()                 { openPage.value = null }
+
+  // ── Message helpers ──────────────────────────────────────────────────────
   function messages(page: AiPageKey) {
-    return histories.value[page] ??= EMPTY_HISTORY()
+    return histories.value[page] ??= []
   }
 
   function addMessage(page: AiPageKey, msg: Omit<AiMessage, 'id' | 'ts'> & { id?: string; ts?: number }) {
@@ -60,8 +107,7 @@ export const useAiChatStore = defineStore('ai-chat', () => {
   }
 
   function updateLastAssistant(page: AiPageKey, patch: Partial<AiMessage>) {
-    const list = messages(page)
-    const last = [...list].reverse().find(m => m.role === 'assistant')
+    const last = [...messages(page)].reverse().find(m => m.role === 'assistant')
     if (last) Object.assign(last, patch)
   }
 
@@ -70,15 +116,8 @@ export const useAiChatStore = defineStore('ai-chat', () => {
   }
 
   return {
-    histories,
-    openPage,
-    selectedModel,
-    togglePanel,
-    openPanel,
-    closePanel,
-    messages,
-    addMessage,
-    updateLastAssistant,
-    clearHistory,
+    histories, openPage, selectedModel,
+    togglePanel, openPanel, closePanel,
+    messages, addMessage, updateLastAssistant, clearHistory,
   }
 })

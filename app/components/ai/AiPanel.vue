@@ -164,6 +164,13 @@ const suggestions = computed(() => {
         'แนะนำ KPI ที่น่าสนใจจาก dataset นี้',
         'วิธี group by เพื่อดู trend ตามเวลา',
       ]
+    case 'view':
+      return [
+        'วันนี้มีอะไรที่น่ากังวลไหม',
+        'ตัวเลขไหนผิดปกติจากปกติ',
+        'สรุปภาพรวมรายงานนี้ให้หน่อย',
+        'ยอดรวมทั้งหมดอยู่ที่เท่าไหร่',
+      ]
     default:
       return []
   }
@@ -177,6 +184,7 @@ function useSuggestion(text: string) {
 const PAGE_LABELS: Record<AiPageKey, string> = {
   'sql-builder': 'SQL Builder',
   'datamodel':   'Data Model',
+  'view':        'Report Viewer',
   'report':      'Report',
 }
 </script>

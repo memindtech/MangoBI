@@ -11,6 +11,7 @@ import {
   Calculator, BookMarked, RefreshCw, Sparkles,
 } from 'lucide-vue-next'
 import { useAiContext } from '~/composables/datamodel/useAiContext'
+import { applyColumnMapping } from '~/composables/useMangoBIApi'
 import { useAiChatStore } from '~/stores/ai-chat'
 import { useAiFeature } from '~/composables/useAiFeature'
 import {
@@ -569,7 +570,7 @@ async function addSavedSqlTable(item: import('~/composables/useMangoBIApi').BILi
     }
 
     const name = customName.value.trim() || item.name
-    placeTableNode(`saved_${Date.now()}`, name, rows)
+    placeTableNode(`saved_${Date.now()}`, name, rows, parseColumnMapping(full.columnMapping), full.sqlText, full.columnMapping)
     showAddPanel.value = false
     customName.value   = ''
   } catch (e: any) {
@@ -662,7 +663,7 @@ async function addRawSqlTable() {
     const payload = extractSqlPayload(res)
     if (!payload?.rows?.length) throw new Error(t('bi_no_data_found'))
     const name = customName.value.trim() || 'Custom SQL'
-    placeTableNode(`rawsql_${Date.now()}`, name, payload.rows, parseColumnMapping(payload.column_mapping_json))
+    placeTableNode(`rawsql_${Date.now()}`, name, payload.rows, parseColumnMapping(payload.column_mapping_json), rawSqlText.value.trim())
     showAddPanel.value = false
     customName.value   = ''
     rawSqlText.value   = ''
@@ -689,8 +690,12 @@ function extractSqlPayload(res: any): { rows: any[]; column_mapping_json?: any }
 }
 
 let _xOffset = 0
-function placeTableNode(id: string, name: string, rows: any[], columnLabels?: ReturnType<typeof parseColumnMapping>) {
-  dmStore.addTable({ id, name, rows, columnLabels })
+function placeTableNode(
+  id: string, name: string, rows: any[],
+  columnLabels?: ReturnType<typeof parseColumnMapping>,
+  sqlText?: string, columnMapping?: string,
+) {
+  dmStore.addTable({ id, name, rows, columnLabels, sqlText, columnMapping })
   const pos = screenToFlowCoordinate({
     x: window.innerWidth  / 2 - 90 + _xOffset,
     y: window.innerHeight / 2 - 60,
@@ -1628,6 +1633,21 @@ async function doLoadDm(id: string) {
     showDmLoad.value = false
     selectedNodeId.value = null
     selectedEdgeId.value = null
+
+    // Re-execute SQL for fresh data — run in parallel, fall back to saved rows on error
+    await Promise.all(
+      dmStore.tables
+        .filter(t => t.sqlText)
+        .map(async (t) => {
+          try {
+            const result = await biApi.executeQuery(t.sqlText!)
+            if (!result?.rows?.length) return
+            const rows = applyColumnMapping(result.rows as any[], t.columnMapping)
+            const tbl = dmStore.getTable(t.id)
+            if (tbl) tbl.rows = rows
+          } catch { /* keep stale rows */ }
+        }),
+    )
   } catch (err) { console.error(err) }
   finally { dmLoadBusy.value = false }
 }
@@ -1740,6 +1760,22 @@ async function appendDmTemplate(id: string) {
 
     nodes.value = [...nodes.value, ...newNodes]
     edges.value = [...edges.value, ...newEdges]
+
+    // Re-execute SQL for appended tables that have sqlText
+    await Promise.all(
+      (payload.tables ?? [])
+        .filter((t: any) => t.sqlText)
+        .map(async (t: any) => {
+          const newId = idMap.get(t.id) ?? t.id
+          try {
+            const result = await biApi.executeQuery(t.sqlText)
+            if (!result?.rows?.length) return
+            const rows = applyColumnMapping(result.rows as any[], t.columnMapping)
+            const tbl = dmStore.getTable(newId)
+            if (tbl) tbl.rows = rows
+          } catch { /* keep stale rows */ }
+        }),
+    )
   } catch (err) { console.error(err) }
   finally { tplAppending.value = null }
 }

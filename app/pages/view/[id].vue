@@ -8,7 +8,10 @@ import { formatDateValue, formatNumericValue } from '~/utils/formatValue'
 import type { NumericFormat } from '~/utils/formatValue'
 import { useMangoBIApi } from '~/composables/useMangoBIApi'
 import type { FilterCondition, FilterOperator } from '~/stores/report'
-import { MousePointer2, X, LayoutDashboard, Loader2, Sun, Moon, Filter, Plus, Trash2 } from 'lucide-vue-next'
+import { MousePointer2, X, LayoutDashboard, Loader2, Sun, Moon, Filter, Plus, Trash2, Bot } from 'lucide-vue-next'
+import { useViewAiContext } from '~/composables/view/useViewAiContext'
+import { useAiChatStore } from '~/stores/ai-chat'
+import { useAiFeature } from '~/composables/useAiFeature'
 import { metaToColType, isDateMeta } from '~/utils/columnMapping'
 import { resolveDynamicValue, DATE_TOKEN_TODAY, DATE_TOKEN_YESTERDAY } from '~/utils/transformData'
 
@@ -640,6 +643,16 @@ function onChartClick(w: Widget, params: { name: string; value: any; seriesName:
 }
 
 function onRelatedFirstData(e: any) { e.api.autoSizeAllColumns() }
+
+// ── AI Assistant ──────────────────────────────────────────────────────────────
+const aiStore = useAiChatStore()
+const { enabled: aiEnabled } = useAiFeature()
+const { systemPrompt: aiSystemPrompt, contextLabel: aiContextLabel } = useViewAiContext(
+  reportName,
+  datasets,
+  widgets,
+  groupedRows,
+)
 </script>
 
 <template>
@@ -671,6 +684,21 @@ function onRelatedFirstData(e: any) { e.api.autoSizeAllColumns() }
           class="absolute -top-0.5 -right-0.5 size-3.5 bg-indigo-500 text-white text-[9px] font-bold
                  flex items-center justify-center rounded-full leading-none"
         >{{ activeViewFilterCount }}</span>
+      </button>
+
+      <!-- AI toggle -->
+      <button
+        v-if="aiEnabled"
+        @click="aiStore.togglePanel('view')"
+        class="relative p-1.5 rounded-lg hover:bg-muted transition-colors"
+        :class="aiStore.openPage === 'view' ? 'text-violet-500' : 'text-muted-foreground'"
+        title="AI Analyst"
+      >
+        <Bot class="size-4" />
+        <span
+          v-if="aiStore.openPage === 'view'"
+          class="absolute -top-0.5 -right-0.5 size-2 rounded-full bg-violet-500"
+        />
       </button>
 
       <!-- Theme toggle -->
@@ -1113,6 +1141,14 @@ function onRelatedFirstData(e: any) { e.api.autoSizeAllColumns() }
         </div>
       </Transition>
     </Teleport>
+
+    <!-- AI Analyst Panel -->
+    <AiPanel
+      v-if="aiEnabled && aiStore.openPage === 'view'"
+      page="view"
+      :system-prompt="aiSystemPrompt"
+      :context-label="aiContextLabel"
+    />
   </div>
 </template>
 

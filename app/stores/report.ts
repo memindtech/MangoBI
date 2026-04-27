@@ -19,6 +19,8 @@ export interface ReportDataset {
   columnLabels?:  Record<string, ColMeta>
   columnSources?: Record<string, string>   // finalColName → source table name
   numericFormat?: NumericFormat            // applies to all numeric columns
+  sqlText?:       string                   // SQL ที่ใช้ดึงข้อมูล — ใช้ re-execute เพื่อ fresh data
+  columnMapping?: string                   // JSON ColumnMapEntry[] สำหรับ rename columns
 }
 
 export interface WidgetFields {
@@ -131,6 +133,11 @@ export const useReportStore = defineStore('report', () => {
     widgets.value = widgets.value.filter(w => w.id !== id)
   }
 
+  function updateDatasetRows(id: string, rows: DataRow[]) {
+    const ds = datasets.value.find(d => d.id === id)
+    if (ds) ds.rows = rows
+  }
+
   function resetAll() {
     datasets.value = []
     widgets.value  = []
@@ -143,7 +150,7 @@ export const useReportStore = defineStore('report', () => {
 
   return {
     datasets, widgets,
-    addDataset, removeDataset, columnsOf, rowsOf, labelOf, numericFormatOf,
+    addDataset, removeDataset, updateDatasetRows, columnsOf, rowsOf, labelOf, numericFormatOf,
     addWidget, updateWidget, updateFields, updateFilters, removeWidget, resetAll,
   }
 })

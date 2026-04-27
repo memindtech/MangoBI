@@ -33,6 +33,29 @@ export interface ColumnMapEntry {
   newColumnName: string
 }
 
+/** Apply columnMapping JSON rename to rows. Rows without a mapping entry pass through unchanged. */
+export function applyColumnMapping<T extends Record<string, unknown>>(
+  rows: T[],
+  columnMappingJson: string | null | undefined,
+): T[] {
+  if (!columnMappingJson) return rows
+  try {
+    const mapping: ColumnMapEntry[] = JSON.parse(columnMappingJson)
+    const renamed = mapping.filter(m => m.newColumnName && m.newColumnName !== m.columnName)
+    if (!renamed.length) return rows
+    return rows.map(row => {
+      const out: Record<string, unknown> = {}
+      for (const [k, v] of Object.entries(row)) {
+        const m = renamed.find(r => r.columnName === k)
+        out[m ? m.newColumnName : k] = v
+      }
+      return out
+    }) as T[]
+  } catch {
+    return rows
+  }
+}
+
 export function useMangoBIApi() {
   const { $xt } = useNuxtApp() as any
   const config  = useRuntimeConfig()
@@ -168,6 +191,29 @@ export function useMangoBIApi() {
 
   // ── System ────────────────────────────────────────────────────────────────
 
+  // ── Execute Query ─────────────────────────────────────────────────────────────
+
+  /** Execute a SELECT/CTE SQL against Mango ERP DB — returns fresh rows + column metadata */
+  async function executeQuery(sqlText: string): Promise<{
+    rows: Record<string, unknown>[]
+    column_mapping_json?: string
+  } | null> {
+    try {
+      const res: any = await $xt.postServerJson(`${BASE}/ExecuteCustomSql`, { sql: sqlText })
+      if (res?.error) return null
+      // backend returns { data: rows[] } or { data: { rows, column_mapping_json } }
+      const inner = res?.data
+      if (!inner) return null
+      if (Array.isArray(inner)) return { rows: inner }
+      return {
+        rows:               Array.isArray(inner.rows) ? inner.rows : inner,
+        column_mapping_json: inner.column_mapping_json,
+      }
+    } catch {
+      return null
+    }
+  }
+
   async function updateStructure(
     columnMappings?: ColumnMapEntry[],
   ): Promise<{ messages: string[] } | null> {
@@ -182,6 +228,7 @@ export function useMangoBIApi() {
     prefetchReport, invalidateReport,
     listDataModels, listPublicDataModels, loadDataModel, saveDataModel, deleteDataModel,
     listSQLBuilders, listPublicSQLBuilders, loadSQLBuilder, saveSQLBuilder, deleteSQLBuilder,
+    executeQuery,
     updateStructure,
   }
 }

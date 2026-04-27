@@ -7,6 +7,7 @@ import {
   Layers, Activity, Network, Code2, MousePointer2, Link2, Check, RotateCcw, Sparkles,
 } from 'lucide-vue-next'
 import { useAiContext } from '~/composables/report/useAiContext'
+import { applyColumnMapping } from '~/composables/useMangoBIApi'
 import { useAiChatStore } from '~/stores/ai-chat'
 import { useAiFeature } from '~/composables/useAiFeature'
 import ReportWidget from '~/components/report/ReportWidget.vue'
@@ -765,9 +766,11 @@ async function doSaveRp() {
   try {
     const datasetsPayload = store.datasets.map(d => ({
       id: d.id, name: d.name, rows: d.rows,
-      columnLabels: d.columnLabels,
+      columnLabels:  d.columnLabels,
       columnSources: d.columnSources,
       numericFormat: d.numericFormat,
+      sqlText:       d.sqlText,
+      columnMapping: d.columnMapping,
     }))
     const widgetsJson = JSON.stringify({ widgets: store.widgets, datasets: datasetsPayload })
     const savedId = await biApi.saveReport({
@@ -808,6 +811,20 @@ async function doLoadRp(id: string) {
     rpSaveName.value = row.name ?? ''
     selectedWidgetId.value = null
     showRpLoad.value = false
+
+    // Re-execute SQL for fresh data — datasets without sqlText keep their saved rows
+    await Promise.all(
+      store.datasets
+        .filter(d => d.sqlText)
+        .map(async (d) => {
+          try {
+            const result = await biApi.executeQuery(d.sqlText!)
+            if (!result?.rows?.length) return
+            const rows = applyColumnMapping(result.rows as any[], d.columnMapping)
+            store.updateDatasetRows(d.id, rows)
+          } catch { /* keep stale rows */ }
+        }),
+    )
   } catch (err) { console.error(err) }
   finally { rpLoadBusy.value = false }
 }
