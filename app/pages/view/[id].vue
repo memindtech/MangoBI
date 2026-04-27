@@ -8,7 +8,7 @@ import { formatDateValue, formatNumericValue } from '~/utils/formatValue'
 import type { NumericFormat } from '~/utils/formatValue'
 import { useMangoBIApi } from '~/composables/useMangoBIApi'
 import type { FilterCondition, FilterOperator } from '~/stores/report'
-import { MousePointer2, X, LayoutDashboard, Loader2, Sun, Moon, Filter, Plus, Trash2, Bot } from 'lucide-vue-next'
+import { MousePointer2, X, LayoutDashboard, Loader2, Sun, Moon, Filter, Plus, Trash2, Bot, Lock } from 'lucide-vue-next'
 import { useViewAiContext } from '~/composables/view/useViewAiContext'
 import { useAiChatStore } from '~/stores/ai-chat'
 import { useAiFeature } from '~/composables/useAiFeature'
@@ -56,7 +56,46 @@ const reportName = ref('')
 const datasets   = ref<Dataset[]>([])
 const widgets    = ref<Widget[]>([])
 
+// ── Auth for AI Assist ────────────────────────────────────────────────────────
+const isAuthed        = ref(false)
+const showLoginForAi  = ref(false)
+const loginBusy       = ref(false)
+const loginError      = ref('')
+const loginForm       = reactive({ maincode: '', userid: '', userpass: '' })
+
+async function checkAuth() {
+  try { await $fetch('/api/auth/me'); isAuthed.value = true } catch { isAuthed.value = false }
+}
+
+async function submitViewerLogin() {
+  if (!loginForm.maincode || !loginForm.userid || !loginForm.userpass) {
+    loginError.value = 'กรุณากรอกข้อมูลให้ครบ'; return
+  }
+  loginBusy.value  = true
+  loginError.value = ''
+  try {
+    const resp: any = await $fetch('/api/auth/login', {
+      method: 'POST',
+      body: { ...loginForm, oauth2: 'N', attempt: '1' },
+    }).catch((err: any) => err?.data ?? { error: err?.message ?? 'Login failed' })
+    if (resp?.error) { loginError.value = resp.error; return }
+    isAuthed.value       = true
+    showLoginForAi.value = false
+    loginForm.userid     = ''
+    loginForm.userpass   = ''
+    aiStore.togglePanel('view')
+  } catch { loginError.value = 'Login failed' }
+  finally { loginBusy.value = false }
+}
+
+function onAiButtonClick() {
+  if (isAuthed.value) aiStore.togglePanel('view')
+  else showLoginForAi.value = true
+}
+
 onMounted(async () => {
+  checkAuth()   // silent — don't block page load
+
   // ── ตรวจสอบ link expiry ─────────────────────────────────────────────────
   const expParam = route.query.exp
   if (expParam) {
@@ -696,15 +735,19 @@ const { systemPrompt: aiSystemPrompt, contextLabel: aiContextLabel } = useViewAi
       <!-- AI toggle -->
       <button
         v-if="aiEnabled"
-        @click="aiStore.togglePanel('view')"
+        @click="onAiButtonClick"
         class="relative p-1.5 rounded-lg hover:bg-muted transition-colors"
         :class="aiStore.openPage === 'view' ? 'text-violet-500' : 'text-muted-foreground'"
-        title="AI Analyst"
+        :title="isAuthed ? 'AI Analyst' : 'AI Analyst (ต้องเข้าสู่ระบบ)'"
       >
         <Bot class="size-4" />
         <span
           v-if="aiStore.openPage === 'view'"
           class="absolute -top-0.5 -right-0.5 size-2 rounded-full bg-violet-500"
+        />
+        <Lock
+          v-else-if="!isAuthed"
+          class="absolute -top-0.5 -right-0.5 size-2.5 text-amber-500"
         />
       </button>
 
@@ -1156,6 +1199,75 @@ const { systemPrompt: aiSystemPrompt, contextLabel: aiContextLabel } = useViewAi
       :system-prompt="aiSystemPrompt"
       :context-label="aiContextLabel"
     />
+
+    <!-- AI Login Modal -->
+    <Teleport to="body">
+      <Transition name="fade">
+        <div
+          v-if="showLoginForAi"
+          class="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4"
+          @click.self="showLoginForAi = false"
+        >
+          <div class="bg-background rounded-2xl shadow-2xl w-80 p-6 space-y-4">
+            <!-- Header -->
+            <div class="flex items-center gap-2.5">
+              <div class="flex size-8 items-center justify-center rounded-full bg-violet-100 dark:bg-violet-950/40">
+                <Bot class="size-4 text-violet-500" />
+              </div>
+              <div class="flex-1 min-w-0">
+                <p class="text-sm font-semibold">AI Analyst</p>
+                <p class="text-[11px] text-muted-foreground">เข้าสู่ระบบเพื่อใช้งาน</p>
+              </div>
+              <button @click="showLoginForAi = false" class="text-muted-foreground hover:text-foreground">
+                <X class="size-4" />
+              </button>
+            </div>
+
+            <!-- Form -->
+            <div class="space-y-2">
+              <input
+                v-model="loginForm.maincode"
+                placeholder="รหัสบริษัท"
+                class="w-full text-xs border rounded-lg px-3 py-2 bg-background
+                       focus:outline-none focus:ring-2 focus:ring-violet-500
+                       placeholder:text-muted-foreground/50"
+              />
+              <input
+                v-model="loginForm.userid"
+                placeholder="ชื่อผู้ใช้"
+                autocomplete="username"
+                class="w-full text-xs border rounded-lg px-3 py-2 bg-background
+                       focus:outline-none focus:ring-2 focus:ring-violet-500
+                       placeholder:text-muted-foreground/50"
+              />
+              <input
+                v-model="loginForm.userpass"
+                type="password"
+                placeholder="รหัสผ่าน"
+                autocomplete="current-password"
+                class="w-full text-xs border rounded-lg px-3 py-2 bg-background
+                       focus:outline-none focus:ring-2 focus:ring-violet-500
+                       placeholder:text-muted-foreground/50"
+                @keydown.enter="submitViewerLogin"
+              />
+            </div>
+
+            <p v-if="loginError" class="text-[11px] text-destructive">{{ loginError }}</p>
+
+            <button
+              @click="submitViewerLogin"
+              :disabled="loginBusy"
+              class="w-full flex items-center justify-center gap-2 text-xs py-2 rounded-lg
+                     bg-violet-500 hover:bg-violet-600 text-white font-semibold
+                     transition-colors disabled:opacity-50"
+            >
+              <Loader2 v-if="loginBusy" class="size-3.5 animate-spin" />
+              {{ loginBusy ? 'กำลังเข้าสู่ระบบ...' : 'เข้าสู่ระบบ' }}
+            </button>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
   </div>
 </template>
 
