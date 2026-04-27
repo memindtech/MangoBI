@@ -8,13 +8,14 @@ export type ChartType =
   | 'halfDoughnut' | 'scatter' | 'tree' | 'ecOption'
 
 export interface CanvasNodeConfig {
-  chartType?:    ChartType
-  xField?:       string
-  yField?:       string
-  yFields?:      string[]    // stacked / multi-series
-  ecOptionJson?: string      // raw ECharts option JSON
-  maxRows?:      number
-  columnWidths?: Record<string, number>
+  chartType?:      ChartType
+  xField?:         string
+  yField?:         string
+  yFields?:        string[]    // stacked / multi-series
+  ecOptionJson?:   string      // raw ECharts option JSON
+  maxRows?:        number
+  maxChartPoints?: number
+  columnWidths?:   Record<string, number>
 }
 
 export const DATASET_META: Record<DatasetKey, { label: string }> = {

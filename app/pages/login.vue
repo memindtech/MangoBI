@@ -28,7 +28,7 @@ const route = useRoute()
 const isLoading = ref(false)
 const isPasswordVisible = ref(false)
 const msgError = ref('')
-const companyList = ref([])
+const companyList = ref<{ maincode: string; mainname: string }[]>([])
 
 // --- State สำหรับ Alert Dialog (แทน $msg) ---
 const alertState = reactive({
@@ -185,7 +185,7 @@ const fetchCompanies = async () => {
     const resp: any = await $fetch('/api/auth/companies')
     companyList.value = resp.data || []
     if (companyList.value.length > 0) {
-      form.maincode = companyList.value[0].maincode
+      form.maincode = companyList.value[0]!.maincode
     }
   } catch (err) {
     console.error('Failed to load companies', err)

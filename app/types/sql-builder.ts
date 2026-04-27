@@ -185,6 +185,7 @@ export interface CalcNodeData {
   nodeType: 'calc'
   _toolId:  'calc'
   items:    CalcItem[]
+  filters:  WhereCondition[]
 }
 
 export interface AggItem {
@@ -271,7 +272,7 @@ export interface GroupCteNodeData {
 
 export const TOOL_NODE_DEFAULTS: Record<ToolId, ToolNodeData> = {
   cte:   { nodeType: 'cte',   _toolId: 'cte',   name: 'my_cte', selectedCols: [], conditions: [] },
-  calc:  { nodeType: 'calc',  _toolId: 'calc',   items: [], filters: [] },
+  calc:  { nodeType: 'calc',  _toolId: 'calc',   items: [], filters: [] as WhereCondition[] },
   group: { nodeType: 'group', _toolId: 'group',  groupCols: [], aggs: [], filters: [] },
   sort:  { nodeType: 'sort',  _toolId: 'sort',   items: [] },
   union: { nodeType: 'union', _toolId: 'union',  name: '', unionType: 'UNION ALL', selectedCols: [], selectedColsMap: {}, conditions: [] },

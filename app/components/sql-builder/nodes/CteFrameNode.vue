@@ -61,8 +61,8 @@ const connectedTools = computed(() => {
 const nodesInFrame = computed(() => {
   const self = store.nodes.find((n: any) => n.id === props.id)
   if (!self) return []
-  const fw    = parseFloat(String(self.style?.width  ?? '420'))
-  const fh    = parseFloat(String(self.style?.height ?? '280'))
+  const fw    = parseFloat(String((self.style as any)?.width  ?? '420'))
+  const fh    = parseFloat(String((self.style as any)?.height ?? '280'))
   const fx    = self.position.x
   const fy    = self.position.y
   const NW    = 112   // half of node card width (~224)
@@ -99,8 +99,8 @@ function toggleOpen() {
       n.id === props.id ? { ...n, style: { width: `${w}px`, height: `${h}px` } } : n
     )
   } else {
-    const cw = parseFloat(String(current?.style?.width  ?? '420'))
-    const ch = parseFloat(String(current?.style?.height ?? '280'))
+    const cw = parseFloat(String((current?.style as any)?.width  ?? '420'))
+    const ch = parseFloat(String((current?.style as any)?.height ?? '280'))
     store.updateNodeData(props.id, { isOpen: false, _expandedW: cw, _expandedH: ch })
     store.nodes = store.nodes.map((n: any) =>
       n.id === props.id ? { ...n, style: { width: '200px', height: '56px' } } : n

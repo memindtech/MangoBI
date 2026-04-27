@@ -102,7 +102,7 @@ export function useErpData() {
       column_name: d.COLUMN_NAME ?? d.column_name ?? '',
       column_type: d.DATA_TYPE ?? d.column_type ?? d.data_type ?? '',
       data_type:   d.data_type ?? d.DATA_TYPE ?? '',
-      data_pk:     d.COLUMN_KEY === 'PRI' || d.data_pk === 'Y' ? 'Y' : 'N',
+      data_pk:     (d.COLUMN_KEY === 'PRI' || d.data_pk === 'Y' ? 'Y' : 'N') as 'Y' | 'N',
       remark:      d.COLUMN_COMMENT ?? d.remark ?? '',
     })).sort((a: ColumnInfo, b: ColumnInfo) =>
       a.data_pk === b.data_pk ? 0 : a.data_pk === 'Y' ? -1 : 1

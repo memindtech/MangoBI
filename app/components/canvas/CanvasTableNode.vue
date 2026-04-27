@@ -28,7 +28,7 @@ const canvasStore = useCanvasStore()
 
 const rows        = computed(() => canvasStore.nodeInputs[props.id] ?? [])
 const hasData     = computed(() => rows.value.length > 0)
-const columns     = computed(() => rows.value.length ? Object.keys(rows.value[0]) : [])
+const columns     = computed(() => rows.value.length ? Object.keys(rows.value[0]!) : [])
 const labelMap    = computed(() => canvasStore.nodeInputLabels[props.id] ?? {})
 
 // ── Quick filter ───────────────────────────────────────────────────────────────
@@ -64,7 +64,7 @@ const colDefs = computed<ColDef[]>(() => {
   }
 
   const dataDefs: ColDef[] = columns.value.map(col => {
-    const isNum  = rows.value.length > 0 && typeof rows.value[0][col] === 'number'
+    const isNum  = rows.value.length > 0 && typeof rows.value[0]![col] === 'number'
     const savedW = savedWidths.value[col]
     return {
       field:      col,
@@ -74,10 +74,10 @@ const colDefs = computed<ColDef[]>(() => {
       resizable:  true,
       minWidth:   72,
       ...(savedW ? { width: savedW } : { flex: 1 }),
-      cellStyle: isNum
+      cellStyle: (isNum
         ? { textAlign: 'right', fontFamily: 'monospace', fontVariantNumeric: 'tabular-nums' }
-        : {},
-      valueFormatter: (p) => {
+        : {}) as Record<string, string>,
+      valueFormatter: (p: any) => {
         if (p.value === null || p.value === undefined || p.value === '') return ''
         return isNum ? Number(p.value).toLocaleString() : String(p.value)
       },

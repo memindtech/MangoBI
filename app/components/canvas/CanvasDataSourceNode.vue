@@ -72,7 +72,7 @@ async function fetchSqlTemplates() {
   try {
     const res: any = await $xt.getServer(`Planning/Master/GetSqlFlowTemplate?passcode=${encodeURIComponent(sqlPasscode.value.trim())}`)
     sqlTemplates.value = Array.isArray(res?.data) ? res.data : []
-    if (sqlTemplates.value.length) selectedTemplateId.value = sqlTemplates.value[0].template_id
+    if (sqlTemplates.value.length) selectedTemplateId.value = sqlTemplates.value[0]?.template_id ?? null
   } catch {
     sqlTemplates.value = []
   }
@@ -84,7 +84,7 @@ watch(mode, (m) => { if (m === 'sql') sqlTemplatesLoaded.value = false })
 // ── Output state ──────────────────────────────────────────────────
 const output   = computed(() => canvasStore.nodeOutputs[props.id] ?? [])
 const isLoaded = computed(() => output.value.length > 0)
-const columns  = computed(() => output.value.length ? Object.keys(output.value[0]) : [])
+const columns  = computed(() => output.value.length ? Object.keys(output.value[0]!) : [])
 
 // ── Load: Mock ────────────────────────────────────────────────────
 async function loadMock() {

@@ -953,9 +953,9 @@ export function useSqlGenerator() {
       return `SELECT *\nFROM ${upstream}\nWHERE ${filters.map(formatCondClause).join('\n  AND ')}`
     }
 
-    const calcItems = items.map((c: any) => {
-      const expr  = calcExpr(c.op, c.col, c.value ?? '')
-      const alias = c.alias || `${c.col}_calc`
+    const calcItems: Array<{ col: string; expr: string; alias: string }> = items.map((c: any) => {
+      const expr:  string = calcExpr(c.op, c.col, c.value ?? '')
+      const alias: string = c.alias || `${c.col}_calc`
       return { col: c.col as string, expr, alias }
     })
 

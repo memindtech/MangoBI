@@ -58,7 +58,8 @@ const {
   fitView,
 } = useVueFlow({ id: 'data-model' })
 
-const nodeTypes = { modelTable: markRaw(ModelTableNode) }
+// Cast as any: Vue Flow's NodeTypesObject expects NodeProps generics our SFCs don't expose
+const nodeTypes = { modelTable: markRaw(ModelTableNode) } as any
 
 const nodes = ref<Node[]>([])
 const edges = ref<Edge[]>([])
@@ -371,7 +372,7 @@ const txInputColDefs = computed<ColDef[]>(() =>
     return {
       field: col, headerName: txColLabel(col),
       sortable: true, resizable: true, filter: true, minWidth: 60,
-      cellStyle: isNum ? { textAlign: 'right', fontFamily: 'monospace' } : {},
+      cellStyle: (isNum ? { textAlign: 'right', fontFamily: 'monospace' } : {}) as Record<string, string>,
       valueFormatter: makeTxFmt(col),
     }
   })
@@ -417,7 +418,7 @@ const txOutputColDefs = computed<ColDef[]>(() => {
     return {
       field: col, headerName: txColLabel(col),
       sortable: true, resizable: true, filter: true, minWidth: 60,
-      cellStyle: isNum ? { textAlign: 'right', fontFamily: 'monospace' } : {},
+      cellStyle: (isNum ? { textAlign: 'right', fontFamily: 'monospace' } : {}) as Record<string, string>,
       valueFormatter: makeTxFmt(col),
     }
   })
@@ -842,7 +843,7 @@ function updateRelation(field: string, value: string) {
   // sync cardinality label on edge
   if (field === 'cardinality') {
     const idx = edges.value.findIndex(e => e.id === selectedEdgeId.value)
-    if (idx !== -1) edges.value[idx] = { ...edges.value[idx], label: value }
+    if (idx !== -1) edges.value[idx] = { ...edges.value[idx]!, label: value }
   }
 }
 
@@ -3409,7 +3410,7 @@ const { enabled: aiEnabled } = useAiFeature()
                     :suppressMovableColumns="true"
                     :suppressCellFocus="true"
                     :enableCellTextSelection="true"
-                    @first-data-rendered="(p) => p.api.autoSizeAllColumns()"
+                    @first-data-rendered="(p: any) => p.api.autoSizeAllColumns()"
                   />
                   <!-- results tab — placeholder when no config -->
                   <div
@@ -3431,7 +3432,7 @@ const { enabled: aiEnabled } = useAiFeature()
                     :suppressMovableColumns="true"
                     :suppressCellFocus="true"
                     :enableCellTextSelection="true"
-                    @first-data-rendered="(p) => p.api.autoSizeAllColumns()"
+                    @first-data-rendered="(p: any) => p.api.autoSizeAllColumns()"
                   />
                 </div>
               </div>
@@ -3806,7 +3807,7 @@ const { enabled: aiEnabled } = useAiFeature()
                     :columnDefs="joinTxColDefs"
                     :rowHeight="26" :headerHeight="30"
                     :suppressMovableColumns="true" :suppressCellFocus="true" :enableCellTextSelection="true"
-                    @first-data-rendered="(p) => p.api.autoSizeAllColumns()"
+                    @first-data-rendered="(p: any) => p.api.autoSizeAllColumns()"
                   />
                   <div v-else-if="!joinTxHasConfig"
                     class="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
@@ -3820,7 +3821,7 @@ const { enabled: aiEnabled } = useAiFeature()
                     :columnDefs="joinTxOutputColDefs"
                     :rowHeight="26" :headerHeight="30"
                     :suppressMovableColumns="true" :suppressCellFocus="true" :enableCellTextSelection="true"
-                    @first-data-rendered="(p) => p.api.autoSizeAllColumns()"
+                    @first-data-rendered="(p: any) => p.api.autoSizeAllColumns()"
                   />
                 </div>
               </div>
