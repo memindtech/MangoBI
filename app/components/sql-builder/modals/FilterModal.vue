@@ -33,20 +33,38 @@ const columnGroups = computed((): { nodeId: string; table: string; cols: ColEntr
     const n = store.nodes.find((n: any) => n.id === id)
     if (!n || n.type !== 'sqlTable') continue
     const details = (n.data.details ?? []) as any[]
-    if (!details.length) continue
-    const label = (n.data.tableName || n.data.label || id) as string
-    groups.push({
-      nodeId: id,
-      table:  label,
-      cols: details.map((d: any) => ({
-        nodeId:      id,
-        column_name: d.column_name ?? '',
-        column_type: d.column_type ?? d.data_type ?? '',
-        data_pk:     d.data_pk,
-        remark:      d.remark ?? '',
-        table_label: label,
-      })),
-    })
+    const label   = (n.data.tableName || n.data.label || id) as string
+
+    if (details.length) {
+      groups.push({
+        nodeId: id,
+        table:  label,
+        cols: details.map((d: any) => ({
+          nodeId:      id,
+          column_name: d.column_name ?? '',
+          column_type: d.column_type ?? d.data_type ?? '',
+          data_pk:     d.data_pk,
+          remark:      d.remark ?? '',
+          table_label: label,
+        })),
+      })
+    } else {
+      // details not loaded — fall back to visibleCols so the modal is still usable
+      const visible = (n.data.visibleCols ?? []) as VisibleCol[]
+      if (!visible.length) continue
+      groups.push({
+        nodeId: id,
+        table:  label,
+        cols: visible.map(v => ({
+          nodeId:      id,
+          column_name: v.name,
+          column_type: v.type ?? '',
+          data_pk:     v.isPk ? 'Y' : undefined,
+          remark:      v.remark ?? '',
+          table_label: label,
+        })),
+      })
+    }
   }
   return groups
 })
@@ -188,14 +206,24 @@ const OP_GROUPS = [
     { value: '<=', label: '≤',  title: 'น้อยกว่าหรือเท่ากับ' },
   ]},
   { label: 'ข้อความ / ช่วง', ops: [
-    { value: 'LIKE', label: 'LIKE', title: 'มีข้อความ (% wildcard)' },
-    { value: 'IN',   label: 'IN',   title: 'อยู่ในชุด (a,b,c)' },
+    { value: 'LIKE', label: 'LIKE', title: 'มีข้อความ (% = ตัวอักษรอะไรก็ได้)' },
+    { value: 'IN',   label: 'IN',   title: 'อยู่ในชุด (เช่น 10,20,30)' },
   ]},
   { label: 'ว่างเปล่า', ops: [
     { value: 'IS NULL',     label: 'NULL',  title: 'ว่างเปล่า' },
     { value: 'IS NOT NULL', label: '!NULL', title: 'ไม่ว่างเปล่า' },
   ]},
 ]
+
+// C4: rich placeholder text per operator so users don't have to know SQL
+// wildcard syntax. Shown inside the value input when no value is set yet.
+function valuePlaceholder(op: string, type: string): string {
+  if (op === 'LIKE') return 'เช่น %mango% = มีคำว่า mango ที่ไหนก็ได้'
+  if (op === 'IN')   return 'เช่น 10,20,30 (คั่นด้วย ,)'
+  if (type === 'date') return 'เลือกวันที่'
+  if (type === 'int' || type === 'decimal') return 'เช่น 100'
+  return 'พิมพ์ค่าที่ต้องการ'
+}
 
 const localFilters   = ref<FilterCondition[]>([])
 const whereExpanded  = ref(false)
@@ -531,7 +559,7 @@ function close() { store.filterNodeId = null }
                       </div>
                       <input v-else :value="f.value"
                         @input="localFilters[i] = { ...f, value: ($event.target as HTMLInputElement).value }"
-                        :placeholder="f.operator === 'IN' ? 'a, b, c' : f.operator === 'LIKE' ? '%keyword%' : 'ค่า...'"
+                        :placeholder="valuePlaceholder(f.operator, f.type)"
                         :type="f.type === 'int' ? 'number' : 'text'"
                         class="flex-1 text-xs border rounded-lg px-2.5 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-amber-400/50 font-mono"
                         :class="f.value ? 'border-amber-400/40' : ''" />

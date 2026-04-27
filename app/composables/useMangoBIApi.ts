@@ -101,7 +101,12 @@ export function useMangoBIApi() {
   /** Call on hover to warm the cache before the user clicks. */
   function prefetchReport(id: string): void {
     if (_reportCache.has(id) || _reportFlight.has(id)) return
-    loadReport(id).catch(() => {})
+    // Prefetch is best-effort — the user's real click will retry and show a
+    // proper error. We still log so "user clicked but nothing happened" has
+    // a breadcrumb in the console.
+    loadReport(id).catch(err => {
+      if (import.meta.dev) console.warn('[prefetchReport] failed', id, err)
+    })
   }
 
   async function saveReport(payload: {

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Handle, Position, useVueFlow } from '@vue-flow/core'
-import { Database, X, Filter, ChevronDown, ChevronUp, Key, SlidersHorizontal, Network } from 'lucide-vue-next'
+import { Database, X, Filter, ChevronDown, ChevronUp, Key, SlidersHorizontal, Network, RefreshCw, AlertTriangle } from 'lucide-vue-next'
 import type { VisibleCol } from '~/types/sql-builder'
 import { getColTypeBadgeSolid } from '~/types/sql-builder'
 import { useSqlBuilderStore } from '~/stores/sql-builder'
@@ -100,6 +100,50 @@ function selectAll() {
 function clearAll() {
   store.updateNodeData(props.id, { visibleCols: [] })
 }
+
+// Detect if this table is currently inside a cteFrame (bounds-based, mirrors CteFrameNode logic)
+const parentCteFrame = computed(() => {
+  const me = store.nodes.find((n: any) => n.id === props.id) as any
+  if (!me) return null
+  const cx = me.position.x + 112
+  const cy = me.position.y + 80
+  return (store.nodes as any[]).find((n: any) => {
+    if (n.type !== 'cteFrame') return false
+    const fw = parseFloat(String(n.style?.width  ?? '420'))
+    const fh = parseFloat(String(n.style?.height ?? '280'))
+    return cx >= n.position.x && cx <= n.position.x + fw &&
+           cy >= n.position.y && cy <= n.position.y + fh
+  }) ?? null
+})
+
+const TOOL_BADGE_META: Record<string, { color: string; label: string }> = {
+  cte:   { color: '#8b5cf6', label: 'CTE'      },
+  calc:  { color: '#14b8a6', label: 'CALC'     },
+  group: { color: '#f97316', label: 'GROUP BY' },
+  sort:  { color: '#22c55e', label: 'ORDER BY' },
+  union: { color: '#eab308', label: 'UNION'    },
+  where: { color: '#f43f5e', label: 'WHERE'    },
+}
+
+const connectedTools = computed(() => {
+  const seen = new Set<string>()
+  const result: Array<{ id: string; label: string; color: string }> = []
+  for (const edge of store.edges as any[]) {
+    if (edge.source === props.id && edge.data?.isTool) {
+      let toolId = edge.data?.tgtToolId as string | undefined
+      if (!toolId) {
+        const tgtNode = store.nodes.find((n: any) => n.id === edge.target) as any
+        toolId = tgtNode?.data?._toolId
+      }
+      if (toolId && !seen.has(toolId)) {
+        seen.add(toolId)
+        const meta = TOOL_BADGE_META[toolId] ?? { color: '#94a3b8', label: toolId.toUpperCase() }
+        result.push({ id: toolId, ...meta })
+      }
+    }
+  }
+  return result
+})
 </script>
 
 <template>
@@ -145,12 +189,26 @@ function clearAll() {
         </span>
         <span class="text-[10px] text-muted-foreground truncate flex-1">{{ data.module }}</span>
 
-        <!-- Column count badge -->
-        <span v-if="visibleCols.length" class="text-[9px] px-1.5 py-0.5 bg-sky-500/15 text-sky-500 rounded-full font-semibold shrink-0">
-          {{ visibleCols.length }}
+        <!-- Column count badge (C6): shows selected / total so user knows
+             both what they've picked AND how many are available. -->
+        <span
+          v-if="details.length"
+          class="text-[9px] px-1.5 py-0.5 bg-sky-500/15 text-sky-500 rounded-full font-semibold shrink-0 font-mono"
+          :title="visibleCols.length
+            ? `เลือก ${visibleCols.length} จาก ${details.length} คอลัมน์`
+            : `มีทั้งหมด ${details.length} คอลัมน์ (ยังไม่ได้เลือก)`"
+        >
+          <template v-if="visibleCols.length">{{ visibleCols.length }}/{{ details.length }}</template>
+          <template v-else>📋 {{ details.length }}</template>
         </span>
         <!-- Header badge -->
         <span v-if="data.isHeaderNode" class="text-[8px] px-1 py-0.5 bg-emerald-500/20 text-emerald-600 rounded font-bold shrink-0">H</span>
+        <!-- CTE frame membership badge -->
+        <span v-if="parentCteFrame"
+          class="text-[8px] px-1.5 py-0.5 bg-violet-500/20 text-violet-400 rounded font-bold shrink-0 border border-violet-500/30"
+          :title="`อยู่ใน CTE: ${parentCteFrame.data?.name ?? 'my_cte'}`">
+          CTE
+        </span>
 
         <!-- Expand related tables button -->
         <button
@@ -292,10 +350,35 @@ function clearAll() {
       <!-- ── Loading state ───────────────────────────────────── -->
       <div v-if="data.columnsLoading !== false && !details.length" class="px-3 py-2 text-[9px] text-muted-foreground/60 flex items-center gap-1.5">
         <div class="size-2 rounded-full border border-muted-foreground/30 border-t-sky-400 animate-spin" />
-        Loading columns…
+        กำลังโหลดคอลัมน์…
+      </div>
+      <!-- Load failed: clearly flag and offer retry (A5, C2) -->
+      <div
+        v-else-if="data.columnsLoadFailed === true"
+        class="px-3 py-2 flex items-center justify-between gap-2 bg-amber-500/10 border-t border-amber-500/30"
+      >
+        <div class="flex items-center gap-1.5 text-[10px] text-amber-500">
+          <AlertTriangle class="size-3" />
+          <span>โหลดคอลัมน์ไม่สำเร็จ</span>
+        </div>
+        <button
+          class="flex items-center gap-1 px-2 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/30 text-[9px] text-amber-300 font-medium"
+          @click.stop="dragDrop.retryLoadColumns(id)"
+        >
+          <RefreshCw class="size-2.5" /> ลองใหม่
+        </button>
       </div>
       <div v-else-if="data.columnsLoading === false && !details.length" class="px-3 py-2 text-[9px] text-muted-foreground/60 italic">
         ไม่พบ columns
+      </div>
+
+      <!-- ── Connected tools ───────────────────────────────── -->
+      <div v-if="connectedTools.length" class="flex flex-wrap gap-1 px-3 py-1.5 border-t border-border/30">
+        <span
+          v-for="tool in connectedTools" :key="tool.id"
+          class="text-[8px] px-1.5 py-0.5 rounded-full font-bold font-mono leading-none"
+          :style="{ backgroundColor: tool.color + '28', color: tool.color, border: `1px solid ${tool.color}55` }"
+        >→ {{ tool.label }}</span>
       </div>
     </div>
   </div>

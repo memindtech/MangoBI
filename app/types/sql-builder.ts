@@ -59,6 +59,21 @@ export function getEdgeStyle(joinType: JoinType): EdgeStyleConfig {
   }
 }
 
+// ── Tool Edge Styles (one color per tool type) ─────────────────────────────
+export const TOOL_EDGE_COLORS: Record<string, string> = {
+  cte:   '#8b5cf6',  // violet-500
+  calc:  '#14b8a6',  // teal-500
+  group: '#f97316',  // orange-500
+  sort:  '#22c55e',  // green-500
+  union: '#eab308',  // yellow-500
+  where: '#f43f5e',  // rose-500
+}
+
+export function getToolEdgeStyle(toolId: string) {
+  const color = TOOL_EDGE_COLORS[toolId] ?? '#94a3b8'
+  return { animated: false, style: { stroke: color, strokeWidth: 1.5, strokeDasharray: '6 4' } }
+}
+
 // ── Tool Node Types ─────────────────────────────────────────────────────────
 
 export type ToolId = 'cte' | 'calc' | 'group' | 'sort' | 'union' | 'where'
@@ -170,6 +185,7 @@ export interface CalcNodeData {
   nodeType: 'calc'
   _toolId:  'calc'
   items:    CalcItem[]
+  filters:  WhereCondition[]
 }
 
 export interface AggItem {
@@ -256,7 +272,7 @@ export interface GroupCteNodeData {
 
 export const TOOL_NODE_DEFAULTS: Record<ToolId, ToolNodeData> = {
   cte:   { nodeType: 'cte',   _toolId: 'cte',   name: 'my_cte', selectedCols: [], conditions: [] },
-  calc:  { nodeType: 'calc',  _toolId: 'calc',   items: [], filters: [] },
+  calc:  { nodeType: 'calc',  _toolId: 'calc',   items: [], filters: [] as WhereCondition[] },
   group: { nodeType: 'group', _toolId: 'group',  groupCols: [], aggs: [], filters: [] },
   sort:  { nodeType: 'sort',  _toolId: 'sort',   items: [] },
   union: { nodeType: 'union', _toolId: 'union',  name: '', unionType: 'UNION ALL', selectedCols: [], selectedColsMap: {}, conditions: [] },

@@ -23,7 +23,7 @@ function parseDate(value: any): { y: number; m: string; d: string } | null {
   const str = String(value)
   const match = str.match(/^(\d{4})-(\d{2})-(\d{2})/)
   if (!match) return null
-  return { y: parseInt(match[1]), m: match[2], d: match[3] }
+  return { y: parseInt(match[1]!), m: match[2]!, d: match[3]! }
 }
 
 export function formatDateValue(value: any, pattern: string, era: 'CE' | 'BE' = 'CE'): string {

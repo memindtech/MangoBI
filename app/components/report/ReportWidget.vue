@@ -33,7 +33,7 @@ const { t } = useI18n()
 const xField  = computed(() => props.widget.fields.xField  ?? '')
 const yField  = computed(() => props.widget.fields.yField  ?? '')
 const columns = computed(() => {
-  const all = props.rows.length ? Object.keys(props.rows[0]) : []
+  const all = props.rows.length ? Object.keys(props.rows[0]!) : []
   const sel = props.widget.fields.columns
   // Preserve click order (first come first serve) — iterate sel, not all
   return (sel?.length ? sel.filter(c => all.includes(c)) : all)
@@ -53,8 +53,8 @@ const tableColDefs = computed<ColDef[]>(() =>
     const isNum   = colMeta?.type === 'number'
     const isDate  = colMeta?.type === 'date' || (
       props.rows.length > 0 &&
-      typeof props.rows[0][col] === 'string' &&
-      /^\d{4}-\d{2}-\d{2}/.test(String(props.rows[0][col] ?? ''))
+      typeof props.rows[0]![col] === 'string' &&
+      /^\d{4}-\d{2}-\d{2}/.test(String(props.rows[0]![col] ?? ''))
     )
     const savedW  = props.widget.columnWidths?.[col]
     const fmt     = datasetFmt.value

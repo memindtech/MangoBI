@@ -19,6 +19,10 @@ export const useSqlBuilderStore = defineStore('sql-builder', () => {
   // ── UI State ────────────────────────────────────────────────────────────
   const generatedSQL   = ref('')
   const sqlPanelOpen   = ref(true)
+  // Warnings from the last SQL generation run (e.g. missing upstream CTE,
+  // dropped GROUP BY cols). Surfaced in SqlBuilderSqlPanel as a banner so
+  // users can see why generated SQL may be incomplete.
+  const lastGenerationWarnings = ref<string[]>([])
   const savedId           = ref<string | null>(null)   // current cloud-saved record id
   const savedName         = ref('')
   const savedIsPublic     = ref(false)
@@ -238,12 +242,19 @@ export const useSqlBuilderStore = defineStore('sql-builder', () => {
       }
     }
 
-    // Collect output columns of a GROUP BY node (groupCols + agg aliases)
-    // These are the only columns visible to nodes downstream of a GROUP BY.
+    // Collect output columns of a GROUP BY node (groupCols + agg aliases).
+    // Prefers _resolvedGroupCols (written by generateSQL) so names match the
+    // actual CTE output (collision-aliased). Falls back to raw groupCols before
+    // first SQL generation.
     function collectGroupOutputCols(groupNode: Node) {
-      const label     = 'GROUP BY'
-      const groupCols = (groupNode.data.groupCols ?? []) as string[]
-      const aggs      = ((groupNode.data.aggs ?? []) as any[]).filter((a: any) => a.col && a.func)
+      const label = 'GROUP BY'
+      // _resolvedGroupCols is populated by useSqlGenerator after each generateSQL() call
+      const resolvedCols = (groupNode.data._resolvedGroupCols ?? []) as string[]
+      const groupCols    = resolvedCols.length
+        ? resolvedCols
+        : (groupNode.data.groupCols ?? []) as string[]
+      const aggs = ((groupNode.data.aggs ?? []) as any[]).filter((a: any) => a.col && a.func)
+
       for (const col of groupCols) {
         const key = `grp:${col}`
         if (!seen.has(key)) {
@@ -402,7 +413,15 @@ export const useSqlBuilderStore = defineStore('sql-builder', () => {
           ? { ...n, data: { ...n.data, columnsLoading: false } }
           : n
       )
-      edges.value = state.edges
+      edges.value = state.edges.map((e: Edge) => {
+        // Migrate old edges that have isTool but are missing tgtToolId
+        if ((e as any).data?.isTool && !(e as any).data?.tgtToolId) {
+          const tgtNode = state.nodes.find((n: Node) => n.id === e.target) as any
+          const tgtToolId = tgtNode?.data?._toolId
+          if (tgtToolId) return { ...e, data: { ...(e as any).data, tgtToolId } }
+        }
+        return e
+      })
       return true
     } catch { return false }
   }
@@ -426,7 +445,8 @@ export const useSqlBuilderStore = defineStore('sql-builder', () => {
 
   return {
     // State
-    nodes, edges, generatedSQL, sqlPanelOpen, savedId, savedName, savedIsPublic, showFinishModal,
+    nodes, edges, generatedSQL, sqlPanelOpen, lastGenerationWarnings,
+    savedId, savedName, savedIsPublic, showFinishModal,
     activeEdgeId, selectedNodeId, selectedNodeIds,
     modalNodeId, filterNodeId, pendingToolId, pendingVp, relationEdgeId, newToolNodeId, search, clipboard, groupModalData,
     modules, objects, expandedMods, loadingMods, loadingObjs, searchLoading,

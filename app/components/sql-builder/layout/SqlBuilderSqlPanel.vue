@@ -3,7 +3,7 @@
  * SQL Builder — SQL Output Panel
  * Displays generated SQL with copy/resize functionality
  */
-import { Code2, ChevronDown, ChevronRight, Copy, Eye } from 'lucide-vue-next'
+import { Code2, ChevronDown, ChevronRight, Copy, Eye, AlertTriangle } from 'lucide-vue-next'
 import { useSqlBuilderStore } from '~/stores/sql-builder'
 import { useSqlGenerator } from '~/composables/sql-builder/useSqlGenerator'
 
@@ -122,6 +122,19 @@ function startResize(e: MouseEvent) {
       class="overflow-auto"
       :style="{ height: `${panelHeight - HEADER_H}px` }"
     >
+      <!-- Generation warnings (A1, A5) — shown above the SQL so users notice before copying -->
+      <div
+        v-if="store.lastGenerationWarnings?.length"
+        class="px-4 py-2 bg-amber-500/10 border-b border-amber-500/30 text-[11px] text-amber-600 dark:text-amber-300 flex flex-col gap-1"
+      >
+        <div class="flex items-center gap-1.5 font-semibold">
+          <AlertTriangle class="size-3.5" />
+          <span>ข้อควรระวัง ({{ store.lastGenerationWarnings.length }})</span>
+        </div>
+        <ul class="list-disc list-inside space-y-0.5 pl-1">
+          <li v-for="(w, i) in store.lastGenerationWarnings" :key="i">{{ w }}</li>
+        </ul>
+      </div>
       <pre v-if="displaySQL"
         class="px-4 py-3 text-xs font-mono whitespace-pre-wrap leading-relaxed">{{ displaySQL }}</pre>
       <div v-else class="flex items-center justify-center h-full text-xs text-muted-foreground">

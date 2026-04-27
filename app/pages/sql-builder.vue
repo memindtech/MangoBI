@@ -27,12 +27,26 @@ const { getViewport, updateNodeData: vfUpdateNodeData, findNode } = useVueFlow('
 const columnsLoading = computed(() =>
   store.nodes.some((n: any) => n.type === 'sqlTable' && n.data?.columnsLoading === true)
 )
+// True when any sqlTable node's last load attempt failed. generateSQL() itself
+// emits a warning in this case, but we also skip the auto-trigger so we don't
+// thrash the panel with a warning message on every render.
+const anyColumnsLoadFailed = computed(() =>
+  store.nodes.some((n: any) => n.type === 'sqlTable' && n.data?.columnsLoadFailed === true)
+)
 
-// When all columns finish loading, auto-regenerate if SQL panel is open
+// When all columns finish loading, auto-regenerate if SQL panel is open.
+// Note: if any load FAILED we still call generateSQL() so the user sees the
+// warning banner about which tables need retry — but only once per transition
+// (not on every unrelated data mutation).
 watch(columnsLoading, (loading) => {
   if (!loading && store.sqlPanelOpen) {
     generateSQL()
   }
+})
+// Re-run when a load failure is acknowledged (flag cleared) to produce the
+// real SQL after retry succeeds.
+watch(anyColumnsLoadFailed, () => {
+  if (!columnsLoading.value && store.sqlPanelOpen) generateSQL()
 })
 
 onMounted(async () => {
@@ -70,11 +84,15 @@ function syncNodeToVueFlow(nodeId: string) {
 watch(() => store.modalNodeId, (val, oldVal) => {
   if (!val && oldVal) {
     syncNodeToVueFlow(oldVal)
+    if (store.sqlPanelOpen) generateSQL()
   }
 })
 
 watch(() => store.filterNodeId, (val, oldVal) => {
-  if (!val && oldVal) syncNodeToVueFlow(oldVal)
+  if (!val && oldVal) {
+    syncNodeToVueFlow(oldVal)
+    if (store.sqlPanelOpen) generateSQL()
+  }
 })
 
 function onAddTool(toolId: string) {

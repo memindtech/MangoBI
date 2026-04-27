@@ -7,13 +7,15 @@ import type { JoinType } from '~/types/sql-builder'
 
 const props = defineProps<{
   id: string
+  source: string
+  target: string
   sourceX: number
   sourceY: number
   targetX: number
   targetY: number
   sourcePosition: Position
   targetPosition: Position
-  data?: { joinType?: JoinType; mappings?: any[]; isTool?: boolean; unionSrc?: boolean; srcCat?: string }
+  data?: { joinType?: JoinType; mappings?: any[]; isTool?: boolean; tgtToolId?: string; srcCat?: string }
   selected?: boolean
   markerEnd?: string
   style?: object
@@ -36,31 +38,30 @@ const edgePath = computed(() => pathData.value[0])
 const labelX   = computed(() => pathData.value[1])
 const labelY   = computed(() => pathData.value[2])
 
-const joinType  = computed(() => (props.data?.joinType ?? 'LEFT JOIN') as JoinType)
-const color     = computed(() => JOIN_EDGE_COLORS[joinType.value] ?? '#888')
+const joinType = computed(() => (props.data?.joinType ?? 'LEFT JOIN') as JoinType)
+const color    = computed(() => JOIN_EDGE_COLORS[joinType.value] ?? '#888')
 
 // Show JOIN badge only for table-to-table edges
-const showJoinBadge  = computed(() => !!props.data?.joinType && !props.data?.isTool)
-// Show UNION source badge for union-source edges
-const showUnionBadge = computed(() => !!props.data?.unionSrc)
+const showJoinBadge = computed(() => !!props.data?.joinType && !props.data?.isTool)
 
-// Mappings (for counting only — not displayed on edge)
-const mappings    = computed(() => (props.data?.mappings ?? []).filter((m: any) => m.source && m.target) as Array<{ source: string; target: string; operator?: string }>)
-const hasMappings = computed(() => mappings.value.length > 0)
-
-// Color + label per source category
-const UNION_SRC_META: Record<string, { color: string; label: string }> = {
-  cte:   { color: '#a78bfa', label: 'CTE'   },
-  union: { color: '#eab308', label: 'UNION' },
-  table: { color: '#38bdf8', label: 'TABLE' },
-  where: { color: '#f87171', label: 'WHERE' },
-  group: { color: '#fb923c', label: 'GROUP' },
-  calc:  { color: '#2dd4bf', label: 'CALC'  },
-  other: { color: '#94a3b8', label: 'SRC'   },
+// Show tool badge for all tool-connection edges
+const TOOL_BADGE_META: Record<string, { color: string; label: string }> = {
+  cte:   { color: '#8b5cf6', label: 'CTE'      },
+  calc:  { color: '#14b8a6', label: 'CALC'     },
+  group: { color: '#f97316', label: 'GROUP BY' },
+  sort:  { color: '#22c55e', label: 'ORDER BY' },
+  union: { color: '#eab308', label: 'UNION'    },
+  where: { color: '#f43f5e', label: 'WHERE'    },
 }
-const unionSrcMeta = computed(() =>
-  UNION_SRC_META[props.data?.srcCat ?? 'other'] ?? UNION_SRC_META.other
-)
+const showToolBadge = computed(() => !!props.data?.isTool)
+const toolBadgeMeta = computed(() => {
+  let tid = props.data?.tgtToolId ?? ''
+  if (!tid && props.data?.isTool) {
+    const tgtNode = store.nodes.find((n: any) => n.id === props.target) as any
+    tid = tgtNode?.data?._toolId ?? ''
+  }
+  return TOOL_BADGE_META[tid] ?? { color: '#94a3b8', label: 'TOOL' }
+})
 
 function deleteEdge() {
   store.edges = store.edges.filter((e: any) => e.id !== props.id)
@@ -76,7 +77,7 @@ function openEdit() {
 <template>
   <BaseEdge :id="id" :path="edgePath" :marker-end="markerEnd" :style="style" />
 
-  <EdgeLabelRenderer v-if="showJoinBadge || showUnionBadge || selected">
+  <EdgeLabelRenderer v-if="showJoinBadge || showToolBadge || selected">
     <div
       :style="{
         position: 'absolute',
@@ -85,7 +86,7 @@ function openEdit() {
       }"
       class="nodrag nopan flex flex-col items-center gap-0.5"
     >
-      <!-- JOIN type badge -->
+      <!-- JOIN type badge (table → table edges) -->
       <button
         v-if="showJoinBadge"
         @click.stop="openEdit"
@@ -96,14 +97,17 @@ function openEdit() {
         {{ joinType.replace(' JOIN', '') }}
       </button>
 
-
-      <!-- Union source badge -->
+      <!-- Tool type badge (table / tool → tool node edges) -->
       <span
-        v-if="showUnionBadge"
+        v-if="showToolBadge"
         class="text-[8px] px-1.5 py-0.5 rounded-full font-bold font-mono leading-none shadow-sm pointer-events-none select-none"
-        :style="{ backgroundColor: unionSrcMeta.color + '33', color: unionSrcMeta.color, border: `1px solid ${unionSrcMeta.color}66` }"
+        :style="{
+          backgroundColor: toolBadgeMeta.color + '28',
+          color: toolBadgeMeta.color,
+          border: `1px solid ${toolBadgeMeta.color}55`,
+        }"
       >
-        {{ unionSrcMeta.label }} ▶
+        {{ toolBadgeMeta.label }}
       </span>
 
       <!-- Delete button — visible only when edge is selected -->

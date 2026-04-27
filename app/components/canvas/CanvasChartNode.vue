@@ -19,7 +19,7 @@ const rows     = computed(() => canvasStore.nodeInputs[props.id] ?? [])
 const config   = computed(() => canvasStore.nodeConfigs[props.id] ?? {})
 const hasData  = computed(() => rows.value.length > 0)
 
-const columns     = computed(() => rows.value.length ? Object.keys(rows.value[0]) : [])
+const columns     = computed(() => rows.value.length ? Object.keys(rows.value[0]!) : [])
 const numericCols = computed(() => columns.value.filter(k => typeof rows.value[0]?.[k] === 'number'))
 
 const xField    = computed(() => config.value.xField    ?? '')
@@ -53,7 +53,7 @@ const chartRows = computed(() => {
     const step = Math.ceil(all.length / limit)
     const sampled: typeof all = []
     for (let i = 0; i < all.length && sampled.length < limit; i += step)
-      sampled.push(all[i])
+      sampled.push(all[i]!)
     return sampled
   }
 

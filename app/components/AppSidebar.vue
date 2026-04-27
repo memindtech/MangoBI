@@ -166,7 +166,7 @@ function isActive(path: string) {
               <SidebarMenuButton :tooltip="t('nav_language')">
                 <Languages class="size-4 shrink-0" />
                 <span class="group-data-[collapsible=icon]:hidden">
-                  {{ currentLang.flag }} {{ currentLang.label }}
+                  {{ currentLang!.flag }} {{ currentLang!.label }}
                 </span>
               </SidebarMenuButton>
             </DropdownMenuTrigger>

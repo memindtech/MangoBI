@@ -30,7 +30,7 @@ export function groupChartData(
     const bucket = buckets.get(key)!
     for (const f of yFields) {
       const v = Number(row[f])
-      if (!Number.isNaN(v)) bucket[f].push(v)
+      if (!Number.isNaN(v)) bucket[f]!.push(v)
     }
   }
 

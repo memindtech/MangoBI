@@ -365,7 +365,7 @@ function viewFilteredRows(w: Widget): any[] {
       if (op === 'contains') return cell.includes(v)
       return cell === v
     }
-    return matchCondition(r, { column: f.column, operator: f.operator, value: resolved, values: [] })
+    return matchCondition(r, { id: '', column: f.column, operator: f.operator, value: resolved, values: [] })
   }))
 }
 
