@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import {
   BarChart2, Share2,
-  Sun, Moon, LogOut, ChevronUp, Languages, ALargeSmall,
-  LayoutDashboard, Send, Code2, UserCircle,
+  LogOut, ChevronUp,
+  LayoutDashboard, Send, Code2, UserCircle, Settings,
 } from 'lucide-vue-next'
 import {
   Sidebar, SidebarContent, SidebarFooter, SidebarGroup,
@@ -13,13 +13,10 @@ import {
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem,
   DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
-  DropdownMenuRadioGroup, DropdownMenuRadioItem,
 } from '@/components/ui/dropdown-menu'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 
-const { t, locale, setLocale } = useI18n()
-const colorMode = useColorMode()
-const { fontSize, fontSizeOptions, applySize } = useAppFontSize()
+const { t } = useI18n()
 const authStore = useAuthStore()
 const route  = useRoute()
 const router = useRouter()
@@ -42,25 +39,8 @@ const navItems = [
   { icon: LayoutDashboard, label: 'Report Builder',  path: '/report'       },
   { icon: Send,            label: 'Send Report',     path: '/send-report'  },
   { icon: Code2,           label: 'SQL Builder',     path: '/sql-builder'  },
+  { icon: Settings,        label: 'Settings',        path: '/settings'     },
 ]
-
-// ตัวเลือกภาษา
-const languages = [
-  { code: 'th', label: 'ไทย',    flag: '🇹🇭' },
-  { code: 'en', label: 'English', flag: '🇬🇧' },
-  { code: 'cn', label: '中文',    flag: '🇨🇳' },
-]
-
-const currentLang = computed(() => languages.find(l => l.code === locale.value) ?? languages[0])
-const isDark = computed(() => colorMode.value === 'dark')
-
-function toggleTheme() {
-  colorMode.preference = isDark.value ? 'light' : 'dark'
-}
-
-function switchLocale(code: string) {
-  setLocale(code as any)
-}
 
 function logout(allDevices = false) {
   authStore.handleLogout(allDevices)
@@ -117,77 +97,7 @@ function isActive(path: string) {
 
     <!-- ===== FOOTER ===== -->
     <SidebarFooter>
-      <SidebarSeparator />
       <SidebarMenu>
-
-        <!-- Theme Toggle -->
-        <SidebarMenuItem>
-          <SidebarMenuButton :tooltip="isDark ? t('nav_theme_light') : t('nav_theme_dark')" @click="toggleTheme">
-            <Sun v-if="isDark" class="size-4 shrink-0" />
-            <Moon v-else class="size-4 shrink-0" />
-            <span class="group-data-[collapsible=icon]:hidden">
-              {{ isDark ? t('nav_theme_light') : t('nav_theme_dark') }}
-            </span>
-          </SidebarMenuButton>
-        </SidebarMenuItem>
-
-        <!-- Font Size -->
-        <SidebarMenuItem>
-          <DropdownMenu>
-            <DropdownMenuTrigger as-child>
-              <SidebarMenuButton :tooltip="t('nav_font_size')">
-                <ALargeSmall class="size-4 shrink-0" />
-                <span class="group-data-[collapsible=icon]:hidden">
-                  {{ t('nav_font_size') }} ({{ fontSize }}px)
-                </span>
-              </SidebarMenuButton>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent side="right" align="end" class="min-w-44">
-              <DropdownMenuLabel>{{ t('nav_font_size') }}</DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              <DropdownMenuRadioGroup :model-value="String(fontSize)" @update:model-value="v => applySize(Number(v))">
-                <DropdownMenuRadioItem
-                  v-for="opt in fontSizeOptions"
-                  :key="opt.value"
-                  :value="String(opt.value)"
-                  class="cursor-pointer"
-                >
-                  {{ opt.label }}
-                </DropdownMenuRadioItem>
-              </DropdownMenuRadioGroup>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </SidebarMenuItem>
-
-        <!-- Language Switcher -->
-        <SidebarMenuItem>
-          <DropdownMenu>
-            <DropdownMenuTrigger as-child>
-              <SidebarMenuButton :tooltip="t('nav_language')">
-                <Languages class="size-4 shrink-0" />
-                <span class="group-data-[collapsible=icon]:hidden">
-                  {{ currentLang!.flag }} {{ currentLang!.label }}
-                </span>
-              </SidebarMenuButton>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent side="right" align="end" class="min-w-40">
-              <DropdownMenuLabel>{{ t('nav_language') }}</DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              <DropdownMenuRadioGroup :model-value="locale" @update:model-value="switchLocale">
-                <DropdownMenuRadioItem
-                  v-for="lang in languages"
-                  :key="lang.code"
-                  :value="lang.code"
-                  class="cursor-pointer"
-                >
-                  {{ lang.flag }} {{ lang.label }}
-                </DropdownMenuRadioItem>
-              </DropdownMenuRadioGroup>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </SidebarMenuItem>
-
-        <SidebarSeparator />
 
         <!-- User + Logout -->
         <SidebarMenuItem>

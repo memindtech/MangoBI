@@ -5,6 +5,7 @@
  *   add_edge      — connect two table nodes
  *   add_table     — add new table node
  *   remove_edge   — remove edge between tables
+ *   add_cte       — create CTE wrapper tool node (source: table name | '_last')
  *   add_group_by  — create Group/By tool node
  *   add_where     — create WHERE filter tool node
  *   add_sort      — create ORDER BY tool node
@@ -78,6 +79,14 @@ export interface AiActionUpdateTool {
   calcItems?:  Array<{ col: string; op: string; value: string; alias: string }>
 }
 
+export interface AiActionAddCte {
+  type:          'add_cte'
+  source?:       string   // table name | '_last' → auto leaf node
+  name:          string   // CTE alias in WITH clause
+  selectedCols?: string[]
+  conditions?:   Array<{ column: string; operator: string; value: string }>
+}
+
 export interface AiActionSetVisibleCols {
   type:      'set_visible_cols'
   tableName: string
@@ -88,6 +97,7 @@ export type AiCanvasAction =
   | AiActionAddEdge
   | AiActionAddTable
   | AiActionRemoveEdge
+  | AiActionAddCte
   | AiActionAddGroupBy
   | AiActionAddWhere
   | AiActionAddSort
@@ -118,6 +128,11 @@ export function describeAction(action: AiCanvasAction): string {
       return `เพิ่ม table: ${action.tableName}`
     case 'remove_edge':
       return `ลบ edge ระหว่าง ${action.source} กับ ${action.target}`
+    case 'add_cte': {
+      const src  = action.source && action.source !== '_last' ? action.source : 'node สุดท้าย'
+      const cols = action.selectedCols?.length ? ` cols: ${action.selectedCols.join(', ')}` : ''
+      return `สร้าง CTE "${action.name}" บน ${src}${cols}`
+    }
     case 'add_group_by': {
       const groups = action.groupCols.join(', ')
       const aggs   = action.aggs.map(a => `${a.func}(${a.col}) AS ${a.alias}`).join(', ')
@@ -162,6 +177,17 @@ export function useAiActions() {
 
   function findToolNode(toolType: string) {
     return store.nodes.find((n: any) => n.type === 'toolNode' && n.data?.nodeType === toolType)
+  }
+
+  /** Find the leaf node — the last node with no outgoing tool edge (CTE target) */
+  function findLeafNode() {
+    const toolSources = new Set(
+      store.edges.filter((e: any) => e.data?.isTool).map((e: any) => e.source)
+    )
+    return (
+      store.nodes.find((n: any) => n.type === 'toolNode' && !toolSources.has(n.id)) ??
+      store.nodes.find((n: any) => !toolSources.has(n.id))
+    )
   }
 
   /** Place new tool node to the right of a source node */
@@ -250,6 +276,26 @@ export function useAiActions() {
         if (!edge) return { ok: false, message: `ไม่พบ edge` }
         store.edges = store.edges.filter((e: any) => e.id !== edge.id)
         return { ok: true, message: `ลบ edge สำเร็จ` }
+      }
+
+      // ── CTE wrapper ────────────────────────────────────────────────────
+      case 'add_cte': {
+        let srcNode: any = null
+        if (action.source && action.source !== '_last') {
+          srcNode = findNodeByTable(action.source)
+            ?? store.nodes.find((n: any) => n.id === action.source)
+        }
+        if (!srcNode) srcNode = findLeafNode()
+        if (!srcNode) return { ok: false, message: 'ไม่พบ node ต้นทาง สำหรับ CTE' }
+
+        createToolNode(srcNode.id, 'cte', {
+          name:         action.name ?? 'my_cte',
+          selectedCols: action.selectedCols ?? [],
+          conditions:   (action.conditions ?? []).map(c => ({
+            column: c.column, operator: c.operator, value: c.value,
+          })),
+        })
+        return { ok: true, message: `สร้าง CTE "${action.name ?? 'my_cte'}" สำเร็จ` }
       }
 
       // ── Tool node creation ──────────────────────────────────────────────

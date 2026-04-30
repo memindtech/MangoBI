@@ -19,14 +19,6 @@ export default defineNuxtConfig({
     // ค่าจริงอยู่ใน .env → NUXT_MANGO_BASE / NUXT_MANGO_SCHEMA_PASSCODE
     mangoBase: '',
     mangoSchemaPasscode: '',
-    // ── AI Assistant (server-only — keys ไม่เปิดเผย browser) ──────────────────
-    aiEnabled:    false,              // NUXT_AI_ENABLED=true  ← เปิดสำหรับลูกค้าที่จ่าย
-    aiProvider:   'claude',           // NUXT_AI_PROVIDER: 'claude' | 'gemini' | 'backend'
-    claudeApiKey: '',                 // NUXT_CLAUDE_API_KEY
-    geminiApiKey: '',                 // NUXT_GEMINI_API_KEY
-    geminiModel:  'gemini-2.0-flash', // NUXT_GEMINI_MODEL
-    aiBackendUrl:   'https://backend-ai.mangoanywhere.com/api/chat', // NUXT_AI_BACKEND_URL
-    aiBackendModel: '',  // NUXT_AI_BACKEND_MODEL e.g. 'qwen3.5:9b'
     public: {
       // ค่าจริงอยู่ใน .env → NUXT_PUBLIC_API_BASE / NUXT_PUBLIC_PLANNING_BASE / NUXT_PUBLIC_BI_BASE
       apiBase:      '',

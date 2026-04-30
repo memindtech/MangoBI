@@ -74,6 +74,28 @@ const CATALOG: Record<string, Omit<AiModelMeta, 'name'>> = {
     tags:  ['General'],
     desc:  'Gemma 3 รุ่น latest ทั่วไป Google DeepMind',
   },
+  // ThaiLLM (http://thaillm.or.th)
+  'typhoon-s-thaillm-8b-instruct': {
+    label: 'Typhoon-S ThaiLLM 8B',
+    tags:  ['Thai', 'ThaiLLM'],
+    desc:  'โมเดลภาษาไทยจาก ThaiLLM.or.th เน้นความเข้าใจภาษาไทยโดยเฉพาะ',
+  },
+  // Typhoon (api.opentyphoon.ai)
+  'typhoon-v2.1-12b-instruct': {
+    label: 'Typhoon v2.1 12B',
+    tags:  ['Thai', 'Instruct'],
+    desc:  'Typhoon v2.1 รุ่น 12B เน้นภาษาไทย คุณภาพสูง',
+  },
+  'typhoon-v2-70b-instruct': {
+    label: 'Typhoon v2 70B',
+    tags:  ['Thai', 'High Quality'],
+    desc:  'Typhoon v2 รุ่น 70B คุณภาพสูงสุด เหมาะงานซับซ้อน',
+  },
+  'typhoon-v2-r1-70b': {
+    label: 'Typhoon v2 R1 70B',
+    tags:  ['Thai', 'Reasoning'],
+    desc:  'Typhoon v2 R1 มี reasoning capability สำหรับงานวิเคราะห์ลึก',
+  },
 }
 
 // ── Context window limits (tokens) ────────────────────────────────────────
@@ -90,6 +112,12 @@ export const MODEL_CONTEXT: Record<string, number> = {
   'llama3.2:latest':131072,
   'translategemma:4b': 8192,
   'scb10x/llama3.1-typhoon2-8b-instruct:latest': 8192,
+  // ThaiLLM
+  'typhoon-s-thaillm-8b-instruct': 8192,
+  // Typhoon (opentyphoon.ai)
+  'typhoon-v2.1-12b-instruct': 8192,
+  'typhoon-v2-70b-instruct':   8192,
+  'typhoon-v2-r1-70b':         8192,
 }
 
 export function getContextLimit(modelName: string): number {

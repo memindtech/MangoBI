@@ -10,6 +10,7 @@ import {
   CloudDownload, Loader2, FileCode2, CheckCheck, Globe,
   FolderOpen, PlusCircle, Sparkles,
 } from 'lucide-vue-next'
+import { SidebarTrigger } from '@/components/ui/sidebar'
 import { useAiChatStore } from '~/stores/ai-chat'
 import { useAiFeature } from '~/composables/useAiFeature'
 
@@ -418,6 +419,8 @@ function nodeStats(nodes: any[]) {
 
 <template>
   <header class="flex items-center gap-3 px-4 h-11 border-b shrink-0 bg-background z-20">
+    <SidebarTrigger class="-ml-1" />
+    <div class="h-4 w-px bg-border" />
     <!-- Title -->
     <div class="flex items-center gap-2">
       <div class="flex size-7 items-center justify-center rounded-lg bg-sky-500/10 border border-sky-500/20">
@@ -557,6 +560,9 @@ function nodeStats(nodes: any[]) {
         <Sparkles class="size-3.5" />
         AI
       </button>
+
+      <div class="h-4 w-px bg-border" />
+      <AppDisplayControls />
     </div>
   </header>
 

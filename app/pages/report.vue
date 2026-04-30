@@ -17,11 +17,20 @@ import type { DataRow } from '~/stores/canvas'
 import { parseColumnMapping } from '~/utils/columnMapping'
 import { resolveDynamicValue, DATE_TOKEN_TODAY, DATE_TOKEN_YESTERDAY, DATE_TOKEN_LABELS } from '~/utils/transformData'
 import { formatDateValue, formatNumericValue } from '~/utils/formatValue'
-import { AgGridVue } from 'ag-grid-vue3'
-import { ClientSideRowModelModule, CommunityFeaturesModule, ModuleRegistry } from 'ag-grid-community'
 import type { ColDef } from 'ag-grid-community'
 
-ModuleRegistry.registerModules([ClientSideRowModelModule, CommunityFeaturesModule])
+let _agGridReady = false
+const AgGridVue = defineAsyncComponent(async () => {
+  const [{ AgGridVue: Grid }, { ClientSideRowModelModule, CommunityFeaturesModule, ModuleRegistry }] = await Promise.all([
+    import('ag-grid-vue3'),
+    import('ag-grid-community'),
+  ])
+  if (!_agGridReady) {
+    ModuleRegistry.registerModules([ClientSideRowModelModule, CommunityFeaturesModule])
+    _agGridReady = true
+  }
+  return Grid
+})
 
 // ─── Page meta ────────────────────────────────────────────────────────────────
 definePageMeta({ layout: false, auth: true })
@@ -35,7 +44,7 @@ const store  = useReportStore()
 const router = useRouter()
 const { $xt } = useNuxtApp() as any
 
-const { systemPrompt: aiSystemPrompt, contextLabel: aiContextLabel } = useAiContext()
+const { context: aiContext, contextLabel: aiContextLabel } = useAiContext()
 const aiStore = useAiChatStore()
 const { enabled: aiEnabled } = useAiFeature()
 
@@ -983,6 +992,9 @@ async function doDeleteRp(id: string) {
           <Sparkles class="size-3.5" />
           AI
         </button>
+
+        <div class="h-4 w-px bg-border" />
+        <AppDisplayControls />
       </div>
     </header>
 
@@ -2046,7 +2058,7 @@ async function doDeleteRp(id: string) {
     <AiPanel
       v-if="aiEnabled && aiStore.openPage === 'report'"
       page="report"
-      :system-prompt="aiSystemPrompt"
+      :context="aiContext"
       :context-label="aiContextLabel"
     />
 

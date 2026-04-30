@@ -1,28 +1,32 @@
 /**
  * GET /api/ai/config
  *
- * คืน AI feature state สำหรับ client
- * ไม่เปิดเผย API keys — แค่บอกว่า enabled ไหม และ provider อะไร
+ * Returns AI feature state for client — no API keys exposed.
+ * Reads from DB config (per-maincode) with .env fallback.
  */
-export default defineEventHandler((event) => {
-  const config = useRuntimeConfig(event)
+import type { AiConfigFull } from '../../utils/ai/config'
 
-  // config.aiEnabled may be boolean (default false) or string 'true'/'false' (from .env)
-  const enabled = config.aiEnabled === true || String(config.aiEnabled) === 'true'
+export default defineEventHandler(async (event) => {
+  // For public viewers (no session): show the button locked — actual AI calls still require auth
+  const sessionId = getSessionId(event)
+  const session   = sessionId ? await getSession(sessionId) : null
+  if (!session) return { enabled: true, provider: null, model: null }
+
+  const cfg = await getAiConfigFull(event)
 
   return {
-    enabled,
-    provider: enabled ? (config.aiProvider ?? 'claude') : null,
-    // model label สำหรับแสดง UI เท่านั้น
-    model: enabled ? getModelLabel(config.aiProvider ?? 'claude', config) : null,
+    enabled:  cfg.enabled,
+    provider: cfg.enabled ? cfg.provider : null,
+    model:    cfg.enabled ? getModelLabel(cfg.provider, cfg) : null,
   }
 })
 
-function getModelLabel(provider: string, config: any): string {
+function getModelLabel(provider: string, cfg: AiConfigFull): string {
   switch (provider) {
-    case 'claude':  return 'Claude Sonnet'
-    case 'gemini':  return `Gemini ${config.geminiModel ?? '2.0 Flash'}`
-    case 'backend': return 'MangoBI AI'
-    default:        return provider
+    case 'claude':  return cfg.model ?? 'claude-sonnet-4-6'
+    case 'gemini':  return cfg.model ?? 'gemini-2.0-flash'
+    case 'openai':  return cfg.model ?? ''
+    case 'backend': return cfg.backendModel ?? ''
+    default:        return ''
   }
 }

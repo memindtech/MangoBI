@@ -63,8 +63,22 @@ const loginBusy       = ref(false)
 const loginError      = ref('')
 const loginForm       = reactive({ maincode: '', userid: '', userpass: '' })
 
+interface Company { maincode: string; mainname: string }
+const companies = ref<Company[]>([])
+const loginCompanyName = computed(() => {
+  if (!loginForm.maincode) return ''
+  return companies.value.find(c => c.maincode === loginForm.maincode)?.mainname ?? loginForm.maincode
+})
+
 async function checkAuth() {
   try { await $fetch('/api/auth/me'); isAuthed.value = true } catch { isAuthed.value = false }
+}
+
+async function loadCompanies() {
+  try {
+    const res: any = await $fetch('/api/auth/companies')
+    companies.value = (res?.data ?? []).filter((c: any) => c.show === 'Y')
+  } catch { /* ignore */ }
 }
 
 async function submitViewerLogin() {
@@ -94,7 +108,8 @@ function onAiButtonClick() {
 }
 
 onMounted(async () => {
-  checkAuth()   // silent — don't block page load
+  checkAuth()       // silent — don't block page load
+  loadCompanies()   // pre-fetch for login form display
 
   // ── ตรวจสอบ link expiry ─────────────────────────────────────────────────
   const expParam = route.query.exp
@@ -112,7 +127,8 @@ onMounted(async () => {
   try {
     const row = await biApi.loadPublicReport(route.params.id as string)
     if (!row) { error.value = 'Report not found'; return }
-    reportName.value = row.name ?? ''
+    reportName.value    = row.name ?? ''
+    loginForm.maincode  = row.maincode ?? ''
     const payload     = JSON.parse(row.widgetsJson  ?? '{}')
     const cachedRows: any[] = row.datasetsJson ? JSON.parse(row.datasetsJson) : []
 
@@ -693,7 +709,7 @@ function onRelatedFirstData(e: any) { e.api.autoSizeAllColumns() }
 // ── AI Assistant ──────────────────────────────────────────────────────────────
 const aiStore = useAiChatStore()
 const { enabled: aiEnabled } = useAiFeature()
-const { systemPrompt: aiSystemPrompt, contextLabel: aiContextLabel } = useViewAiContext(
+const { context: aiContext, contextLabel: aiContextLabel } = useViewAiContext(
   reportName,
   datasets,
   widgets,
@@ -1196,7 +1212,7 @@ const { systemPrompt: aiSystemPrompt, contextLabel: aiContextLabel } = useViewAi
     <AiPanel
       v-if="aiEnabled && aiStore.openPage === 'view'"
       page="view"
-      :system-prompt="aiSystemPrompt"
+      :context="aiContext"
       :context-label="aiContextLabel"
     />
 
@@ -1225,13 +1241,10 @@ const { systemPrompt: aiSystemPrompt, contextLabel: aiContextLabel } = useViewAi
 
             <!-- Form -->
             <div class="space-y-2">
-              <input
-                v-model="loginForm.maincode"
-                placeholder="รหัสบริษัท"
-                class="w-full text-xs border rounded-lg px-3 py-2 bg-background
-                       focus:outline-none focus:ring-2 focus:ring-violet-500
-                       placeholder:text-muted-foreground/50"
-              />
+              <div class="w-full text-xs border rounded-lg px-3 py-2 bg-muted/50
+                          text-muted-foreground select-none truncate">
+                {{ loginCompanyName || '—' }}
+              </div>
               <input
                 v-model="loginForm.userid"
                 placeholder="ชื่อผู้ใช้"

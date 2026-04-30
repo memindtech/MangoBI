@@ -1,6 +1,4 @@
 <script setup lang="ts">
-import * as echarts from 'echarts'
-
 const props = defineProps<{
   option: Record<string, any>
   /** Base font size for axis labels and text (default: 11) */
@@ -13,7 +11,13 @@ const emit = defineEmits<{
 
 const el        = ref<HTMLDivElement | null>(null)
 const colorMode = useColorMode()
-let   chart:          echarts.ECharts | null = null
+let   chart:          any = null
+
+let _lib: typeof import('echarts') | null = null
+async function loadEcharts() {
+  if (!_lib) _lib = await import('echarts')
+  return _lib
+}
 let   ro:             ResizeObserver  | null = null
 let   zrClickHandler: ((e: any) => void) | null = null
 let   suppressZrClick = false
@@ -80,9 +84,10 @@ function registerClick() {
   chart.getZr().on('click', zrClickHandler)
 }
 
-function init() {
+async function init() {
   if (!el.value) return
-  chart = echarts.init(el.value, null, { renderer: 'canvas' })
+  const ec = await loadEcharts()
+  chart = ec.init(el.value, null, { renderer: 'canvas' })
   chart.setOption(mergedOption.value)
   registerClick()
 }

@@ -52,16 +52,21 @@ Report Viewer → แสดงผล + AI Assist วิเคราะห์
 app/
 ├── components/     ai/, canvas/, datamodel/, dialogs/, report/, sql-builder/, ui/
 ├── composables/    datamodel/, report/, sql-builder/, view/, useAiChat.ts, useMangoBIApi.ts
-├── pages/          datamodel.vue (196KB), report.vue (101KB), sql-builder.vue, view/[id].vue
+├── pages/          datamodel.vue (196KB), report.vue (101KB), sql-builder.vue, view/[id].vue, settings.vue
 ├── stores/         ai-chat.ts, auth.ts, canvas.ts, datamodel.ts, report.ts, sql-builder.ts
 └── utils/          columnMapping.ts, computedColumn.ts, formatValue.ts, transformData.ts
 server/
 ├── api/
-│   ├── ai/         chat, config, models
+│   ├── ai/         chat.post.ts, config.get.ts, models.get.ts, clear-config-cache.post.ts
 │   ├── auth/       login, logout, me, companies
 │   ├── proxy/      bi/[...path].ts, main/[...path].ts, planning/[...path].ts
 │   └── mango-schema/
 └── utils/
+    ├── ai/
+    │   ├── config.ts     ← getAiConfigFull(), invalidateAiConfigCache() + AiConfigFull type
+    │   └── contexts.ts   ← buildSystemPrompt() + context builders ทุก page + AiContextPayload types
+    ├── biSession.ts
+    └── ...
 ```
 
 **สิ่งสำคัญ:**
@@ -151,15 +156,16 @@ User → Login (Anywhere) → token
 - **Data Model** — canvas, relations, transforms, computed columns, AI context
 - **Report Builder** — widgets (bar/line/pie/table/kpi/stacked), filters, send/share
 - **Report Viewer** (`/view/:id`) — แสดงผล shared report + AI Analyst
-- **AI Assist** — AiPanel, AiMessage, useAiChat, useAiModels, useAiActions (Claude/Gemini/backend)
+- **AI Assist** — AiPanel, useAiChat (context-based), useAiModels, useAiActions (Claude/Gemini/OpenAI/backend)
+- **AI Config** — Settings page (`/settings`), per-maincode DB config, ไม่ใช้ .env
+- **AI Server-side Contexts** — `server/utils/ai/contexts.ts` สร้าง system prompt จาก state data; frontend composables เป็นแค่ state collectors
 - **Scheduler** — LINE/Email scheduled delivery (backend)
 - **Diagnostics** — Admin page (`/mango-grove`)
 - **Auth** — Azure MSAL + Mango Token + Company selection
 - **Data Refresh** — re-execute SQL on load ใน DataModel + Report pages (ดู Section 6)
 
 ### ⚠️ ยังขาด / กำลังทำ
-- **AI Raw Data Context** — `useAiContext.ts` ยังส่งแค่ aggregated totals → ต้องเพิ่ม raw rows summary
-- Composable `view/useViewAiContext.ts` เพิ่งสร้าง (ยังไม่ได้ integrate กับ `/view/:id`)
+- **AI Raw Data Context** — `contexts.ts` ยังส่งแค่ metadata → ต้องเพิ่ม raw rows summary ใน `server/utils/ai/contexts.ts`
 - DataModel-exported datasets ใน Report ยังไม่ auto-refresh (ต้อง re-export จาก DataModel page)
 
 ---
@@ -230,10 +236,10 @@ applyTransform(enrichedRows, transformConfig)   ← groupBy, aggregations, date 
 
 ### ⏳ งานที่ยังเหลือ (AI Raw Data)
 
-อัปเดต AI context composables ให้ส่ง raw data เพิ่มเติม:
-- `app/composables/datamodel/useAiContext.ts` — เพิ่ม sample rows + column stats
-- `app/composables/report/useAiContext.ts` — เพิ่ม raw dataset summary
-- ปัจจุบัน `useViewAiContext.ts` ส่งเฉพาะ aggregated totals — ต้องเพิ่ม raw access สำหรับ AI ใน viewer ด้วย
+อัปเดต context builders ใน `server/utils/ai/contexts.ts` ให้ include raw data:
+- `buildDataModelPrompt()` — เพิ่ม sample rows + column stats (ส่งมาใน `DataModelContextData`)
+- `buildReportPrompt()` — เพิ่ม raw dataset summary (ส่งมาใน `ReportContextData`)
+- Frontend composables ต้อง collect rows เพิ่มใน contextData ที่ส่งขึ้นไปด้วย
 
 ---
 
@@ -242,14 +248,11 @@ applyTransform(enrichedRows, transformConfig)   ← groupBy, aggregations, date 
 ### Frontend (`.env`)
 ```env
 NUXT_MANGO_BASE=http://<mango-server>/service/     # ERP backend (server-side only)
-NUXT_PUBLIC_API_BASE=http://localhost:8310/api/v1  # Planning backend
+NUXT_PUBLIC_API_BASE=http://localhost:8310/api/v1  # Planning backend (trailing slash OK)
 NUXT_PUBLIC_PLANNING_BASE=http://localhost:8310/api/v1
+NUXT_PUBLIC_BI_BASE=http://localhost:8310/api/v1   # MangoBI backend (biProxy)
 
-# AI (optional)
-NUXT_AI_ENABLED=true
-NUXT_AI_PROVIDER=claude               # claude | gemini | backend
-NUXT_CLAUDE_API_KEY=sk-ant-...
-NUXT_AI_BACKEND_URL=https://backend-ai.mangoanywhere.com/api/chat
+# AI: ตั้งค่าที่หน้า /settings เท่านั้น — ไม่มี env vars สำหรับ AI อีกต่อไป
 ```
 
 ### Backend (`.env`)
@@ -267,15 +270,20 @@ Anywhere__BaseUrl=http://localhost/service/
 | `app/pages/datamodel.vue` | Data Model builder (196KB) — ใหญ่มาก |
 | `app/pages/report.vue` | Report builder (101KB) |
 | `app/pages/view/[id].vue` | Report viewer |
+| `app/pages/settings.vue` | AI config UI (provider/model/key/toggle) |
 | `app/stores/datamodel.ts` | Pinia store: tables, relations, transforms |
 | `app/stores/report.ts` | Pinia store: widgets, datasets |
 | `app/stores/canvas.ts` | MOCK_DATA (ต้องแทนที่ด้วย real data) |
 | `app/composables/useMangoBIApi.ts` | API calls: load/save DataModel, Report, SQLBuilder |
-| `app/composables/datamodel/useAiContext.ts` | AI system prompt สำหรับ DataModel page |
-| `app/composables/report/useAiContext.ts` | AI system prompt สำหรับ Report page |
-| `app/composables/view/useViewAiContext.ts` | AI system prompt สำหรับ Viewer page |
-| `app/components/ai/AiPanel.vue` | Chat UI component |
+| `app/composables/useAiChat.ts` | ส่ง `AiContext` object ไปหา `/api/ai/chat` |
+| `app/composables/useAiFeature.ts` | Feature flag: enabled/provider/model จาก DB |
+| `app/composables/*/useAiContext.ts` | State collectors — return `AiContext` (ไม่ generate prompt เอง) |
+| `app/composables/view/useViewAiContext.ts` | Viewer context — generate prompt client-side (data-heavy) |
+| `app/components/ai/AiPanel.vue` | Chat UI — prop: `context: AiContext` |
 | `app/stores/ai-chat.ts` | Chat history + state |
+| `server/utils/ai/config.ts` | getAiConfigFull() + invalidateAiConfigCache() + AiConfigFull type |
+| `server/utils/ai/contexts.ts` | buildSystemPrompt() + context builders + AiContextPayload types |
+| `server/api/ai/chat.post.ts` | Chat endpoint: รับ context → generate prompt → stream AI |
 | `server/api/proxy/planning/[...path].ts` | Proxy → Planning backend |
 | `Database/DataContext/DataContext.cs` | EF Core DbContext (210+ tables) |
 
@@ -324,7 +332,9 @@ Backend Dockerfile: multi-stage (SDK → aspnet runtime), copies Infrastructure/
 
 1. **อ่าน Section 6** ก่อนทำงาน DataModel/Report pages
 2. **Backend path:** `D:\Resource Store\Backend\Backend-Planning-Service\MicroBackend\`
-3. **API proxy:** ทุก call จาก frontend ผ่าน `server/api/proxy/planning/[...path].ts` — ไม่ call backend โดยตรง
-4. **Auth:** `$xt.getServer()` / `$xt.postServerJson()` จะแนบ header auth ให้อัตโนมัติ
+3. **API proxy:** ทุก call จาก frontend ผ่าน `server/api/proxy/` — ไม่ call backend โดยตรง; `MangoBI/` prefix → biProxy (`/api/proxy/bi/`), `Planning/` → planningProxy
+4. **Auth:** `$xt.getServer()` / `$xt.postServerJson()` แนบ header auth ให้อัตโนมัติ — ต้องเช็ค `res?.error` เสมอ (`$xt` ไม่ throw)
 5. **MOCK_DATA** ใน `stores/canvas.ts` เป็นแค่ placeholder — งาน real data จะมาแทน
-6. **AI context** ใน composables เป็น string ที่ inject เป็น system prompt ให้ Claude/Gemini
+6. **AI Architecture:** Frontend composables ส่ง `AiContext` object → `/api/ai/chat` → server `buildSystemPrompt()` → AI provider
+7. **AI Config:** ตั้งค่าที่ `/settings` เท่านั้น — ไม่ใช้ .env; `server/utils/ai/config.ts` cache 30s per-maincode
+8. **Trailing slash:** `planningBase`/`biBase` ใน `.env` มี trailing slash — server code ที่ build URL ต้อง `.replace(/\/$/, '')` ก่อนต่อ path เสมอ

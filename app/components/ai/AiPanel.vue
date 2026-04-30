@@ -3,55 +3,30 @@
  * AiPanel — shared AI chat panel
  *
  * Props:
- *   page         — 'sql-builder' | 'datamodel' | 'report'
- *   systemPrompt — context string built by the parent page (reactive)
- *   contextLabel — short label shown in header e.g. "3 nodes · SQL Builder"
- *
- * The panel slides in from the right as a fixed overlay.
+ *   page         — 'sql-builder' | 'datamodel' | 'report' | 'view'
+ *   context      — typed context object, serialized and sent to server for prompt generation
+ *   contextLabel — short label shown in header
  */
 
-import { Bot, X, Trash2, Send, Loader2, Sparkles, ChevronDown, Check } from 'lucide-vue-next'
+import { Bot, X, Trash2, Send, Loader2, Sparkles } from 'lucide-vue-next'
 import { useAiChatStore, type AiPageKey, type AiUsageStats } from '~/stores/ai-chat'
-import { useAiChat } from '~/composables/useAiChat'
+import { useAiChat, type AiContext } from '~/composables/useAiChat'
 import { useAiFeature } from '~/composables/useAiFeature'
-import { useAiModels, getContextLimit } from '~/composables/useAiModels'
+import { getContextLimit } from '~/composables/useAiModels'
 
 import type { AiCanvasAction } from '~/composables/sql-builder/useAiActions'
 
 const props = defineProps<{
-  page:         AiPageKey
-  systemPrompt: string
+  page:          AiPageKey
+  context:       AiContext
   contextLabel?: string
 }>()
 
 const emit = defineEmits<{ 'apply-action': [action: AiCanvasAction] }>()
 
 const store   = useAiChatStore()
-const { send, loading, abort } = useAiChat(props.page, () => props.systemPrompt)
+const { send, loading, abort } = useAiChat(props.page, () => props.context)
 const { model: aiModel } = useAiFeature()
-const { models: availableModels } = useAiModels()
-
-const showModelPicker = ref(false)
-const activeModel = computed(() =>
-  availableModels.value.find(m => m.name === store.selectedModel) ?? null
-)
-
-function selectModel(name: string) {
-  store.selectedModel = name
-  showModelPicker.value = false
-}
-
-const TAG_COLORS: Record<string, string> = {
-  'Thai':        'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300',
-  'Fast':        'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300',
-  'Lightweight': 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300',
-  'Reasoning':   'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
-  'High Quality':'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300',
-  'Translation': 'bg-pink-100 text-pink-700 dark:bg-pink-900/40 dark:text-pink-300',
-  'New':         'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300',
-  'Multilingual':'bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300',
-  'Latest':      'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300',
-}
 
 const messages   = computed(() => store.messages(props.page))
 const inputText  = ref('')
@@ -64,9 +39,10 @@ const lastStats = computed<AiUsageStats | null>(() => {
   }
   return null
 })
-const currentModelName = computed(() =>
-  store.selectedModel ?? (typeof aiModel.value === 'string' ? aiModel.value : null)
-)
+const currentModelName = computed(() => {
+  const configured = typeof aiModel.value === 'string' ? aiModel.value : null
+  return configured || lastStats.value?.model || null
+})
 const tokenContextLimit = computed(() =>
   getContextLimit(lastStats.value?.model ?? currentModelName.value ?? '')
 )
@@ -328,65 +304,10 @@ const PAGE_LABELS: Record<AiPageKey, string> = {
 
       <!-- Status bar: model + token usage -->
       <div class="flex items-center justify-between mt-2 px-0.5">
-        <!-- Current model -->
-        <div v-if="availableModels.length" class="relative">
-          <button
-            @click="showModelPicker = !showModelPicker"
-            class="flex items-center gap-1 text-[10px] text-muted-foreground/70 hover:text-violet-500 transition-colors"
-            title="เปลี่ยน Model"
-          >
-            <Bot class="size-3 shrink-0" />
-            <span class="font-medium truncate max-w-[120px]">
-              {{ activeModel?.label ?? currentModelName ?? 'เลือก Model' }}
-            </span>
-            <ChevronDown class="size-2.5 shrink-0 opacity-60" />
-          </button>
-
-          <!-- Backdrop -->
-          <div v-if="showModelPicker" class="fixed inset-0 z-[60]" @click="showModelPicker = false" />
-
-          <!-- Dropdown (opens upward) -->
-          <div
-            v-if="showModelPicker"
-            class="absolute left-0 bottom-full mb-1 z-[70] bg-background border rounded-xl shadow-2xl overflow-hidden"
-            :style="{ width: Math.max(panelWidth - 32, 260) + 'px' }"
-          >
-            <div class="p-2 border-b">
-              <p class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide px-1">เลือก AI Model</p>
-            </div>
-            <div class="max-h-72 overflow-y-auto">
-              <button
-                v-for="m in availableModels"
-                :key="m.name"
-                @click="selectModel(m.name)"
-                class="w-full text-left px-3 py-2.5 hover:bg-accent transition-colors flex items-start gap-2.5"
-                :class="{ 'bg-violet-50 dark:bg-violet-950/20': store.selectedModel === m.name }"
-              >
-                <Check
-                  class="size-3.5 mt-0.5 shrink-0 text-violet-500"
-                  :class="store.selectedModel === m.name ? 'opacity-100' : 'opacity-0'"
-                />
-                <div class="flex-1 min-w-0">
-                  <div class="flex items-center gap-1.5 flex-wrap">
-                    <span class="text-xs font-semibold">{{ m.label }}</span>
-                    <span
-                      v-for="tag in m.tags" :key="tag"
-                      class="text-[9px] px-1.5 py-0.5 rounded-full font-semibold"
-                      :class="TAG_COLORS[tag] ?? 'bg-muted text-muted-foreground'"
-                    >{{ tag }}</span>
-                  </div>
-                  <p class="text-[10px] text-muted-foreground mt-0.5 leading-snug">{{ m.desc }}</p>
-                </div>
-              </button>
-            </div>
-          </div>
-        </div>
-        <span
-          v-else
-          class="flex items-center gap-1 text-[10px] text-muted-foreground/60"
-        >
+        <!-- Current model (plain label) -->
+        <span class="flex items-center gap-1 text-[10px] text-muted-foreground/60">
           <Bot class="size-3 shrink-0" />
-          <span class="font-medium">{{ currentModelName ?? 'AI' }}</span>
+          <span class="font-medium truncate max-w-[140px]">{{ currentModelName ?? 'AI' }}</span>
         </span>
 
         <!-- Token usage -->

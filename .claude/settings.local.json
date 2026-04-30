@@ -1,4 +1,14 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(grep -n \"^<template>\" \"D:\\\\\\\\Resource Store\\\\\\\\Frontend\\\\\\\\MangoBI\\\\\\\\app\\\\\\\\pages\\\\\\\\datamodel.vue\")",
+      "Bash(grep -n \"ref<\" \"D:\\\\\\\\Resource Store\\\\\\\\Frontend\\\\\\\\MangoBI\\\\\\\\app\\\\\\\\pages\\\\\\\\datamodel.vue\")",
+      "Bash(grep -n \"watch\\\\|computed\\\\|fetch\\\\|await\" \"D:\\\\\\\\Resource Store\\\\\\\\Frontend\\\\\\\\MangoBI\\\\\\\\app\\\\\\\\pages\\\\\\\\datamodel.vue\")",
+      "Bash(grep -n \"v-if\\\\|v-show\" \"D:\\\\\\\\Resource Store\\\\\\\\Frontend\\\\\\\\MangoBI\\\\\\\\app\\\\\\\\pages\\\\\\\\datamodel.vue\")",
+      "Bash(grep -n \"VueFlow\\\\|<div.*class.*flex.*overflow\" \"D:\\\\\\\\Resource Store\\\\\\\\Frontend\\\\\\\\MangoBI\\\\\\\\app\\\\\\\\pages\\\\\\\\datamodel.vue\")",
+      "Bash(git add *)"
+    ]
+  },
   "enabledPlugins": {
     "supabase@claude-plugins-official": true,
     "superpowers@claude-plugins-official": true,

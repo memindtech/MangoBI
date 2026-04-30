@@ -5,12 +5,38 @@
  * รองรับ SSE streaming: chunks ถูก append เข้า message ทีละชิ้น
  *
  * Usage:
- *   const { send, loading, abort } = useAiChat('sql-builder', () => systemPrompt.value)
+ *   const { send, loading, abort } = useAiChat('sql-builder', () => aiContext.value)
  */
 
 import { useAiChatStore, type AiPageKey, type AiUsageStats } from '~/stores/ai-chat'
 
-export function useAiChat(page: AiPageKey, getSystemPrompt: () => string) {
+export interface ViewerWidgetData {
+  title:   string
+  type:    string
+  xField?: string
+  yField?: string
+  rows:    Array<Record<string, any>>   // rendered rows (filtered + grouped, capped at 100)
+}
+export interface ViewerDatasetData {
+  name:     string
+  rowCount: number
+  columns:  string[]
+  totals:   Array<{ col: string; total: number; avg: number }>
+}
+export interface ViewerContextData {
+  reportName: string
+  widgets:    ViewerWidgetData[]
+  datasets:   ViewerDatasetData[]
+}
+
+export type AiContext =
+  | { type: 'sql-builder';   data: { tables: any[]; joins: any[]; tools: any[]; sql: string } }
+  | { type: 'report';        data: { widgets: any[]; datasets: any[] } }
+  | { type: 'datamodel';     data: { tables: any[]; relations: any[]; transforms: number; filters: number } }
+  | { type: 'viewer';        data: ViewerContextData }   // rendered data from client
+  | { type: 'viewer-report'; reportId: string }          // mobile: backend builds from DB
+
+export function useAiChat(page: AiPageKey, getContext: () => AiContext) {
   const store   = useAiChatStore()
   const loading = ref(false)
   let   abortController: AbortController | null = null
@@ -45,17 +71,17 @@ export function useAiChat(page: AiPageKey, getSystemPrompt: () => string) {
       .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }))
 
     try {
-      const model = store.selectedModel ?? undefined
+      const ctx      = getContext()
+      const endpoint = ctx.type === 'viewer-report' ? '/api/ai/analyze-report' : '/api/ai/chat'
+      const payload  = ctx.type === 'viewer-report'
+        ? { reportId: ctx.reportId, messages: msgs }
+        : { messages: msgs, context: ctx }
 
-      const res = await fetch('/api/ai/chat', {
+      const res = await fetch(endpoint, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({
-          messages:     msgs,
-          systemPrompt: getSystemPrompt(),
-          ...(model ? { model } : {}),
-        }),
-        signal: abortController.signal,
+        body:    JSON.stringify(payload),
+        signal:  abortController.signal,
       })
 
       if (!res.ok || !res.body) {
@@ -89,7 +115,7 @@ export function useAiChat(page: AiPageKey, getSystemPrompt: () => string) {
               return
             }
             if (json.stats) {
-              usageStats = { ...json.stats, model: model ?? undefined }
+              usageStats = { ...json.stats }
             }
             if (json.text) {
               full += json.text

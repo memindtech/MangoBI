@@ -30,6 +30,11 @@ export default defineEventHandler(async (event) => {
     })
     return res._data
   } catch (err: any) {
+    if (err?.response?.status === 401) {
+      const sid = getSessionId(event)
+      await deleteSession(sid)
+      clearSessionCookie(event)
+    }
     throw createError({
       statusCode:    err?.response?.status ?? 502,
       statusMessage: err?.data?.error ?? err?.message ?? 'BI proxy error',

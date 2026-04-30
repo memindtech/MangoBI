@@ -72,6 +72,9 @@ export const useAuthStore = defineStore('auth', () => {
   const fetchUserAuth = async (menuName: string, menuId: string, moduleName?: string) => {
     const langKey = $i18n.locale.value || $i18n.locale
 
+    // same-session SPA navigation — auth อยู่แล้ว ไม่ต้อง round-trip
+    if (auth.value?.is_authen) return true
+
     // ตรวจ bi_session ยังใช้ได้ไหม + ดึง profile fields
     try {
       const me = await $fetch<any>('/api/auth/me')
@@ -105,9 +108,6 @@ export const useAuthStore = defineStore('auth', () => {
         }
       }).catch(() => { /* profile optional */ })
     }
-
-    // store ยังมี auth อยู่ (same-session navigation)
-    if (auth.value?.is_authen) return true
 
     // refresh → ลอง restore จาก sessionStorage ก่อน
     if (restoreFromSession()) return true

@@ -28,13 +28,22 @@ import {
 } from '~/utils/computedColumn'
 import ModelTableNode from '~/components/datamodel/ModelTableNode.vue'
 import { MOCK_DATA, DATASET_META, type DatasetKey } from '~/stores/canvas'
-import { AgGridVue } from 'ag-grid-vue3'
-import { ClientSideRowModelModule, CommunityFeaturesModule, ModuleRegistry } from 'ag-grid-community'
 import type { ColDef } from 'ag-grid-community'
 import { parseColumnMapping, isDateMeta } from '~/utils/columnMapping'
 import { formatDateValue, formatNumericValue, DATE_PATTERNS } from '~/utils/formatValue'
 
-ModuleRegistry.registerModules([ClientSideRowModelModule, CommunityFeaturesModule])
+let _agGridReady = false
+const AgGridVue = defineAsyncComponent(async () => {
+  const [{ AgGridVue: Grid }, { ClientSideRowModelModule, CommunityFeaturesModule, ModuleRegistry }] = await Promise.all([
+    import('ag-grid-vue3'),
+    import('ag-grid-community'),
+  ])
+  if (!_agGridReady) {
+    ModuleRegistry.registerModules([ClientSideRowModelModule, CommunityFeaturesModule])
+    _agGridReady = true
+  }
+  return Grid
+})
 
 // ─── Page meta ────────────────────────────────────────────────────────────────
 definePageMeta({ layout: false, auth: true })
@@ -1784,7 +1793,7 @@ async function appendDmTemplate(id: string) {
   finally { tplAppending.value = null }
 }
 
-const { systemPrompt: aiSystemPrompt, contextLabel: aiContextLabel } = useAiContext()
+const { context: aiContext, contextLabel: aiContextLabel } = useAiContext()
 const aiStore = useAiChatStore()
 const { enabled: aiEnabled } = useAiFeature()
 </script>
@@ -1887,6 +1896,9 @@ const { enabled: aiEnabled } = useAiFeature()
             {{ t('bi_use_in_report') }}
           </button>
         </div>
+
+        <div class="h-4 w-px bg-border" />
+        <AppDisplayControls />
       </div>
     </header>
 
@@ -3875,7 +3887,7 @@ const { enabled: aiEnabled } = useAiFeature()
     <AiPanel
       v-if="aiEnabled && aiStore.openPage === 'datamodel'"
       page="datamodel"
-      :system-prompt="aiSystemPrompt"
+      :context="aiContext"
       :context-label="aiContextLabel"
     />
 

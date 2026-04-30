@@ -106,7 +106,7 @@ async function onFinish() {
   store.openFinishModal()
 }
 
-const { systemPrompt, contextLabel } = useAiContext()
+const { context: aiContext, contextLabel } = useAiContext()
 const aiStore = useAiChatStore()
 const { enabled: aiEnabled } = useAiFeature()
 const { execute: executeAiAction } = useAiActions()
@@ -139,7 +139,7 @@ function onAiAction(action: AiCanvasAction) {
     <AiPanel
       v-if="aiEnabled && aiStore.openPage === 'sql-builder'"
       page="sql-builder"
-      :system-prompt="systemPrompt"
+      :context="aiContext"
       :context-label="contextLabel"
       @apply-action="onAiAction"
     />

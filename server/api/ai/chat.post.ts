@@ -1,64 +1,62 @@
 /**
  * POST /api/ai/chat
  *
- * Proxy → AI provider พร้อม feature gate (AI_ENABLED)
- * แปลง SSE ของแต่ละ provider เป็น normalized stream:
+ * Proxy → AI provider with SSE streaming.
+ * Config is read from DB (per-maincode) with .env fallback.
+ *
+ * Normalized output stream:
  *   data: {"text":"..."}
  *   data: [DONE]
- *
- * Providers:
- *   claude  → Anthropic claude-sonnet-4-6
- *   gemini  → Google gemini-2.0-flash
- *   backend → MangoBI AI Backend (OpenAI-compatible)
  */
+import type { AiConfigFull } from '../../utils/ai/config'
+import { buildSystemPrompt } from '../../utils/ai/contexts'
+import type { AiContextPayload } from '../../utils/ai/contexts'
+
 export interface AiChatMessage {
   role:    'user' | 'assistant' | 'system'
   content: string
 }
 
 export interface AiChatRequest {
-  messages:     AiChatMessage[]
-  systemPrompt: string
-  model?:       string   // client-selected model override
+  messages: AiChatMessage[]
+  context:  AiContextPayload
+  model?:   string
 }
 
 export default defineEventHandler(async (event) => {
-  const config = useRuntimeConfig(event)
+  await requireSession(event)
 
-  // ── Feature gate ─────────────────────────────────────────────────────────
-  // config.aiEnabled may be boolean (default) or string 'true'/'false' (from .env)
-  if (config.aiEnabled !== true && String(config.aiEnabled) !== 'true') {
+  const cfg = await getAiConfigFull(event)
+
+  if (!cfg.enabled) {
     throw createError({ statusCode: 403, statusMessage: 'AI feature is not enabled' })
   }
 
-  // ── Require valid session ─────────────────────────────────────────────────
-  await requireSession(event)
+  const body = await readBody<AiChatRequest>(event)
+  const { messages, context, model: clientModel } = body
+  const systemPrompt = buildSystemPrompt(context)
 
-  const body   = await readBody<AiChatRequest>(event)
-  const { messages, systemPrompt, model: clientModel } = body
-  const provider = config.aiProvider ?? 'claude'
-
-  // ── SSE headers ───────────────────────────────────────────────────────────
   setHeader(event, 'Content-Type',      'text/event-stream; charset=utf-8')
   setHeader(event, 'Cache-Control',     'no-cache')
   setHeader(event, 'Connection',        'keep-alive')
   setHeader(event, 'X-Accel-Buffering', 'no')
 
   const enc = new TextEncoder()
-  const h   = {
-    chunk:  (t: string) => enc.encode(`data: ${JSON.stringify({ text: t })}\n\n`),
-    done:   ()           => enc.encode(`data: [DONE]\n\n`),
-    error:  (m: string)  => enc.encode(`data: ${JSON.stringify({ error: m })}\n\n`),
-    stats:  (s: object)  => enc.encode(`data: ${JSON.stringify({ stats: s })}\n\n`),
+  const h: Helpers = {
+    chunk:  (t) => enc.encode(`data: ${JSON.stringify({ text: t })}\n\n`),
+    done:   ()  => enc.encode(`data: [DONE]\n\n`),
+    error:  (m) => enc.encode(`data: ${JSON.stringify({ error: m })}\n\n`),
+    stats:  (s) => enc.encode(`data: ${JSON.stringify({ stats: s })}\n\n`),
   }
 
   const stream = new ReadableStream({
     async start(ctrl) {
       try {
-        switch (provider) {
-          case 'claude':  await streamClaude (config, messages, systemPrompt, ctrl, h); break
-          case 'gemini':  await streamGemini (config, messages, systemPrompt, ctrl, h); break
-          default:        await streamBackend(config, messages, systemPrompt, ctrl, h, clientModel); break
+        switch (cfg.provider) {
+          case 'claude':  await streamClaude    (cfg, messages, systemPrompt, ctrl, h); break
+          case 'gemini':  await streamGemini    (cfg, messages, systemPrompt, ctrl, h); break
+          case 'openai':  await streamOpenAI    (cfg, messages, systemPrompt, ctrl, h, clientModel); break
+          default:        await streamBackend   (cfg, messages, systemPrompt, ctrl, h, clientModel); break
         }
       } catch (err: any) {
         ctrl.enqueue(h.error(err?.message ?? 'AI request failed'))
@@ -75,28 +73,29 @@ export default defineEventHandler(async (event) => {
 // Claude Anthropic
 // ─────────────────────────────────────────────────────────────────────────────
 async function streamClaude(
-  config:  any,
-  msgs:    AiChatMessage[],
-  sys:     string,
-  ctrl:    ReadableStreamDefaultController,
-  h:       Helpers,
+  cfg:  AiConfigFull,
+  msgs: AiChatMessage[],
+  sys:  string,
+  ctrl: ReadableStreamDefaultController,
+  h:    Helpers,
 ) {
-  const key = config.claudeApiKey
-  if (!key) { return abort(ctrl, h, 'NUXT_CLAUDE_API_KEY ไม่ได้ตั้งค่า') }
+  if (!cfg.apiKey) return abort(ctrl, h, 'Claude API key ยังไม่ได้ตั้งค่า — กรุณาตั้งค่าใน Settings')
+
+  const model = cfg.model ?? 'claude-sonnet-4-6'
 
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method:  'POST',
     headers: {
-      'x-api-key':         key,
+      'x-api-key':         cfg.apiKey,
       'anthropic-version': '2023-06-01',
       'content-type':      'application/json',
     },
     body: JSON.stringify({
-      model:      'claude-sonnet-4-6',
-      max_tokens:  4096,
-      stream:      true,
-      system:      sys,
-      messages:    msgs.filter(m => m.role !== 'system'),
+      model,
+      max_tokens: 4096,
+      stream:     true,
+      system:     sys,
+      messages:   msgs.filter(m => m.role !== 'system'),
     }),
   })
 
@@ -124,19 +123,17 @@ async function streamClaude(
 // Google Gemini
 // ─────────────────────────────────────────────────────────────────────────────
 async function streamGemini(
-  config:  any,
-  msgs:    AiChatMessage[],
-  sys:     string,
-  ctrl:    ReadableStreamDefaultController,
-  h:       Helpers,
+  cfg:  AiConfigFull,
+  msgs: AiChatMessage[],
+  sys:  string,
+  ctrl: ReadableStreamDefaultController,
+  h:    Helpers,
 ) {
-  const key = config.geminiApiKey
-  if (!key) { return abort(ctrl, h, 'NUXT_GEMINI_API_KEY ไม่ได้ตั้งค่า') }
+  if (!cfg.apiKey) return abort(ctrl, h, 'Gemini API key ยังไม่ได้ตั้งค่า — กรุณาตั้งค่าใน Settings')
 
-  const model = config.geminiModel ?? 'gemini-2.0-flash'
-  const url   = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${key}`
+  const model = cfg.model ?? 'gemini-2.0-flash'
+  const url   = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${cfg.apiKey}`
 
-  // Gemini uses 'model' role instead of 'assistant', and parts[] array
   const contents = msgs
     .filter(m => m.role !== 'system')
     .map(m => ({
@@ -158,7 +155,6 @@ async function streamGemini(
     return abort(ctrl, h, `Gemini ${res.status}: ${await res.text().catch(() => res.statusText)}`)
   }
 
-  // Gemini SSE: data: {"candidates":[{"content":{"parts":[{"text":"..."}]}}]}
   await parseSse(res.body, (line) => {
     if (!line.startsWith('data: ')) return
     const raw = line.slice(6).trim()
@@ -174,20 +170,78 @@ async function streamGemini(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MangoBI AI Backend (OpenAI-compatible)
+// OpenAI-compatible (Typhoon, Groq, Together.ai, OpenAI, etc.)
 // ─────────────────────────────────────────────────────────────────────────────
-async function streamBackend(
-  config:      any,
+async function streamOpenAI(
+  cfg:         AiConfigFull,
   msgs:        AiChatMessage[],
   sys:         string,
   ctrl:        ReadableStreamDefaultController,
   h:           Helpers,
-  clientModel: string | undefined = undefined,
+  clientModel: string | undefined,
 ) {
-  const url   = config.aiBackendUrl ?? 'https://backend-ai.mangoanywhere.com/api/chat'
-  // Client-selected model takes priority over server config
-  const model = clientModel || config.aiBackendModel || undefined
-  const allMsgs  = sys ? [{ role: 'system' as const, content: sys }, ...msgs] : msgs
+  if (!cfg.backendUrl) return abort(ctrl, h, 'OpenAI-compatible URL ยังไม่ได้ตั้งค่า — กรุณาตั้งค่าใน Settings')
+
+  // Normalise base URL: strip trailing /chat or /completions
+  const base    = cfg.backendUrl.replace(/\/(chat\/completions|completions)\/?$/, '').replace(/\/$/, '')
+  const url     = `${base}/chat/completions`
+  const model   = clientModel || cfg.model || undefined
+  const headers: Record<string, string> = { 'content-type': 'application/json' }
+  if (cfg.apiKey) headers['Authorization'] = `Bearer ${cfg.apiKey}`
+
+  const allMsgs = sys ? [{ role: 'system' as const, content: sys }, ...msgs] : msgs
+
+  const res = await fetch(url, {
+    method:  'POST',
+    headers,
+    body: JSON.stringify({ ...(model ? { model } : {}), messages: allMsgs, stream: true }),
+  })
+
+  if (!res.ok || !res.body) {
+    return abort(ctrl, h, `OpenAI API ${res.status}: ${await res.text().catch(() => res.statusText)}`)
+  }
+
+  let stats:     Record<string, number> | null = null
+  let usedModel: string | null = null
+
+  await parseSse(res.body, (line) => {
+    if (!line.startsWith('data: ')) return
+    const raw = line.slice(6).trim()
+    if (raw === '[DONE]') return
+    try {
+      const j    = JSON.parse(raw)
+      const text = j?.choices?.[0]?.delta?.content
+      if (text) ctrl.enqueue(h.chunk(text))
+      if (!usedModel && j?.model) usedModel = j.model
+      if (j?.usage?.prompt_tokens != null) {
+        stats = {
+          promptTokens: j.usage.prompt_tokens,
+          outputTokens: j.usage.completion_tokens ?? 0,
+          totalMs: 0, genMs: 0,
+        }
+      }
+    } catch { /* skip */ }
+  })
+
+  const resolvedModel = usedModel ?? model ?? undefined
+  if (stats) ctrl.enqueue(h.stats({ ...stats, ...(resolvedModel ? { model: resolvedModel } : {}) }))
+  ctrl.enqueue(h.done()); ctrl.close()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MangoBI AI Backend (OpenAI-compatible / Ollama)
+// ─────────────────────────────────────────────────────────────────────────────
+async function streamBackend(
+  cfg:         AiConfigFull,
+  msgs:        AiChatMessage[],
+  sys:         string,
+  ctrl:        ReadableStreamDefaultController,
+  h:           Helpers,
+  clientModel: string | undefined,
+) {
+  const url   = cfg.backendUrl ?? 'https://backend-ai.mangoanywhere.com/api/chat'
+  const model = clientModel || cfg.backendModel || undefined
+  const allMsgs = sys ? [{ role: 'system' as const, content: sys }, ...msgs] : msgs
 
   const res = await fetch(url, {
     method:  'POST',
@@ -196,72 +250,66 @@ async function streamBackend(
   })
 
   if (!res.ok || !res.body) {
-    // Fallback non-streaming
     const j    = await res.json().catch(() => null)
     const text = j?.message?.content ?? j?.choices?.[0]?.message?.content ?? 'AI error'
     ctrl.enqueue(h.chunk(text)); ctrl.enqueue(h.done()); ctrl.close()
     return
   }
 
-  let stats: Record<string, number> | null = null
+  let stats:     Record<string, number> | null = null
+  let usedModel: string | null = null
 
   await parseSse(res.body, (line) => {
     if (!line.trim()) return
-
-    // SSE format: "data: {...}" or "data: [DONE]"
-    // Ollama raw format: "{...}" (no prefix)
     let raw = line
-    if (line.startsWith('data: ')) {
-      raw = line.slice(6).trim()
-    }
+    if (line.startsWith('data: ')) raw = line.slice(6).trim()
     if (raw === '[DONE]') return
-
     try {
-      const j = JSON.parse(raw)
-      // OpenAI-compatible streaming: choices[0].delta.content
-      // Ollama streaming: message.content
-      // Generic: text / content
+      const j    = JSON.parse(raw)
       const text = j?.choices?.[0]?.delta?.content
         ?? j?.message?.content
         ?? j?.text
         ?? j?.content
       if (text) ctrl.enqueue(h.chunk(text))
+      if (!usedModel && j?.model) usedModel = j.model
 
-      // Capture Ollama final chunk stats (done: true)
       if (j?.done === true && j?.eval_count != null) {
         stats = {
           promptTokens: j.prompt_eval_count ?? 0,
           outputTokens: j.eval_count        ?? 0,
-          totalMs:      Math.round((j.total_duration   ?? 0) / 1e6),
-          genMs:        Math.round((j.eval_duration    ?? 0) / 1e6),
+          totalMs:      Math.round((j.total_duration ?? 0) / 1e6),
+          genMs:        Math.round((j.eval_duration  ?? 0) / 1e6),
         }
       }
-      // OpenAI-compatible usage
       if (j?.usage?.prompt_tokens != null) {
         stats = {
           promptTokens: j.usage.prompt_tokens,
           outputTokens: j.usage.completion_tokens ?? 0,
-          totalMs:      0,
-          genMs:        0,
+          totalMs: 0, genMs: 0,
         }
       }
-    } catch { /* skip non-JSON lines */ }
+    } catch { /* skip non-JSON */ }
   })
 
-  if (stats) ctrl.enqueue(h.stats(stats))
+  const resolvedModel = usedModel ?? model ?? undefined
+  if (stats) ctrl.enqueue(h.stats({ ...stats, ...(resolvedModel ? { model: resolvedModel } : {}) }))
   ctrl.enqueue(h.done()); ctrl.close()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Shared helpers
+// Helpers
 // ─────────────────────────────────────────────────────────────────────────────
-type Helpers = { chunk: (t: string) => Uint8Array; done: () => Uint8Array; error: (m: string) => Uint8Array; stats: (s: object) => Uint8Array }
+type Helpers = {
+  chunk: (t: string) => Uint8Array
+  done:  ()          => Uint8Array
+  error: (m: string) => Uint8Array
+  stats: (s: object) => Uint8Array
+}
 
 function abort(ctrl: ReadableStreamDefaultController, h: Helpers, msg: string) {
   ctrl.enqueue(h.error(msg)); ctrl.enqueue(h.done()); ctrl.close()
 }
 
-/** Generic SSE line reader — works for all providers */
 async function parseSse(body: ReadableStream<Uint8Array>, onLine: (line: string) => void) {
   const reader  = body.getReader()
   const decoder = new TextDecoder()
@@ -276,6 +324,5 @@ async function parseSse(body: ReadableStream<Uint8Array>, onLine: (line: string)
     for (const line of lines) onLine(line)
   }
 
-  // Flush remaining buffer
   if (buf.trim()) onLine(buf)
 }

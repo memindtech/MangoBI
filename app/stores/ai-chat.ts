@@ -52,25 +52,24 @@ export const useAiChatStore = defineStore('ai-chat', () => {
   // ── Hydrate from localStorage on first access ────────────────────────────
   function hydrate() {
     const saved = loadFromStorage(userId.value)
-    if (!saved) return { histories: emptyHistories(), selectedModel: null }
+    if (!saved) return { histories: emptyHistories() }
     // Strip loading:true from any messages saved mid-stream
     const histories = emptyHistories()
     for (const page of PAGES) {
       histories[page] = ((saved.histories?.[page] ?? []) as AiMessage[])
         .filter(m => m.id && m.role && !m.loading)
     }
-    return { histories, selectedModel: saved.selectedModel ?? null }
+    return { histories }
   }
 
-  const init           = hydrate()
-  const histories      = ref<Record<AiPageKey, AiMessage[]>>(init.histories)
-  const selectedModel  = ref<string | null>(init.selectedModel)
-  const openPage       = ref<AiPageKey | null>(null)
+  const init      = hydrate()
+  const histories = ref<Record<AiPageKey, AiMessage[]>>(init.histories)
+  const openPage  = ref<AiPageKey | null>(null)
 
-  // ── Persist whenever histories or model change ───────────────────────────
+  // ── Persist whenever histories change ───────────────────────────────────
   watch(
-    [histories, selectedModel],
-    () => saveToStorage(userId.value, { histories: histories.value, selectedModel: selectedModel.value }),
+    histories,
+    () => saveToStorage(userId.value, { histories: histories.value }),
     { deep: true },
   )
 
@@ -78,9 +77,8 @@ export const useAiChatStore = defineStore('ai-chat', () => {
   watch(userId, (newId, oldId) => {
     if (newId === oldId) return
     const fresh = hydrate()
-    histories.value     = fresh.histories
-    selectedModel.value = fresh.selectedModel
-    openPage.value      = null
+    histories.value = fresh.histories
+    openPage.value  = null
   })
 
   // ── Panel control ────────────────────────────────────────────────────────
@@ -116,7 +114,7 @@ export const useAiChatStore = defineStore('ai-chat', () => {
   }
 
   return {
-    histories, openPage, selectedModel,
+    histories, openPage,
     togglePanel, openPanel, closePanel,
     messages, addMessage, updateLastAssistant, clearHistory,
   }
