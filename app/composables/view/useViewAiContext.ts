@@ -5,6 +5,7 @@
  */
 import type { Ref } from 'vue'
 import type { AiContext, ViewerContextData } from '~/composables/useAiChat'
+import { groupChartData } from '~/utils/groupChartData'
 
 interface Dataset {
   id: string; name: string; rows: any[]
@@ -56,13 +57,33 @@ export function useViewAiContext(
       // Per-widget rendered rows (after filter + groupBy)
       widgets: widgets.value.map(w => {
         const ds   = datasets.value.find(d => d.id === w.datasetId)
-        const rows = getGroupedRows(w)
+        const base = getGroupedRows(w)
 
-        // For table widgets: use only user-configured columns to avoid raw DB column clutter.
-        // For charts: use all columns (xField/yField drive which ones matter).
-        const configuredCols = (w.type === 'table' || w.type === 'ag-grid')
-          ? (w.fields.columns?.length ? w.fields.columns : null)
-          : null
+        // For chart widgets: apply the same xField-level grouping that chartOption() uses,
+        // so AI sees the exact values the chart displays (not just DataModel-level groupBy).
+        const rows = (() => {
+          if (['table', 'ag-grid', 'kpi', 'ecOption'].includes(w.type)) return base
+          const x = w.fields.xField
+          const y = w.fields.yField
+          if (!x || !y) return base
+          const yList = [...new Set([y, ...(w.fields.yFields ?? [])].filter(Boolean))]
+          const grouped = groupChartData(base, x, yList, (w.fields as any).aggregation ?? 'sum')
+          return grouped.labels.map((label, i) => {
+            const row: Record<string, any> = { [x]: label }
+            for (const yf of yList) row[yf] = grouped.series(yf)[i]
+            return row
+          })
+        })()
+
+        // Table: use only user-configured columns to avoid raw DB column clutter.
+        // Chart/KPI: restrict to xField+yField(s) only so AI sees the same columns the chart shows.
+        const configuredCols = (() => {
+          if (w.type === 'table' || w.type === 'ag-grid')
+            return w.fields.columns?.length ? w.fields.columns : null
+          const chartCols = [w.fields.xField, w.fields.yField, ...(w.fields.yFields ?? [])]
+            .filter(Boolean) as string[]
+          return chartCols.length ? chartCols : null
+        })()
 
         const labelledRows = rows.slice(0, 100).map(r => {
           const out: Record<string, any> = {}

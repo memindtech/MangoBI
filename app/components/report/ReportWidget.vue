@@ -309,7 +309,7 @@ const chartOption = computed(() => {
   if (t === 'pie') return {
     color: COLORS,
     tooltip: { trigger: 'item' as const, confine: true, textStyle: { fontSize: fsSmall },
-      formatter: (p: any) => `${p.name}: ${fmtY(p.value, yField.value)} (${p.percent}%)` },
+      formatter: (p: any) => `${p.name} : (${yLabel}) ${fmtY(p.value, yField.value)}` },
     series: [{
       type: 'pie', radius: ['32%', '66%'], center: ['50%', '50%'],
       data: labels.map((name, i) => ({ name, value: values[i] })),
@@ -321,7 +321,7 @@ const chartOption = computed(() => {
   if (t === 'halfDoughnut') return {
     color: COLORS,
     tooltip: { trigger: 'item' as const, confine: true, textStyle: { fontSize: fsSmall },
-      formatter: (p: any) => `${p.name}: ${fmtY(p.value, yField.value)} (${p.percent}%)` },
+      formatter: (p: any) => `${p.name} : (${yLabel}) ${fmtY(p.value, yField.value)}` },
     series: [{
       type: 'pie', radius: ['40%', '72%'], center: ['50%', '72%'],
       startAngle: 180, endAngle: 360,

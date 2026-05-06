@@ -13,6 +13,7 @@ import { useViewAiContext } from '~/composables/view/useViewAiContext'
 import { useAiChatStore } from '~/stores/ai-chat'
 import { useAiFeature } from '~/composables/useAiFeature'
 import { metaToColType, isDateMeta } from '~/utils/columnMapping'
+import { useWindowSize } from '@vueuse/core'
 import { resolveDynamicValue, DATE_TOKEN_TODAY, DATE_TOKEN_YESTERDAY } from '~/utils/transformData'
 
 ModuleRegistry.registerModules([ClientSideRowModelModule, CommunityFeaturesModule])
@@ -55,6 +56,20 @@ const expiresAt  = ref<Date | null>(null)
 const reportName = ref('')
 const datasets   = ref<Dataset[]>([])
 const widgets    = ref<Widget[]>([])
+
+// ── Mobile layout ─────────────────────────────────────────────────────────────
+const { width: windowWidth } = useWindowSize()
+const isMobile = computed(() => windowWidth.value < 768)
+
+const mobileWidgets = computed(() =>
+  [...widgets.value].sort((a, b) => a.y !== b.y ? a.y - b.y : a.x - b.x)
+)
+
+function mobileWidgetHeight(w: Widget): number {
+  if (w.type === 'kpi') return 120
+  if (w.type === 'table' || w.type === 'ag-grid') return Math.max(260, Math.min(380, w.h))
+  return Math.max(240, Math.min(320, w.h))
+}
 
 // ── Auth for AI Assist ────────────────────────────────────────────────────────
 const isAuthed        = ref(false)
@@ -428,7 +443,9 @@ function chartOption(w: Widget) {
   const bottomPad = rotate === 0 ? 28 : Math.min(80, Math.abs(rotate))
   const grid    = { top: 20, right: 8, bottom: bottomPad, left: 8, containLabel: true }
   const legend  = { top: 0, textStyle: { fontSize: fsSmall, color: tc } }
-  const itemTip = { trigger: 'item' as const, formatter: '{b}: {c} ({d}%)', textStyle: { fontSize: fsSmall }, confine: true }
+  const yLabel  = labelOf(w.datasetId, yField)
+  const itemTip = { trigger: 'item' as const, textStyle: { fontSize: fsSmall }, confine: true,
+    formatter: (p: any) => `${p.name} : (${yLabel}) ${Number(p.value).toLocaleString()}` }
 
   if (t === 'ecOption') { try { return JSON.parse(w.fields.ecOptionJson?.trim() ?? '') } catch { return {} } }
   if (t === 'bar')  return { color: COLORS, grid, tooltip: tip,
@@ -724,11 +741,11 @@ const { context: aiContext, contextLabel: aiContextLabel } = useViewAiContext(
     <header class="h-12 px-4 flex items-center gap-3 border-b bg-background shrink-0">
       <LayoutDashboard class="size-4 text-indigo-500" />
       <span class="text-sm font-semibold truncate flex-1">{{ reportName || 'Report Viewer' }}</span>
-      <span class="text-[11px] text-muted-foreground">
+      <span class="text-[11px] text-muted-foreground hidden sm:block">
         {{ widgets.length }} visual{{ widgets.length !== 1 ? 's' : '' }}
       </span>
       <span v-if="expiresAt && !expired"
-        class="text-[11px] text-amber-600 dark:text-amber-400 ml-2"
+        class="text-[11px] text-amber-600 dark:text-amber-400 ml-2 hidden sm:block"
         :title="`ลิ้งค์หมดอายุ: ${expiresAt.toLocaleString('th-TH')}`"
       >
         หมดอายุ {{ expiresAt.toLocaleDateString('th-TH') }}
@@ -813,19 +830,22 @@ const { context: aiContext, contextLabel: aiContextLabel } = useViewAiContext(
     </div>
 
     <!-- Canvas -->
-    <div v-else class="flex-1 relative overflow-auto">
+    <div v-else class="flex-1 overflow-auto">
       <div
-        class="relative"
-        :style="{
+        :class="isMobile ? 'p-3 space-y-3' : 'relative'"
+        :style="!isMobile ? {
           width:  Math.max(...widgets.map(w => w.x + w.w), 800) + 32 + 'px',
           height: Math.max(...widgets.map(w => w.y + w.h), 600) + 32 + 'px',
-        }"
+        } : undefined"
       >
         <div
-          v-for="w in widgets"
+          v-for="w in (isMobile ? mobileWidgets : widgets)"
           :key="w.id"
-          class="absolute rounded-xl border bg-background shadow-md overflow-hidden flex flex-col"
-          :style="{ left: `${w.x}px`, top: `${w.y}px`, width: `${w.w}px`, height: `${w.h}px` }"
+          class="rounded-xl border bg-background shadow-md overflow-hidden flex flex-col"
+          :class="!isMobile ? 'absolute' : ''"
+          :style="!isMobile
+            ? { left: `${w.x}px`, top: `${w.y}px`, width: `${w.w}px`, height: `${w.h}px` }
+            : { height: mobileWidgetHeight(w) + 'px' }"
         >
           <!-- Widget header -->
           <div class="flex items-center gap-2 px-3 py-2 border-b shrink-0 bg-muted/30">
@@ -887,7 +907,8 @@ const { context: aiContext, contextLabel: aiContextLabel } = useViewAiContext(
       <Transition name="slide-right">
         <div
           v-if="showFilterPanel"
-          class="fixed right-0 top-0 bottom-0 z-40 w-80 bg-background border-l shadow-2xl flex flex-col"
+          class="fixed right-0 top-0 bottom-0 z-40 bg-background border-l shadow-2xl flex flex-col"
+          :class="isMobile ? 'w-full' : 'w-80'"
         >
           <!-- Panel header -->
           <div class="flex items-center gap-2 px-4 py-3 border-b shrink-0">
@@ -1087,19 +1108,21 @@ const { context: aiContext, contextLabel: aiContextLabel } = useViewAiContext(
           @click.self="clickCtx = null"
         >
           <div
-            class="modal-box bg-background rounded-2xl shadow-2xl flex flex-col overflow-hidden select-none"
-            :style="{
+            class="modal-box bg-background shadow-2xl flex flex-col overflow-hidden select-none"
+            :class="isMobile ? 'fixed inset-3 rounded-2xl' : 'rounded-2xl'"
+            :style="!isMobile ? {
               width:    modalW + 'px',
               height:   modalH + 'px',
               position: modalX !== null ? 'fixed' : 'relative',
               left:     modalX !== null ? modalX + 'px' : undefined,
               top:      modalY !== null ? modalY + 'px' : undefined,
-            }"
+            } : undefined"
           >
-            <!-- Header (drag to move) -->
+            <!-- Header -->
             <div
-              class="flex items-center gap-2.5 px-5 py-3 border-b shrink-0 cursor-move"
-              @mousedown="startModalMove"
+              class="flex items-center gap-2.5 px-5 py-3 border-b shrink-0"
+              :class="!isMobile ? 'cursor-move' : ''"
+              @mousedown="!isMobile && startModalMove($event)"
             >
               <MousePointer2 class="size-4 text-indigo-500" />
               <div class="flex items-center gap-1.5 min-w-0 flex-1">
@@ -1192,12 +1215,12 @@ const { context: aiContext, contextLabel: aiContextLabel } = useViewAiContext(
               </div>
             </div>
 
-            <!-- Resize handles -->
-            <div class="absolute right-0 top-0 bottom-4 w-1.5 cursor-ew-resize hover:bg-indigo-400/30 rounded-r-2xl"
+            <!-- Resize handles (desktop only) -->
+            <div v-if="!isMobile" class="absolute right-0 top-0 bottom-4 w-1.5 cursor-ew-resize hover:bg-indigo-400/30 rounded-r-2xl"
                  @mousedown.stop="startModalResize($event, 'r')" />
-            <div class="absolute bottom-0 left-4 right-4 h-1.5 cursor-ns-resize hover:bg-indigo-400/30 rounded-b-2xl"
+            <div v-if="!isMobile" class="absolute bottom-0 left-4 right-4 h-1.5 cursor-ns-resize hover:bg-indigo-400/30 rounded-b-2xl"
                  @mousedown.stop="startModalResize($event, 'b')" />
-            <div class="absolute bottom-0 right-0 w-4 h-4 cursor-nwse-resize"
+            <div v-if="!isMobile" class="absolute bottom-0 right-0 w-4 h-4 cursor-nwse-resize"
                  @mousedown.stop="startModalResize($event, 'br')">
               <svg class="absolute bottom-1 right-1 text-muted-foreground/40" width="10" height="10" viewBox="0 0 10 10">
                 <path d="M9 1L1 9M9 5L5 9M9 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
