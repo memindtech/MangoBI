@@ -4,7 +4,7 @@
  * Configuration dialog for CTE, Calc, Group, Sort, Union, Where nodes
  */
 import {
-  X, Plus, Layers, Calculator, Database, SortAsc, GitMerge, Filter,
+  X, Plus, Layers, Calculator, Database, SortAsc, GitMerge, Filter, Braces,
   ChevronDown, Key, Search, Sparkles, Calendar, Play,
 } from 'lucide-vue-next'
 import { MarkerType } from '@vue-flow/core'
@@ -19,12 +19,13 @@ const tn = useToolNodes()
 const { generateSQL } = useSqlGenerator()
 
 const TOOL_META: Record<string, { label: string; color: string; bg: string; border: string; icon: any }> = {
-  cte:   { label: 'Named CTE', color: 'text-violet-500', bg: 'bg-violet-500/10', border: 'border-violet-500/30', icon: Layers     },
-  calc:  { label: 'Calculator', color: 'text-teal-500',   bg: 'bg-teal-500/10',   border: 'border-teal-500/30',   icon: Calculator },
-  group: { label: 'GROUP BY',  color: 'text-orange-500', bg: 'bg-orange-500/10', border: 'border-orange-500/30', icon: Database   },
-  sort:  { label: 'ORDER BY',  color: 'text-green-500',  bg: 'bg-green-500/10',  border: 'border-green-500/30',  icon: SortAsc    },
-  union: { label: 'UNION',     color: 'text-yellow-500', bg: 'bg-yellow-500/10', border: 'border-yellow-500/30', icon: GitMerge   },
-  where: { label: 'WHERE',     color: 'text-rose-500',   bg: 'bg-rose-500/10',   border: 'border-rose-500/30',   icon: Filter     },
+  cte:      { label: 'Named CTE', color: 'text-violet-500', bg: 'bg-violet-500/10', border: 'border-violet-500/30', icon: Layers     },
+  calc:     { label: 'Calculator', color: 'text-teal-500',   bg: 'bg-teal-500/10',   border: 'border-teal-500/30',   icon: Calculator },
+  group:    { label: 'GROUP BY',  color: 'text-orange-500', bg: 'bg-orange-500/10', border: 'border-orange-500/30', icon: Database   },
+  sort:     { label: 'ORDER BY',  color: 'text-green-500',  bg: 'bg-green-500/10',  border: 'border-green-500/30',  icon: SortAsc    },
+  union:    { label: 'UNION',     color: 'text-yellow-500', bg: 'bg-yellow-500/10', border: 'border-yellow-500/30', icon: GitMerge   },
+  where:    { label: 'WHERE',     color: 'text-rose-500',   bg: 'bg-rose-500/10',   border: 'border-rose-500/30',   icon: Filter     },
+  subquery: { label: 'Subquery',  color: 'text-indigo-500', bg: 'bg-indigo-500/10', border: 'border-indigo-500/30', icon: Braces     },
 }
 
 // WHERE operator groups with colors
@@ -1139,6 +1140,91 @@ const whereSqlPreview = computed(() => {
 // ── Group By / Sort: field search ────────────────────────────────────────
 const colSearch     = ref('')
 const sortColSearch = ref('')
+const subqColSearch = ref('')
+
+const filteredSubqGroupedCols = computed(() => applyGroupSearch(subqColSearch.value.trim()))
+
+const subqSqlPreview = computed((): string => {
+  if (!store.modalNode || nodeType.value !== 'subquery') return ''
+  const data = store.modalNode.data
+  const custom      = (data.customSql as string | undefined)?.trim()
+  const selectItems: Array<{ col: string; alias: string }> = data.selectItems ?? []
+  const mathItems:   Array<{ expr: string; alias: string }> = data.mathItems ?? []
+  const caseWhens:   any[]  = data.caseWhens  ?? []
+  const conditions:  any[]  = data.conditions ?? []
+
+  if (custom && !selectItems.length && !mathItems.length && !caseWhens.length) return custom
+
+  const parts: string[] = []
+  for (const item of selectItems) {
+    const a = item.alias?.trim()
+    parts.push(a ? `${item.col} AS ${a}` : item.col)
+  }
+  for (const m of mathItems) {
+    if (!m.expr?.trim()) continue
+    const a = m.alias?.trim()
+    parts.push(a ? `${m.expr} AS ${a}` : m.expr)
+  }
+  for (const cw of caseWhens) {
+    const branches = (cw.branches ?? []).filter((b: any) => b.condition?.trim())
+    if (!branches.length && !cw.elsePart?.trim()) continue
+    const alias = cw.alias?.trim()
+    const whenLines = branches.map((b: any) =>
+      `  WHEN ${b.condition} THEN ${b.result?.trim() || 'NULL'}`
+    ).join('\n')
+    const elseLine = cw.elsePart?.trim() ? `\n  ELSE ${cw.elsePart}` : ''
+    const expr = `CASE\n${whenLines}${elseLine}\nEND`
+    parts.push(alias ? `${expr} AS ${alias}` : expr)
+  }
+
+  const sel = parts.length ? parts.join(',\n       ') : '*'
+  const whereParts = conditions
+    .filter((c: any) => c.column && c.operator)
+    .map((c: any) => {
+      const op = c.operator as string
+      if (op === 'IS NULL' || op === 'IS NOT NULL') return `${c.column} ${op}`
+      if (op === 'IN') return `${c.column} IN (${c.value})`
+      return `${c.column} ${op} '${c.value}'`
+    })
+  const nodeAlias = ((data.alias as string | undefined)?.trim()) || '_sub'
+  const fromSrc   = custom ? `(\n  ...\n) ${nodeAlias}` : '<upstream>'
+  let sql = `SELECT ${sel}\nFROM   ${fromSrc}`
+  if (whereParts.length) sql += `\nWHERE  ${whereParts.join('\n   AND ')}`
+  return sql
+})
+
+function isSubqColSelected(colName: string): boolean {
+  return ((store.modalNode?.data?.selectItems ?? []) as Array<{ col: string }>).some(it => it.col === colName)
+}
+
+const MATH_PRESETS: Array<{ label: string; expr: string; alias: string }> = [
+  { label: 'a + b',          expr: 'col_a + col_b',                              alias: '' },
+  { label: 'a - b',          expr: 'col_a - col_b',                              alias: '' },
+  { label: 'a * b',          expr: 'col_a * col_b',                              alias: '' },
+  { label: 'a / b',          expr: 'col_a / NULLIF(col_b, 0)',                   alias: '' },
+  { label: 'COALESCE(…,0)',  expr: 'COALESCE(col, 0)',                           alias: '' },
+  { label: 'ISNULL(…,0)',    expr: 'ISNULL(col, 0)',                             alias: '' },
+  { label: 'COALESCE a+b',   expr: 'COALESCE(col_a, 0) + COALESCE(col_b, 0)',   alias: '' },
+  { label: 'COALESCE a-b',   expr: 'COALESCE(col_a, 0) - COALESCE(col_b, 0)',   alias: '' },
+  { label: 'ROUND(…,2)',     expr: 'ROUND(col, 2)',                              alias: '' },
+  { label: 'ABS(…)',         expr: 'ABS(col)',                                   alias: '' },
+  { label: 'CAST DECIMAL',   expr: 'CAST(col AS DECIMAL(18,2))',                 alias: '' },
+  { label: 'CASE > 0',       expr: 'CASE WHEN col > 0 THEN col ELSE 0 END',     alias: '' },
+]
+
+function addMathPreset(p: typeof MATH_PRESETS[number]) {
+  tn.setModalData({
+    mathItems: [
+      ...((store.modalNode?.data?.mathItems ?? []) as any[]),
+      { expr: p.expr, alias: p.alias },
+    ],
+  })
+}
+
+function selectAllSubqCols() {
+  const items = upstreamCols.value.map(c => ({ col: c.name, alias: '' }))
+  tn.setModalData({ selectItems: items })
+}
 
 // ── Grouped by source table ───────────────────────────────────────────────
 interface ColGroup { tableId: string; tableLabel: string; cols: VisibleCol[] }
@@ -1463,7 +1549,7 @@ function selectCalcCol(i: number, colName: string) {
 // Auto-init on modal open
 // flush:'sync' ensures the init runs before first render so cols appear pre-checked
 watch(() => store.modalNode, (node, oldNode) => {
-  if (!node) { colSearch.value = ''; sortColSearch.value = ''; return }
+  if (!node) { colSearch.value = ''; sortColSearch.value = ''; subqColSearch.value = ''; return }
   const type = node.data.nodeType
   // True only when the modal just opened for a different node (not a data update on the same node)
   const isNewOpen = node.id !== oldNode?.id
@@ -1486,6 +1572,8 @@ watch(() => store.modalNode, (node, oldNode) => {
     }
   } else if (type === 'union') {
     if (isNewOpen) unionStep.value = 1
+  } else if (type === 'subquery') {
+    if (isNewOpen) subqColSearch.value = ''
   }
 }, { immediate: true, flush: 'sync' })
 
@@ -1600,14 +1688,15 @@ const AGG_COLORS: Record<string, string> = {
 // Finish button color per tool type
 const finishBtnStyle = computed(() => {
   const map: Record<string, string> = {
-    cte:   '#8b5cf6',
-    group: '#f97316',
-    sort:  '#22c55e',
-    where: '#f43f5e',
-    calc:  '#14b8a6',
-    union: '#eab308',
+    cte:      '#8b5cf6',
+    group:    '#f97316',
+    sort:     '#22c55e',
+    where:    '#f43f5e',
+    calc:     '#14b8a6',
+    union:    '#eab308',
+    subquery: '#6366f1',
   }
-  return { backgroundColor: map[nodeType.value ?? ''] ?? '#14b8a6' }
+  return { backgroundColor: map[nodeType.value ?? ''] ?? '#6366f1' }
 })
 </script>
 
@@ -1904,8 +1993,9 @@ const finishBtnStyle = computed(() => {
       <div
         :class="[
           'bg-background rounded-2xl border shadow-2xl flex flex-col overflow-hidden',
-          nodeType === 'union' ? 'w-full max-w-[860px]' :
-          nodeType === 'cte'   ? 'w-full max-w-[900px]' :
+          nodeType === 'union'    ? 'w-full max-w-[860px]' :
+          nodeType === 'cte'      ? 'w-full max-w-[900px]' :
+          nodeType === 'subquery' ? 'w-full max-w-[960px]' :
           (nodeType === 'group' || nodeType === 'sort' || nodeType === 'calc' || nodeType === 'where') ? 'w-full max-w-[960px]' : 'w-[440px]',
         ]"
         style="height: 85vh"
@@ -1961,6 +2051,9 @@ const finishBtnStyle = computed(() => {
               </p>
               <p v-else-if="nodeType === 'where'" class="text-[10px] text-muted-foreground mt-0.5">
                 เพิ่ม conditions เพื่อกรองข้อมูลใน WHERE clause
+              </p>
+              <p v-else-if="nodeType === 'subquery'" class="text-[10px] text-muted-foreground mt-0.5">
+                Derived table · SQL body ถูก embed ใน WITH clause โดยตรง
               </p>
               </template><!-- /else nodeType -->
             </template><!-- /else not union -->
@@ -3674,6 +3767,361 @@ const finishBtnStyle = computed(() => {
             </div><!-- /wizard container -->
           </template>
 
+          <!-- ── Subquery ────────────────────────────────────────────── -->
+          <template v-else-if="nodeType === 'subquery'">
+
+            <!-- Verbatim mode: customSql set AND no structured columns -->
+            <template v-if="store.modalNode.data.customSql?.trim() && !(store.modalNode.data.selectItems as any[])?.length && !(store.modalNode.data.mathItems as any[])?.length && !(store.modalNode.data.caseWhens as any[])?.length">
+              <div class="flex flex-col gap-3 flex-1 min-h-0">
+                <!-- Header row: badge + alias + clear button -->
+                <div class="flex items-center gap-3 shrink-0">
+                  <span class="text-[9px] px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-400 font-mono border border-indigo-500/30 font-bold shrink-0">verbatim</span>
+                  <div class="flex items-center gap-1.5 flex-1 min-w-0">
+                    <span class="text-[10px] text-muted-foreground shrink-0">CTE alias:</span>
+                    <input
+                      :value="store.modalNode.data.alias ?? ''"
+                      @input="tn.setModalData({ alias: ($event.target as HTMLInputElement).value })"
+                      placeholder="cte_name"
+                      class="w-36 text-[10px] font-mono border border-indigo-500/30 rounded px-2 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-indigo-400/50"
+                    />
+                  </div>
+                  <button @click="tn.setModalData({ customSql: '' })"
+                    class="text-[10px] px-2.5 py-1 rounded-lg border border-indigo-500/30 text-indigo-500 hover:bg-indigo-500/10 transition-colors font-semibold shrink-0">
+                    ล้าง → ใช้ Builder
+                  </button>
+                </div>
+                <SqlAutoInput
+                  tag="textarea"
+                  col-source="all"
+                  :model-value="store.modalNode.data.customSql ?? ''"
+                  @update:model-value="tn.setModalData({ customSql: $event })"
+                  :rows="22"
+                  input-class="w-full flex-1 min-h-0 text-[11px] font-mono border border-indigo-500/20 rounded-lg px-3 py-2.5 bg-background focus:outline-none focus:ring-2 focus:ring-indigo-400/40 resize-none leading-relaxed text-foreground/80"
+                />
+              </div>
+            </template>
+
+            <!-- Builder mode: 2-column layout (includes hybrid when customSql = inner query) -->
+            <template v-else>
+
+              <!-- Hybrid mode banner: inner query is set alongside selectItems -->
+              <div v-if="store.modalNode.data.customSql?.trim()"
+                class="flex flex-col gap-2 mb-4 border rounded-xl p-3 bg-indigo-500/5 border-indigo-500/20">
+                <div class="flex items-center justify-between">
+                  <div class="flex items-center gap-2">
+                    <span class="text-[9px] px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-400 font-mono border border-indigo-500/30 font-bold">hybrid</span>
+                    <span class="text-[10px] text-muted-foreground">Inner query (FROM) · คอลัมน์ด้านล่างเป็น outer SELECT</span>
+                  </div>
+                  <button @click="tn.setModalData({ customSql: '' })"
+                    class="text-[9px] px-2 py-0.5 rounded border border-indigo-500/30 text-indigo-500/70 hover:bg-indigo-500/10 transition-colors">
+                    ล้าง inner query
+                  </button>
+                </div>
+                <SqlAutoInput
+                  tag="textarea"
+                  col-source="all"
+                  :model-value="store.modalNode.data.customSql ?? ''"
+                  @update:model-value="tn.setModalData({ customSql: $event })"
+                  :rows="5"
+                  input-class="w-full text-[10px] font-mono border border-indigo-500/20 rounded-lg px-3 py-2 bg-background/60 focus:outline-none focus:ring-1 focus:ring-indigo-400/40 resize-none leading-relaxed text-foreground/70"
+                />
+              </div>
+
+              <div class="grid grid-cols-[1fr_1fr] gap-5 items-start">
+
+              <!-- ── LEFT: Column Browser ─────────────────────────────── -->
+              <div class="flex flex-col gap-4 min-w-0">
+                <div class="flex flex-col gap-3 border rounded-xl p-4 bg-indigo-500/3">
+                  <div class="flex items-center justify-between">
+                    <div>
+                      <p class="text-xs font-bold text-indigo-500">SELECT Columns</p>
+                      <p class="text-[10px] text-muted-foreground mt-0.5">เลือก columns ที่จะ SELECT ใน subquery</p>
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <span class="text-[10px] font-semibold text-indigo-500 bg-indigo-500/10 px-2 py-0.5 rounded-full">
+                        {{ (store.modalNode.data.selectItems ?? []).length }}/{{ upstreamCols.length }}
+                      </span>
+                      <button @click="selectAllSubqCols" class="text-[10px] text-indigo-500 hover:underline font-semibold">ทั้งหมด</button>
+                      <span class="text-muted-foreground text-[10px]">/</span>
+                      <button @click="tn.setModalData({ selectItems: [] })" class="text-[10px] text-muted-foreground hover:underline">ล้าง</button>
+                    </div>
+                  </div>
+
+                  <div class="relative">
+                    <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground/50" />
+                    <input v-model="subqColSearch" placeholder="ค้นหา column..."
+                      class="w-full text-xs border rounded-lg pl-7 pr-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-indigo-400/50 font-mono" />
+                  </div>
+
+                  <div v-if="!upstreamCols.length"
+                    class="flex items-center gap-2 px-3 py-3 rounded-lg bg-muted/30 text-[10px] text-muted-foreground italic">
+                    ยังไม่มี columns — เชื่อมต่อ table node เข้ากับ subquery node ก่อน
+                  </div>
+
+                  <div v-else class="border rounded-lg overflow-hidden max-h-[380px] overflow-y-auto">
+                    <template v-for="group in filteredSubqGroupedCols" :key="group.tableId">
+                      <div class="sticky top-0 z-10 flex items-center gap-2 px-3 py-1.5 bg-muted border-b border-border/50">
+                        <Database class="size-3 text-indigo-400 shrink-0" />
+                        <span class="text-[10px] font-semibold text-foreground truncate flex-1">{{ group.tableLabel }}</span>
+                        <span class="text-[9px] text-muted-foreground shrink-0">{{ group.cols.length }}</span>
+                      </div>
+                      <label v-for="col in group.cols" :key="col.name"
+                        class="flex items-center gap-2.5 px-3 py-2 pl-5 cursor-pointer select-none transition-colors border-b border-border/30 last:border-0 hover:bg-indigo-500/5"
+                        :class="isSubqColSelected(col.name) ? 'bg-indigo-500/5' : ''">
+                        <div :class="['size-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors',
+                          isSubqColSelected(col.name) ? 'bg-indigo-500 border-indigo-500' : 'border-border/60 bg-background']">
+                          <svg v-if="isSubqColSelected(col.name)" class="size-2.5 text-white" fill="none" viewBox="0 0 10 10">
+                            <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                          </svg>
+                          <input type="checkbox" class="sr-only"
+                            :checked="isSubqColSelected(col.name)"
+                            @change="tn.toggleSubqCol(col.name, ($event.target as HTMLInputElement).checked)" />
+                        </div>
+                        <Key v-if="col.isPk" class="size-3 text-amber-400 shrink-0" />
+                        <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(col.type).cls]">
+                          {{ getColTypeBadge(col.type).label }}
+                        </span>
+                        <div class="flex-1 min-w-0">
+                          <p class="text-[11px] truncate" :class="col.isPk ? 'text-amber-500 font-semibold' : 'text-foreground'">{{ col.remark || col.name }}</p>
+                          <p v-if="col.remark" class="font-mono text-[9px] text-muted-foreground/60 truncate">{{ col.name }}</p>
+                        </div>
+                      </label>
+                    </template>
+                    <div v-if="!filteredSubqGroupedCols.length"
+                      class="px-3 py-3 text-[10px] text-muted-foreground/60 italic text-center">
+                      {{ subqColSearch ? `ไม่พบ column ที่ตรงกับ "${subqColSearch}"` : 'กำลังโหลด columns...' }}
+                    </div>
+                  </div>
+                </div><!-- /SELECT Columns -->
+
+                <!-- Selected columns + alias -->
+                <div v-if="(store.modalNode.data.selectItems ?? []).length"
+                  class="flex flex-col gap-2 border rounded-xl p-3 bg-indigo-500/3">
+                  <p class="text-[11px] font-semibold text-indigo-500">Alias (ตั้งชื่อ column)
+                    <span class="text-[10px] font-normal text-muted-foreground ml-1">ว่างเปล่า = ใช้ชื่อเดิม</span>
+                  </p>
+                  <div class="flex flex-col gap-1.5 max-h-[160px] overflow-y-auto">
+                    <div v-for="(item, i) in store.modalNode.data.selectItems" :key="'si-' + i"
+                      class="flex items-center gap-2">
+                      <span class="text-[10px] font-mono text-foreground/70 flex-1 truncate min-w-0">{{ item.col }}</span>
+                      <span class="text-[9px] text-muted-foreground/40 shrink-0">AS</span>
+                      <input :value="item.alias"
+                        @input="tn.setSubqColAlias(Number(i), ($event.target as HTMLInputElement).value)"
+                        placeholder="alias"
+                        class="w-24 text-[10px] font-mono border rounded px-2 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-indigo-400/50"
+                        :class="item.alias ? 'border-indigo-400/40' : ''" />
+                      <button @click="tn.removeSubqCol(Number(i))"
+                        class="size-4 flex items-center justify-center rounded hover:bg-destructive/10 hover:text-destructive text-muted-foreground/40 transition-colors shrink-0">
+                        <X class="size-3" />
+                      </button>
+                    </div>
+                  </div>
+                </div><!-- /alias -->
+
+                <!-- MATH Expressions -->
+                <div class="flex flex-col gap-3 border rounded-xl p-4 bg-indigo-500/3">
+                  <div class="flex items-center justify-between">
+                    <div>
+                      <p class="text-xs font-bold text-indigo-500">MATH / Expression</p>
+                      <p class="text-[10px] text-muted-foreground mt-0.5">คำสั่งคณิตศาสตร์ / ฟังก์ชัน SQL พร้อม alias</p>
+                    </div>
+                    <button @click="tn.addMathItem()"
+                      class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-indigo-500/30 text-indigo-500 hover:bg-indigo-500/10 transition-colors">
+                      <Plus class="size-2.5" /> เพิ่ม
+                    </button>
+                  </div>
+
+                  <!-- Quick-insert presets -->
+                  <div class="flex flex-wrap gap-1">
+                    <button v-for="p in MATH_PRESETS" :key="p.label"
+                      @click="addMathPreset(p)"
+                      class="text-[9px] px-2 py-0.5 rounded-full border border-indigo-500/25 text-indigo-400/80 hover:bg-indigo-500/10 hover:border-indigo-500/50 hover:text-indigo-400 transition-colors font-mono">
+                      {{ p.label }}
+                    </button>
+                  </div>
+
+                  <p v-if="!(store.modalNode.data.mathItems ?? []).length"
+                    class="text-[10px] text-muted-foreground/50 italic px-1">คลิก preset ด้านบนหรือ "เพิ่ม" เพื่อเพิ่ม expression</p>
+
+                  <div class="flex flex-col gap-2 max-h-[260px] overflow-y-auto">
+                    <div v-for="(m, mi) in (store.modalNode.data.mathItems ?? [])" :key="'mi-' + mi"
+                      class="flex flex-col gap-1.5 border rounded-xl p-2.5 bg-background/60 shrink-0">
+                      <div class="flex items-center gap-1.5">
+                        <span class="text-[9px] text-indigo-400/60 font-mono shrink-0">expr</span>
+                        <SqlAutoInput
+                          :model-value="m.expr"
+                          @update:model-value="tn.setMathItem(Number(mi), { expr: $event })"
+                          placeholder="( COALESCE(a,0) + COALESCE(b,0) )"
+                          :input-class="'flex-1 text-[10px] font-mono border rounded px-2 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-indigo-400/50 w-full' + (m.expr ? ' border-indigo-400/40' : '')"
+                        />
+                        <button @click="tn.removeMathItem(Number(mi))"
+                          class="size-5 flex items-center justify-center rounded hover:bg-destructive/10 hover:text-destructive text-muted-foreground/40 transition-colors shrink-0">
+                          <X class="size-3" />
+                        </button>
+                      </div>
+                      <div class="flex items-center gap-1.5">
+                        <span class="text-[9px] text-indigo-400/60 font-mono shrink-0">AS</span>
+                        <input :value="m.alias"
+                          @input="tn.setMathItem(Number(mi), { alias: ($event.target as HTMLInputElement).value })"
+                          placeholder="alias_name"
+                          class="flex-1 text-[10px] font-mono border rounded px-2 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-indigo-400/50"
+                          :class="m.alias ? 'border-indigo-400/40 text-indigo-300' : ''" />
+                      </div>
+                    </div>
+                  </div>
+                </div><!-- /MATH -->
+
+              </div><!-- /LEFT -->
+
+              <!-- ── RIGHT: CASE WHEN + WHERE + Preview ──────────────── -->
+              <div class="flex flex-col gap-4 min-w-0">
+
+                <!-- CASE WHEN -->
+                <div class="flex flex-col gap-3 border rounded-xl p-4 bg-indigo-500/3">
+                  <div class="flex items-center justify-between">
+                    <div>
+                      <p class="text-xs font-bold text-indigo-500">CASE WHEN</p>
+                      <p class="text-[10px] text-muted-foreground mt-0.5">เพิ่ม conditional expressions ใน SELECT</p>
+                    </div>
+                    <button @click="tn.addSubqCaseWhen()"
+                      class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-indigo-500/30 text-indigo-500 hover:bg-indigo-500/10 transition-colors">
+                      <Plus class="size-2.5" /> เพิ่ม
+                    </button>
+                  </div>
+
+                  <p v-if="!(store.modalNode.data.caseWhens ?? []).length"
+                    class="text-[10px] text-muted-foreground/50 italic px-1">ยังไม่มี CASE WHEN</p>
+
+                  <div class="flex flex-col gap-3 max-h-[320px] overflow-y-auto">
+                    <div v-for="(cw, ci) in (store.modalNode.data.caseWhens ?? [])" :key="'cw-' + ci"
+                      class="flex flex-col gap-2 border rounded-xl p-3 bg-background/60 shrink-0">
+                      <!-- Header row: CASE label + alias + remove -->
+                      <div class="flex items-center gap-2">
+                        <span class="text-[10px] font-semibold text-indigo-400 uppercase tracking-wide shrink-0">CASE {{ Number(ci) + 1 }}</span>
+                        <input :value="cw.alias"
+                          @input="tn.setSubqCaseWhen(Number(ci), { alias: ($event.target as HTMLInputElement).value })"
+                          placeholder="AS alias_name"
+                          class="flex-1 text-[10px] font-mono border rounded px-2 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-indigo-400/50"
+                          :class="cw.alias ? 'border-indigo-400/40' : ''" />
+                        <button @click="tn.removeSubqCaseWhen(Number(ci))"
+                          class="size-5 flex items-center justify-center rounded hover:bg-destructive/10 hover:text-destructive text-muted-foreground/60 transition-colors shrink-0">
+                          <X class="size-3.5" />
+                        </button>
+                      </div>
+
+                      <!-- WHEN branches -->
+                      <div class="flex flex-col gap-1">
+                        <div v-for="(branch, bi) in cw.branches" :key="'b-' + bi"
+                          class="grid grid-cols-[auto_1fr_1fr_auto] gap-1.5 items-center">
+                          <span class="text-[9px] font-mono text-indigo-400/70 shrink-0">WHEN</span>
+                          <SqlAutoInput
+                            :model-value="branch.condition"
+                            @update:model-value="tn.setSubqCaseWhenBranch(Number(ci), Number(bi), { condition: $event })"
+                            :placeholder="`condition ${Number(bi)+1}`"
+                            input-class="text-[10px] font-mono border rounded px-2 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-indigo-400/50 w-full"
+                          />
+                          <SqlAutoInput
+                            :model-value="branch.result"
+                            @update:model-value="tn.setSubqCaseWhenBranch(Number(ci), Number(bi), { result: $event })"
+                            placeholder="THEN result"
+                            input-class="text-[10px] font-mono border rounded px-2 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-indigo-400/50 w-full"
+                          />
+                          <button v-if="cw.branches.length > 1"
+                            @click="tn.removeSubqCaseWhenBranch(Number(ci), Number(bi))"
+                            class="size-5 flex items-center justify-center rounded hover:bg-destructive/10 hover:text-destructive text-muted-foreground/40 transition-colors shrink-0">
+                            <X class="size-3" />
+                          </button>
+                          <div v-else class="size-5 shrink-0" />
+                        </div>
+                      </div>
+
+                      <!-- ELSE row -->
+                      <div class="grid grid-cols-[auto_1fr] gap-1.5 items-center">
+                        <span class="text-[9px] font-mono text-indigo-400/70 shrink-0">ELSE</span>
+                        <input :value="cw.elsePart"
+                          @input="tn.setSubqCaseWhen(Number(ci), { elsePart: ($event.target as HTMLInputElement).value })"
+                          placeholder="NULL"
+                          class="text-[10px] font-mono border rounded px-2 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-indigo-400/50" />
+                      </div>
+
+                      <button @click="tn.addSubqCaseWhenBranch(Number(ci))"
+                        class="text-[9px] w-full py-1 rounded border border-dashed border-indigo-500/30 text-indigo-500/70 hover:bg-indigo-500/8 transition-colors flex items-center justify-center gap-1">
+                        <Plus class="size-3" /> เพิ่ม WHEN branch
+                      </button>
+                    </div>
+                  </div>
+                </div><!-- /CASE WHEN -->
+
+                <!-- WHERE Conditions -->
+                <div class="flex flex-col gap-2 border rounded-xl p-4 bg-rose-500/3">
+                  <div class="flex items-center justify-between">
+                    <label class="text-[11px] font-semibold text-rose-500 uppercase tracking-wide">
+                      WHERE
+                      <span v-if="(store.modalNode.data.conditions ?? []).filter((c: any) => c.column).length"
+                        class="ml-1 text-[10px] font-normal text-muted-foreground normal-case">
+                        {{ (store.modalNode.data.conditions ?? []).filter((c: any) => c.column).length }} conditions
+                      </span>
+                    </label>
+                    <button @click="tn.addWhereCondition()"
+                      class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-rose-500/30 text-rose-500 hover:bg-rose-500/10 transition-colors">
+                      <Plus class="size-2.5" /> เพิ่ม
+                    </button>
+                  </div>
+
+                  <div class="flex flex-col gap-2 max-h-[220px] overflow-y-auto">
+                    <div v-for="(cond, i) in (store.modalNode.data.conditions ?? [])" :key="'wc-' + i"
+                      class="flex flex-col gap-1.5 border rounded-xl p-2.5 bg-background/60 shrink-0">
+                      <div class="flex items-center gap-1.5">
+                        <input :value="cond.column"
+                          @input="tn.setWhereCondition(Number(i), { column: ($event.target as HTMLInputElement).value })"
+                          placeholder="column name"
+                          list="modal-col-list"
+                          class="flex-1 text-[10px] font-mono border rounded px-2 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-rose-400/50" />
+                        <button @click="tn.removeWhereCondition(Number(i))"
+                          class="size-5 flex items-center justify-center rounded hover:bg-destructive/10 hover:text-destructive text-muted-foreground/40 transition-colors shrink-0">
+                          <X class="size-3" />
+                        </button>
+                      </div>
+                      <div class="flex flex-wrap gap-1">
+                        <button v-for="op in ['=','!=','>','<','>=','<=','LIKE','IN','IS NULL','IS NOT NULL']" :key="op"
+                          @click="tn.setWhereCondition(Number(i), { operator: op })"
+                          :class="['text-[8px] px-1.5 py-0.5 rounded border font-mono transition-colors', whereOpClass(cond.operator, op)]">
+                          {{ op }}
+                        </button>
+                      </div>
+                      <input v-if="cond.operator !== 'IS NULL' && cond.operator !== 'IS NOT NULL'"
+                        :value="cond.value"
+                        @input="tn.setWhereCondition(Number(i), { value: ($event.target as HTMLInputElement).value })"
+                        placeholder="value"
+                        class="text-[10px] font-mono border rounded px-2 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-rose-400/50" />
+                    </div>
+                  </div>
+                  <p v-if="!(store.modalNode.data.conditions ?? []).length"
+                    class="text-[10px] text-muted-foreground/50 italic px-1">ไม่มี condition = ดึงข้อมูลทั้งหมด</p>
+                </div><!-- /WHERE -->
+
+                <!-- SQL Preview -->
+                <div class="flex flex-col gap-1.5">
+                  <div class="flex items-center gap-2">
+                    <span class="text-[10px] font-semibold text-indigo-500 uppercase tracking-wide">SQL Preview</span>
+                    <button @click="tn.setModalData({ customSql: subqSqlPreview })"
+                      v-if="subqSqlPreview && subqSqlPreview !== 'SELECT *\nFROM   <upstream>'"
+                      class="text-[9px] px-2 py-0.5 rounded border border-indigo-500/30 text-indigo-500/70 hover:bg-indigo-500/10 transition-colors">
+                      → บันทึกเป็น verbatim
+                    </button>
+                  </div>
+                  <div class="px-3 py-2 rounded-lg bg-indigo-500/5 border border-indigo-400/20 max-h-[160px] overflow-y-auto overflow-x-auto">
+                    <code class="text-[9px] font-mono text-indigo-300/80 leading-relaxed whitespace-pre">{{ subqSqlPreview || 'SELECT *\nFROM   <upstream>' }}</code>
+                  </div>
+                </div><!-- /preview -->
+
+              </div><!-- /RIGHT -->
+
+              </div><!-- /grid -->
+            </template><!-- /builder mode -->
+
+          </template>
+
           <!-- ── Where ───────────────────────────────────────────────── -->
           <template v-else-if="nodeType === 'where'">
             <div class="grid grid-cols-[1fr_1fr] gap-5 items-start">
@@ -3808,6 +4256,22 @@ const finishBtnStyle = computed(() => {
             </p>
             <p v-else-if="nodeType === 'where'" class="text-[10px] text-muted-foreground">
               WHERE <span class="font-semibold text-rose-500">{{ whereCondCount }}</span> conditions
+            </p>
+            <p v-else-if="nodeType === 'subquery'" class="text-[10px] text-muted-foreground">
+              <span v-if="store.modalNode?.data?.customSql?.trim() && !(store.modalNode.data.selectItems as any[])?.length && !(store.modalNode.data.mathItems as any[])?.length && !(store.modalNode.data.caseWhens as any[])?.length">
+                <span class="font-semibold text-indigo-400">{{ store.modalNode.data.alias || 'verbatim' }}</span>
+                · <span class="text-muted-foreground">{{ (store.modalNode.data.customSql as string).trim().split('\n').length }} lines</span>
+              </span>
+              <span v-else-if="store.modalNode?.data?.customSql?.trim()">
+                hybrid · <span class="text-indigo-400">{{ (store.modalNode?.data?.selectItems ?? []).length }} cols</span>
+                <span v-if="(store.modalNode?.data?.mathItems ?? []).filter((m: any) => m.expr?.trim()).length"> + <span class="font-semibold text-indigo-400">{{ (store.modalNode.data.mathItems as any[]).filter((m: any) => m.expr?.trim()).length }}</span> MATH</span>
+              </span>
+              <span v-else>
+                <span class="font-semibold text-indigo-500">{{ (store.modalNode?.data?.selectItems ?? []).length }}</span> cols
+                <span v-if="(store.modalNode?.data?.mathItems ?? []).filter((m: any) => m.expr?.trim()).length"> + <span class="font-semibold text-indigo-500">{{ (store.modalNode.data.mathItems as any[]).filter((m: any) => m.expr?.trim()).length }}</span> MATH</span>
+                <span v-if="(store.modalNode?.data?.caseWhens ?? []).length"> + <span class="font-semibold text-indigo-500">{{ (store.modalNode.data.caseWhens as any[]).length }}</span> CASE</span>
+                <span v-if="(store.modalNode?.data?.conditions ?? []).filter((c: any) => c.column).length"> + <span class="font-semibold text-rose-500">{{ (store.modalNode.data.conditions as any[]).filter((c: any) => c.column).length }}</span> WHERE</span>
+              </span>
             </p>
             <div v-else-if="nodeType === 'union'" class="flex items-center gap-3 flex-1 min-w-0">
               <span class="text-[10px] text-muted-foreground/60">{{ unionStep }} / {{ UNION_STEPS.length }}</span>

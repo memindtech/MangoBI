@@ -2,7 +2,7 @@
 import { Handle, Position, useVueFlow } from '@vue-flow/core'
 import {
   Layers, Calculator, Database, SortAsc, GitMerge, Filter as FilterIcon,
-  Settings2, X,
+  Settings2, X, Braces,
 } from 'lucide-vue-next'
 import { useSqlBuilderStore } from '~/stores/sql-builder'
 import { useToolNodes } from '~/composables/sql-builder/useToolNodes'
@@ -20,21 +20,23 @@ const { updateNodeInternals } = useVueFlow()
 onMounted(() => nextTick(() => updateNodeInternals([props.id])))
 
 const TOOL_ICONS: Record<string, any> = {
-  cte:   Layers,
-  calc:  Calculator,
-  group: Database,
-  sort:  SortAsc,
-  union: GitMerge,
-  where: FilterIcon,
+  cte:      Layers,
+  calc:     Calculator,
+  group:    Database,
+  sort:     SortAsc,
+  union:    GitMerge,
+  where:    FilterIcon,
+  subquery: Braces,
 }
 
 const TOOL_META: Record<string, { label: string; color: string; bg: string; border: string; handleColor: string }> = {
-  cte:   { label: 'CTE',      color: 'text-violet-400', bg: 'bg-violet-500/10', border: 'border-violet-500/50', handleColor: '!bg-violet-400' },
-  calc:  { label: 'Calc',     color: 'text-teal-400',   bg: 'bg-teal-500/10',   border: 'border-teal-500/50',   handleColor: '!bg-teal-400'   },
-  group: { label: 'GROUP BY', color: 'text-orange-400', bg: 'bg-orange-500/10', border: 'border-orange-500/50', handleColor: '!bg-orange-400' },
-  sort:  { label: 'ORDER BY', color: 'text-green-400',  bg: 'bg-green-500/10',  border: 'border-green-500/50',  handleColor: '!bg-green-400'  },
-  union: { label: 'UNION',    color: 'text-yellow-400', bg: 'bg-yellow-500/10', border: 'border-yellow-500/50', handleColor: '!bg-yellow-400' },
-  where: { label: 'WHERE',    color: 'text-rose-400',   bg: 'bg-rose-500/10',   border: 'border-rose-500/50',   handleColor: '!bg-rose-400'   },
+  cte:      { label: 'CTE',      color: 'text-violet-400', bg: 'bg-violet-500/10', border: 'border-violet-500/50', handleColor: '!bg-violet-400' },
+  calc:     { label: 'Calc',     color: 'text-teal-400',   bg: 'bg-teal-500/10',   border: 'border-teal-500/50',   handleColor: '!bg-teal-400'   },
+  group:    { label: 'GROUP BY', color: 'text-orange-400', bg: 'bg-orange-500/10', border: 'border-orange-500/50', handleColor: '!bg-orange-400' },
+  sort:     { label: 'ORDER BY', color: 'text-green-400',  bg: 'bg-green-500/10',  border: 'border-green-500/50',  handleColor: '!bg-green-400'  },
+  union:    { label: 'UNION',    color: 'text-yellow-400', bg: 'bg-yellow-500/10', border: 'border-yellow-500/50', handleColor: '!bg-yellow-400' },
+  where:    { label: 'WHERE',    color: 'text-rose-400',   bg: 'bg-rose-500/10',   border: 'border-rose-500/50',   handleColor: '!bg-rose-400'   },
+  subquery: { label: 'SUBQUERY', color: 'text-indigo-400', bg: 'bg-indigo-500/10', border: 'border-indigo-500/50', handleColor: '!bg-indigo-400' },
 }
 
 const AGG_COLORS: Record<string, string> = {
@@ -69,6 +71,11 @@ const isCalc       = computed(() => props.data._toolId === 'calc')
 const whereConds = computed(() => (props.data.conditions ?? []).filter((c: any) => c.column && c.operator) as Array<{ column: string; operator: string; value: string }>)
 const isWhere    = computed(() => props.data._toolId === 'where')
 
+// Subquery specific data
+const subqueryAlias  = computed(() => (props.data.alias as string) || 'sub')
+const subquerySql    = computed(() => (props.data.customSql as string | undefined) ?? '')
+const isSubquery     = computed(() => props.data._toolId === 'subquery')
+
 // CTE specific data
 const cteName     = computed(() => (props.data.name as string) || 'my_cte')
 const cteSelCols  = computed(() => (props.data.selectedCols ?? []) as string[])
@@ -98,7 +105,8 @@ const connectedSources = computed(() => {
 })
 
 const hasContent = computed(() => {
-  if (isCte.value)   return true
+  if (isCte.value)      return true
+  if (isSubquery.value) return true
   if (props.data._toolId === 'union') return true
   if (isGroup.value) return groupCols.value.length > 0 || aggs.value.length > 0 || groupFilters.value.length > 0
   if (isSort.value)  return sortItems.value.length > 0
@@ -370,6 +378,22 @@ function removeNode()  { store.removeNode(props.id) }
             </div>
           </div>
 
+        </div>
+      </template>
+
+      <!-- ── SUBQUERY rich summary ────────────────────────────────── -->
+      <template v-else-if="isSubquery">
+        <div class="px-3 py-2 flex flex-col gap-1.5">
+          <!-- alias badge -->
+          <div class="flex items-center gap-1.5">
+            <span class="text-[8px] font-bold uppercase tracking-wider text-indigo-400/70">( … )</span>
+            <span class="text-[10px] font-mono font-semibold text-indigo-300">{{ subqueryAlias }}</span>
+          </div>
+          <!-- SQL preview (first 60 chars of first non-empty line) -->
+          <p v-if="subquerySql" class="text-[9px] font-mono text-foreground/50 truncate leading-relaxed">
+            {{ subquerySql.split('\n').find(l => l.trim()) ?? subquerySql.slice(0, 60) }}
+          </p>
+          <p v-else class="text-[9px] text-muted-foreground/50 italic">SELECT * FROM upstream</p>
         </div>
       </template>
 

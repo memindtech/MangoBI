@@ -226,6 +226,94 @@ export function useToolNodes() {
     setModalData({ filters })
   }
 
+  // ── Math expression helpers ───────────────────────────────────────────
+  function addMathItem() {
+    setModalData({ mathItems: [...(modalNodeData('mathItems') ?? []), { expr: '', alias: '' }] })
+  }
+  function removeMathItem(i: number) {
+    const items = [...(modalNodeData('mathItems') ?? [])]
+    items.splice(i, 1)
+    setModalData({ mathItems: items })
+  }
+  function setMathItem(i: number, patch: any) {
+    const items = (modalNodeData('mathItems') ?? []).map(
+      (m: any, idx: number) => idx === i ? { ...m, ...patch } : m
+    )
+    setModalData({ mathItems: items })
+  }
+
+  // ── Subquery helpers ──────────────────────────────────────────────────
+  function toggleSubqCol(colName: string, checked: boolean) {
+    const items = [...((modalNodeData('selectItems') ?? []) as Array<{ col: string; alias: string }>)]
+    if (checked) {
+      if (!items.some(it => it.col === colName)) items.push({ col: colName, alias: '' })
+    } else {
+      const idx = items.findIndex(it => it.col === colName)
+      if (idx >= 0) items.splice(idx, 1)
+    }
+    setModalData({ selectItems: items })
+  }
+
+  function setSubqColAlias(i: number, alias: string) {
+    const items = [...((modalNodeData('selectItems') ?? []) as any[])]
+    items[i] = { ...items[i], alias }
+    setModalData({ selectItems: items })
+  }
+
+  function removeSubqCol(i: number) {
+    const items = [...((modalNodeData('selectItems') ?? []) as any[])]
+    items.splice(i, 1)
+    setModalData({ selectItems: items })
+  }
+
+  function addSubqCaseWhen() {
+    setModalData({
+      caseWhens: [...(modalNodeData('caseWhens') ?? []),
+        { alias: '', branches: [{ condition: '', result: '' }], elsePart: '' }],
+    })
+  }
+
+  function removeSubqCaseWhen(i: number) {
+    const items = [...(modalNodeData('caseWhens') ?? [])]
+    items.splice(i, 1)
+    setModalData({ caseWhens: items })
+  }
+
+  function setSubqCaseWhen(i: number, patch: any) {
+    const items = (modalNodeData('caseWhens') ?? []).map(
+      (c: any, idx: number) => idx === i ? { ...c, ...patch } : c
+    )
+    setModalData({ caseWhens: items })
+  }
+
+  function addSubqCaseWhenBranch(caseIdx: number) {
+    const items = (modalNodeData('caseWhens') ?? []).map((c: any, idx: number) =>
+      idx === caseIdx
+        ? { ...c, branches: [...c.branches, { condition: '', result: '' }] }
+        : c
+    )
+    setModalData({ caseWhens: items })
+  }
+
+  function removeSubqCaseWhenBranch(caseIdx: number, branchIdx: number) {
+    const items = (modalNodeData('caseWhens') ?? []).map((c: any, idx: number) => {
+      if (idx !== caseIdx) return c
+      const branches = [...c.branches]
+      branches.splice(branchIdx, 1)
+      return { ...c, branches }
+    })
+    setModalData({ caseWhens: items })
+  }
+
+  function setSubqCaseWhenBranch(caseIdx: number, branchIdx: number, patch: any) {
+    const items = (modalNodeData('caseWhens') ?? []).map((c: any, idx: number) => {
+      if (idx !== caseIdx) return c
+      const branches = c.branches.map((b: any, bi: number) => bi === branchIdx ? { ...b, ...patch } : b)
+      return { ...c, branches }
+    })
+    setModalData({ caseWhens: items })
+  }
+
   // ── Tool node summary for display ─────────────────────────────────────
   function toolNodeSummary(data: any): string {
     switch (data.nodeType) {
@@ -245,6 +333,16 @@ export function useToolNodes() {
       }
       case 'where':
         return (data.conditions ?? []).filter((c: any) => c.column).map((c: any) => `${c.column} ${c.operator}`).join(', ') || 'ยังไม่ได้ตั้งค่า'
+      case 'subquery': {
+        const custom = (data.customSql as string | undefined)?.trim()
+        const cols  = (data.selectItems ?? []).length
+        const math  = (data.mathItems  ?? []).filter((m: any) => m.expr?.trim()).length
+        const cws   = (data.caseWhens  ?? []).filter((c: any) => c.alias || c.branches?.some((b: any) => b.condition)).length
+        const conds = (data.conditions ?? []).filter((c: any) => c.column).length
+        if (custom && !cols && !math && !cws) return (data.alias as string | undefined)?.trim() || 'verbatim SQL'
+        if (!cols && !math && !cws && !conds) return 'ยังไม่ได้ตั้งค่า'
+        return `${cols} cols${math ? ' + ' + math + ' MATH' : ''}${cws ? ' + ' + cws + ' CASE' : ''}${conds ? ' + ' + conds + ' WHERE' : ''}`
+      }
       default:
         return ''
     }
@@ -273,6 +371,12 @@ export function useToolNodes() {
     addGroupFilter, removeGroupFilter, setGroupFilter,
     // Calc Filter
     addCalcFilter, removeCalcFilter, setCalcFilter,
+    // Math expressions
+    addMathItem, removeMathItem, setMathItem,
+    // Subquery
+    toggleSubqCol, setSubqColAlias, removeSubqCol,
+    addSubqCaseWhen, removeSubqCaseWhen, setSubqCaseWhen,
+    addSubqCaseWhenBranch, removeSubqCaseWhenBranch, setSubqCaseWhenBranch,
     // Display
     toolNodeSummary,
   }

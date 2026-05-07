@@ -199,7 +199,13 @@ function runImport(sql: string) {
       }
     }
 
-    for (const { body } of cteDefs.values()) collectSelectCols(body)
+    // Skip CTE bodies that wrap an inner subquery (FROM (SELECT...)) — the outer
+    // alias (e.g. `a`) refers to the derived table, not the real inner table, so
+    // collectSelectCols would misattribute columns like `a.exchange` to
+    // `bd_boq_detail` when they actually come from `bd_proj_h` inside the subquery.
+    for (const { body } of cteDefs.values()) {
+      if (!/\bFROM\s*\(\s*SELECT\b/i.test(body)) collectSelectCols(body)
+    }
     collectSelectCols(outerSql)
 
     // ── 3. Parse JOIN edges from each CTE body + outer SQL ─────────────────
@@ -303,6 +309,7 @@ function runImport(sql: string) {
     // Parse ORDER BY clause
     interface SortItem { col: string; dir: string }
     function parseOrderBy(block: string): SortItem[] {
+
       const om = /\bORDER\s+BY\b([\s\S]+?)(?:\bLIMIT\b|\bOFFSET\b|\)|\bUNION\b|$)/i.exec(block)
       if (!om) return []
       return om[1]!
@@ -310,6 +317,75 @@ function runImport(sql: string) {
         .map(s => s.trim())
         .map(s => { const m2 = /(?:\w+\.)?(\w+)(?:\s+(ASC|DESC))?/i.exec(s); return m2 ? { col: m2[1]!, dir: (m2[2] ?? 'ASC').toUpperCase() } : null })
         .filter(Boolean) as SortItem[]
+    }
+
+    // Parse subquery CTE body: outer SELECT columns + inner FROM (...) query
+    interface SubqSelectItem { col: string; alias: string }
+    interface SubqCaseWhen   { alias: string; branches: Array<{ condition: string; result: string }>; elsePart: string }
+    interface ParsedSubquery { selectItems: SubqSelectItem[]; caseWhens: SubqCaseWhen[]; innerSql: string; conditions: ReturnType<typeof parseWhere> }
+
+    function parseSubqueryBody(body: string): ParsedSubquery {
+      const fromParenMatch = /\bFROM\s*\(/i.exec(body)
+      if (!fromParenMatch) return { selectItems: [], caseWhens: [], innerSql: '', conditions: [] }
+
+      const selectStart = /\bSELECT\b/i.exec(body)?.index ?? 0
+      const outerSelectStr = body.slice(selectStart + 'SELECT'.length, fromParenMatch.index).trim()
+
+      // Extract inner query from FROM (...)
+      const openAt = fromParenMatch.index + fromParenMatch[0].length
+      let depth = 1, pos = openAt
+      while (pos < body.length && depth > 0) {
+        if (body[pos] === '(') depth++
+        else if (body[pos] === ')') { if (--depth === 0) break }
+        pos++
+      }
+      const innerSql = body.slice(openAt, pos).trim()
+      const conditions = parseWhere(body.slice(pos + 1))
+
+      // Split outer SELECT by comma (respecting paren depth)
+      function splitCols(str: string): string[] {
+        const result: string[] = []; let d = 0, start = 0
+        for (let i = 0; i < str.length; i++) {
+          if (str[i] === '(') d++
+          else if (str[i] === ')') d--
+          else if (str[i] === ',' && d === 0) { result.push(str.slice(start, i).trim()); start = i + 1 }
+        }
+        const last = str.slice(start).trim(); if (last) result.push(last)
+        return result
+      }
+
+      // Strip single-letter table alias prefix (e.g. "a.maincode" → "maincode")
+      function stripAlias(expr: string): string { return expr.replace(/\b[a-zA-Z_]\./g, '').trim() }
+
+      function parseCaseWhenStr(expr: string): SubqCaseWhen | null {
+        const aliasM = /\bEND\s+(?:AS\s+)?(\w+)\s*$/i.exec(expr)
+        const alias = aliasM?.[1] ?? ''
+        const branches: Array<{ condition: string; result: string }> = []
+        const re = /\bWHEN\s+([\s\S]+?)\s+THEN\s+([\s\S]+?)(?=\s+(?:WHEN|ELSE|END)\b)/gi
+        let m: RegExpExecArray | null
+        while ((m = re.exec(expr)) !== null) branches.push({ condition: m[1]!.trim(), result: m[2]!.trim() })
+        const elseM = /\bELSE\s+([\s\S]+?)\s+END\b/i.exec(expr)
+        if (!branches.length) return null
+        return { alias, branches, elsePart: elseM?.[1]?.trim() ?? '' }
+      }
+
+      const selectItems: SubqSelectItem[] = []
+      const caseWhens:   SubqCaseWhen[]   = []
+
+      for (const rawCol of splitCols(outerSelectStr)) {
+        const col = rawCol.trim(); if (!col) continue
+        if (/\bCASE\b/i.test(col)) {
+          const cw = parseCaseWhenStr(col); if (cw) caseWhens.push(cw)
+          continue
+        }
+        const asMatch = /^([\s\S]+?)\s+AS\s+(\w+)\s*$/i.exec(col)
+        if (asMatch) { selectItems.push({ col: stripAlias(asMatch[1]!.trim()), alias: asMatch[2]! }); continue }
+        const sp = col.split(/\s+/)
+        if (sp.length === 2 && /^\w+$/.test(sp[1]!)) { selectItems.push({ col: stripAlias(sp[0]!), alias: sp[1]! }); continue }
+        selectItems.push({ col: stripAlias(col), alias: '' })
+      }
+
+      return { selectItems, caseWhens, innerSql, conditions }
     }
 
     // ── 5. Build tool scopes — one per CTE body + outer SELECT ────────────
@@ -335,25 +411,133 @@ function runImport(sql: string) {
     for (const { body } of cteDefs.values()) addScope(body)
     addScope(outerSql)
 
-    // ── 5b. Complex CTE path ───────────────────────────────────────────────
-    // When a CTE body contains CASE WHEN, a scalar/correlated subquery, or
-    // an arithmetic expression it cannot be represented as canvas nodes.
-    // Instead, store each CTE body verbatim as a `group` node's customGroupSql
-    // and chain them: anchor_table → group(cte1) → group(cte2) → where → sort.
+    // ── 5b. Complex CTE path — structured per-CTE chains ─────────────────────
+    // Detect CTEs that cannot be represented as simple table-tool nodes.
     const isComplexBlock = (body: string) =>
       /\bCASE\s+WHEN\b/i.test(body) ||
-      /\(\s*SELECT\s/i.test(body) ||
+      /\(\s*SELECT\s/i.test(body)   ||
       /\(\s*\w+(?:\.\w+)?\s*[+\-*/]\s*\w+(?:\.\w+)?\s*\)/i.test(body)
 
     if (cteDefs.size > 0 && [...cteDefs.values()].some(d => isComplexBlock(d.body))) {
       const ts = Date.now()
+      let cei = 0
+      const complexNodes: any[] = []
+      const complexEdges: any[] = []
 
-      // Map original CTE name (lower) → predicted _cteN name (1-indexed)
+      // ── Local helpers (scoped to this block) ──────────────────────────────
+
+      // Primary FROM table at depth-0 — skips FROMs inside subquery parens and CTE refs
+      function getFromTblLocal(block: string): string {
+        let depth = 0, i = 0
+        while (i < block.length) {
+          const ch = block[i]!
+          if (ch === "'") { i++; while (i < block.length && block[i] !== "'") i++; i++; continue }
+          if (ch === '(') { depth++; i++; continue }
+          if (ch === ')') { depth--; i++; continue }
+          if (depth === 0) {
+            const m = /^FROM\s+(?!\()(\[?[\w.]+\]?)/i.exec(block.slice(i))
+            if (m) {
+              const tbl = m[1]!.replace(/\[|\]/g, '')
+              return cteNames.has(tbl.toLowerCase()) ? '' : tbl
+            }
+          }
+          i++
+        }
+        return ''
+      }
+
+      // JOIN edges in a block — real tables only, skip CTE references
+      type JE = { srcTable: string; tgtTable: string; joinType: string; mappings: any[] }
+      function parseJoinsLocal(block: string): JE[] {
+        const a2t = new Map<string, string>()
+        const atRe2 = /\b(?:FROM|JOIN)\s+(?!\()(\[?[\w.]+\]?)(?:\s+(?:AS\s+)?(\w+))?/gi
+        let am2: RegExpExecArray | null
+        while ((am2 = atRe2.exec(block)) !== null) {
+          const tbl = am2[1]!.replace(/\[|\]/g, '')
+          const al  = (am2[2] ?? tbl).toLowerCase()
+          if (!cteNames.has(tbl.toLowerCase())) a2t.set(al, tbl)
+        }
+        const res: JE[] = []
+        const jRe = /\b(LEFT\s+JOIN|RIGHT\s+JOIN|INNER\s+JOIN|FULL\s+(?:OUTER\s+)?JOIN|CROSS\s+JOIN|JOIN)\s+(?!\()(\[?[\w.]+\]?)(?:\s+(?:AS\s+)?(\w+))?\s+(?:WITH\s*\([^)]*\)\s*)?ON\s+([\s\S]+?)(?=\b(?:LEFT|RIGHT|INNER|FULL|CROSS|JOIN|WHERE|GROUP\s+BY|ORDER\s+BY|HAVING|\))|$)/gi
+        let jm2: RegExpExecArray | null
+        while ((jm2 = jRe.exec(block)) !== null) {
+          const tbl = jm2[2]!.replace(/\[|\]/g, '')
+          if (cteNames.has(tbl.toLowerCase())) continue
+          const jt2 = jm2[1]!.replace(/\s+/g, ' ').toUpperCase()
+          const al2 = (jm2[3] ?? tbl).toLowerCase()
+          const on2 = jm2[4]!
+          const cRe = /(\w+)\.(\w+)\s*(=|!=|<>|>=|<=|>|<)\s*(\w+)\.(\w+)/g
+          const maps: any[] = []; let cm2: RegExpExecArray | null, seq2 = 0, src2 = ''
+          while ((cm2 = cRe.exec(on2)) !== null) {
+            const la2 = cm2[1]!.toLowerCase(), lc2 = cm2[2]!, op2 = cm2[3]!, ra2 = cm2[4]!.toLowerCase(), rc2 = cm2[5]!
+            const lin = la2 === al2
+            if (!src2) src2 = a2t.get(lin ? ra2 : la2) ?? ''
+            maps.push({ _id: ++seq2, source: lin ? rc2 : lc2, target: lin ? lc2 : rc2, operator: op2 })
+          }
+          if (src2) {
+            const jt3 = jt2.includes('LEFT') ? 'LEFT JOIN' : jt2.includes('RIGHT') ? 'RIGHT JOIN'
+              : (jt2.includes('INNER') || jt2 === 'JOIN') ? 'INNER JOIN'
+              : jt2.includes('FULL') ? 'FULL JOIN' : 'LEFT JOIN'
+            res.push({ srcTable: src2, tgtTable: tbl, joinType: jt3, mappings: maps })
+          }
+        }
+        return res
+      }
+
+      // Split outer SELECT → plain column refs vs expression/math items
+      function parseOuterSelect(outerStr: string): {
+        selectItems: Array<{ col: string; alias: string }>
+        mathItems:   Array<{ expr: string; alias: string }>
+      } {
+        const si: Array<{ col: string; alias: string }> = []
+        const mi: Array<{ expr: string; alias: string }> = []
+        const parts: string[] = []; let dp = 0, st = 0
+        for (let i = 0; i < outerStr.length; i++) {
+          if (outerStr[i] === '(') dp++
+          else if (outerStr[i] === ')') dp--
+          else if (outerStr[i] === ',' && dp === 0) { parts.push(outerStr.slice(st, i).trim()); st = i + 1 }
+        }
+        const last2 = outerStr.slice(st).trim(); if (last2) parts.push(last2)
+        for (const raw of parts) {
+          const c = raw.trim(); if (!c || /^\*$/.test(c)) continue
+          const asM2 = /^([\s\S]+?)\s+AS\s+(\w+)\s*$/i.exec(c)
+          if (asM2) {
+            const expr2  = asM2[1]!.replace(/\b[a-zA-Z_]\./g, '').trim()
+            const alias2 = asM2[2]!
+            if (/^[\w]+$/.test(expr2)) si.push({ col: expr2, alias: alias2 })
+            else                        mi.push({ expr: expr2, alias: alias2 })
+          } else {
+            const s2 = c.replace(/\b[a-zA-Z_]\./g, '').trim()
+            if (/^[\w]+$/.test(s2)) si.push({ col: s2, alias: '' })
+          }
+        }
+        return { selectItems: si, mathItems: mi }
+      }
+
+      // Count tool nodes a CTE body will generate (for pre-computing _cteN numbers)
+      function countCteTools(body: string): number {
+        const hasSq  = /\bFROM\s*\(\s*SELECT\b/i.test(body)
+        const hasGb  = /\bGROUP\s+BY\b/i.test(body)
+        if (hasSq) {
+          const parsed3 = parseSubqueryBody(body)
+          return (parseWhere(parsed3.innerSql).length ? 1 : 0) +
+                 (/\bGROUP\s+BY\b/i.test(parsed3.innerSql) ? 1 : 0) + 1
+        }
+        if (hasGb) return (parseWhere(body).length ? 1 : 0) + 1
+        return 1  // verbatim SUBQ
+      }
+
+      // ── Pre-compute cteNameMap: lower CTE name → _cteN it outputs ─────────
+      // This must match the topological-sort order the SQL generator will assign.
+      // Each CTE's chain connects to the previous one (serial dependency), so tool
+      // nodes are numbered strictly in CTE declaration order.
+      let cumTools2 = 0
       const cteNameMap = new Map<string, string>()
-      let cteIdx2 = 1
-      for (const { lower } of cteDefs.values()) cteNameMap.set(lower, `_cte${cteIdx2++}`)
+      for (const [lower2, { body }] of cteDefs.entries()) {
+        cumTools2 += countCteTools(body)
+        cteNameMap.set(lower2, `_cte${cumTools2}`)
+      }
 
-      // Replace all CTE name references in a SQL block
       const replaceCteRefs = (block: string) => {
         let out = block
         for (const [orig, mapped] of cteNameMap)
@@ -361,93 +545,260 @@ function runImport(sql: string) {
         return out
       }
 
-      const complexNodes: any[] = []
-      const complexEdges: any[] = []
-      let cei = 0
-      const GH = 164, TABLE_GAP = 220
+      // ── Layout constants ───────────────────────────────────────────────────
+      const TBL_X_GAP  = 300   // x gap between table nodes in a row
+      const TOOL_X_GAP = 200   // x gap between tool nodes
+      const ROW_H      = 300   // y advance between CTE chain rows
+      const SUB_ROW_H  = 220   // y advance between sub-rows within one CTE's table grid
+      const MAX_COLS   = 4     // max table nodes per sub-row before wrapping
 
-      // All real table nodes in a left column — visual reference for every table
-      // that appears anywhere in the CTE bodies.  Only the first (anchor) node
-      // gets an edge into the group chain; the rest have no edges so they do not
-      // affect SQL generation (generator only traverses the connected chain).
-      const complexTableIdx = new Map<string, number>()
-      tableNames.forEach((tbl, ti) => {
-        complexTableIdx.set(tbl.toLowerCase(), ti)
-        const importedSet = tableImportedCols.get(tbl.toLowerCase())
-        complexNodes.push({
-          id: `import-${ts}-t-${ti}`, type: 'sqlTable',
-          position: { x: 0, y: ti * TABLE_GAP },
-          data: { label: tbl, tableName: tbl, objectName: tbl, module: '', type: 'T',
-                  details: [], visibleCols: [], filters: [], columnsLoading: true,
-                  ...(importedSet?.size ? { _importedCols: [...importedSet] } : {}) },
-        })
-      })
+      let rowY       = 0    // current row Y (advances per CTE)
+      let prevToolId = ''   // output node of previous CTE chain (for serial ordering)
+      let lastToolX  = 0    // x position of last placed tool node
+      let lastToolY  = 0    // y position of last placed tool node
 
-      // JOIN edges between table nodes (visual reference from the parsed edgeMap)
-      for (const { srcTable, tgtTable, joinType, mappings } of edgeMap.values()) {
-        const srcI = complexTableIdx.get(srcTable.toLowerCase())
-        const tgtI = complexTableIdx.get(tgtTable.toLowerCase())
-        if (srcI === undefined || tgtI === undefined) continue
-        complexEdges.push({
-          id: `import-${ts}-je-${cei++}`,
-          source: `import-${ts}-t-${srcI}`,
-          target: `import-${ts}-t-${tgtI}`,
-          type: 'sqlEdge', ...getEdgeStyle(joinType as any),
-          markerEnd: MarkerType.ArrowClosed,
-          data: { joinType, mappings },
-        })
+      // Place table names in a grid (MAX_COLS wide), return ids + tool-start coords
+      function layoutTables(
+        tableNames: string[], cteKey2: string, baseY: number
+      ): { ids: Map<string, string>; toolX: number; toolY: number } {
+        const ids = new Map<string, string>()
+        for (const [i, tbl] of tableNames.entries()) {
+          const col = i % MAX_COLS
+          const row = Math.floor(i / MAX_COLS)
+          const nid = `import-${ts}-${cteKey2}-t${i}`
+          ids.set(tbl.toLowerCase(), nid)
+          const impSet = tableImportedCols.get(tbl.toLowerCase())
+          complexNodes.push({ id: nid, type: 'sqlTable',
+            position: { x: col * TBL_X_GAP, y: baseY + row * SUB_ROW_H },
+            data: { label: tbl, tableName: tbl, objectName: tbl, module: '', type: 'T',
+                    details: [], visibleCols: [], filters: [], columnsLoading: true,
+                    ...(impSet?.size ? { _importedCols: [...impSet] } : {}) } })
+        }
+        const numCols = Math.min(tableNames.length, MAX_COLS)
+        const numRows = Math.ceil(tableNames.length / MAX_COLS)
+        return {
+          ids,
+          toolX: numCols * TBL_X_GAP,
+          toolY: baseY + (numRows - 1) * SUB_ROW_H,
+        }
       }
 
-      // One group node per CTE, verbatim body stored in customGroupSql
-      const anchorId = `import-${ts}-t-0`
-      let prevId = anchorId
-      let gy = 0
-      for (const { body } of cteDefs.values()) {
-        const gid = `import-${ts}-g-${cei}`
-        const { groupCols: parsedGroupCols, aggs: parsedAggs } = parseGroupBy(body)
-        complexNodes.push({
-          id: gid, type: 'toolNode', position: { x: 360, y: gy },
-          data: { _toolId: 'group', nodeType: 'group',
-                  groupCols: parsedGroupCols, aggs: parsedAggs, filters: [],
-                  customGroupSql: replaceCteRefs(body) },
-        })
-        complexEdges.push({
-          id: `import-${ts}-ge-${cei++}`, source: prevId, target: gid,
-          type: 'sqlEdge', ...getToolEdgeStyle('group'), markerEnd: MarkerType.ArrowClosed,
-          data: { joinType: 'LEFT JOIN', mappings: [], isTool: true, tgtToolId: 'group', srcCat: 'table' },
-        })
-        prevId = gid; gy += GH
+      // ── Build one chain per CTE ────────────────────────────────────────────
+      for (const [cteKey, { body }] of cteDefs.entries()) {
+        const hasInlineSq2 = /\bFROM\s*\(\s*SELECT\b/i.test(body)
+        const hasGrpBy2    = /\bGROUP\s+BY\b/i.test(body)
+        const isVerbatim2  = !hasInlineSq2 && !hasGrpBy2
+
+        if (hasInlineSq2) {
+          // ── Pattern A: inline subquery + outer math ────────────────────────
+          // e.g. cte_boq: SELECT ..., expr AS alias FROM (SELECT ... GROUP BY ...) src
+          // → inner table nodes + JOIN edges → WHERE → GROUP → SUBQ(math)
+          const parsedSub2   = parseSubqueryBody(body)        // parse BEFORE CTE renaming
+          const innerSql2    = parsedSub2.innerSql
+          const innerFrom2   = getFromTblLocal(innerSql2)
+          const innerJoins2  = parseJoinsLocal(innerSql2)
+          const innerWhere2  = parseWhere(innerSql2)
+          const { groupCols: gc2, aggs: ag2 } = parseGroupBy(innerSql2)
+
+          // Parse outer SELECT into plain column refs vs expressions
+          const fromPI      = /\bFROM\s*\(/i.exec(body)!.index
+          const selStart2   = /\bSELECT\b/i.exec(body)!.index + 'SELECT'.length
+          const outerStr2   = body.slice(selStart2, fromPI).trim()
+          const { selectItems: outSI, mathItems: outMI } = parseOuterSelect(outerStr2)
+
+          // Build inner table map (primary first)
+          const innerTblMap2 = new Map<string, string>()
+          if (innerFrom2) innerTblMap2.set(innerFrom2.toLowerCase(), innerFrom2)
+          for (const { srcTable, tgtTable } of innerJoins2) {
+            innerTblMap2.set(srcTable.toLowerCase(), srcTable)
+            innerTblMap2.set(tgtTable.toLowerCase(), tgtTable)
+          }
+
+          // Table nodes (grid layout)
+          const { ids: tblNIds2, toolX: tblToolX2, toolY: tblToolY2 } =
+            layoutTables([...innerTblMap2.values()], cteKey, rowY)
+          for (const { srcTable, tgtTable, joinType, mappings } of innerJoins2) {
+            const sId2 = tblNIds2.get(srcTable.toLowerCase())
+            const tId2 = tblNIds2.get(tgtTable.toLowerCase())
+            if (!sId2 || !tId2) continue
+            complexEdges.push({
+              id: `import-${ts}-je-${cei++}`, source: sId2, target: tId2,
+              type: 'sqlEdge', ...getEdgeStyle(joinType as any),
+              markerEnd: MarkerType.ArrowClosed, data: { joinType, mappings },
+            })
+          }
+
+          const anchor2 = innerFrom2
+            ? (tblNIds2.get(innerFrom2.toLowerCase()) ?? [...tblNIds2.values()][0]!)
+            : ([...tblNIds2.values()][0] ?? '')
+
+          if (prevToolId) {
+            complexEdges.push({
+              id: `import-${ts}-dep-${cei++}`, source: prevToolId, target: anchor2,
+              type: 'sqlEdge', ...getToolEdgeStyle('subquery'), markerEnd: MarkerType.ArrowClosed,
+              data: { joinType: 'LEFT JOIN', mappings: [], isTool: true, tgtToolId: 'table', srcCat: 'tool' },
+            })
+          }
+
+          let prevId2 = anchor2; let toolX2 = tblToolX2
+          if (innerWhere2.length) {
+            const wid2 = `import-${ts}-${cteKey}-w`
+            complexNodes.push({ id: wid2, type: 'toolNode', position: { x: toolX2, y: tblToolY2 },
+              data: { _toolId: 'where', nodeType: 'where', conditions: innerWhere2 } })
+            complexEdges.push({ id: `import-${ts}-${cteKey}-we-${cei++}`, source: prevId2, target: wid2,
+              type: 'sqlEdge', ...getToolEdgeStyle('where'), markerEnd: MarkerType.ArrowClosed,
+              data: { joinType: 'LEFT JOIN', mappings: [], isTool: true, tgtToolId: 'where', srcCat: 'table' } })
+            prevId2 = wid2; toolX2 += TOOL_X_GAP
+          }
+          if (gc2.length) {
+            const gid2 = `import-${ts}-${cteKey}-g`
+            complexNodes.push({ id: gid2, type: 'toolNode', position: { x: toolX2, y: tblToolY2 },
+              data: { _toolId: 'group', nodeType: 'group',
+                      customGroupSql: innerSql2,
+                      groupCols: gc2, aggs: ag2, filters: [] } })
+            complexEdges.push({ id: `import-${ts}-${cteKey}-ge-${cei++}`, source: prevId2, target: gid2,
+              type: 'sqlEdge', ...getToolEdgeStyle('group'), markerEnd: MarkerType.ArrowClosed,
+              data: { joinType: 'LEFT JOIN', mappings: [], isTool: true, tgtToolId: 'group', srcCat: 'table' } })
+            prevId2 = gid2; toolX2 += TOOL_X_GAP
+          }
+          const sqid2 = `import-${ts}-${cteKey}-sq`
+          complexNodes.push({ id: sqid2, type: 'toolNode', position: { x: toolX2, y: tblToolY2 },
+            data: { _toolId: 'subquery', nodeType: 'subquery',
+                    alias: cteKey, customSql: '',
+                    selectItems: outSI, mathItems: outMI,
+                    caseWhens: [], conditions: parsedSub2.conditions } })
+          complexEdges.push({ id: `import-${ts}-${cteKey}-sqe-${cei++}`, source: prevId2, target: sqid2,
+            type: 'sqlEdge', ...getToolEdgeStyle('subquery'), markerEnd: MarkerType.ArrowClosed,
+            data: { joinType: 'LEFT JOIN', mappings: [], isTool: true, tgtToolId: 'subquery', srcCat: 'table' } })
+
+          prevToolId = sqid2; lastToolX = toolX2; lastToolY = tblToolY2
+          rowY += ROW_H
+
+        } else if (isVerbatim2) {
+          // ── Pattern B: verbatim — display table nodes + SUBQ(verbatim) ────
+          // Create visible table nodes + JOIN edges so the user can see which
+          // tables are involved. SUBQ holds the full verbatim body; its _src_N
+          // is silently dropped by dead-code elimination (customSql takes over).
+          const verbFrom3  = getFromTblLocal(body)
+          const verbJoins3 = parseJoinsLocal(body)
+          const verbTblSet3 = new Map<string, string>()
+          if (verbFrom3) verbTblSet3.set(verbFrom3.toLowerCase(), verbFrom3)
+          for (const { srcTable, tgtTable } of verbJoins3) {
+            verbTblSet3.set(srcTable.toLowerCase(), srcTable)
+            verbTblSet3.set(tgtTable.toLowerCase(), tgtTable)
+          }
+
+          const { ids: verbTblIds3, toolX: verbTblX3, toolY: verbTblY3 } =
+            layoutTables([...verbTblSet3.values()], cteKey, rowY)
+          for (const { srcTable, tgtTable, joinType, mappings } of verbJoins3) {
+            const sId3v = verbTblIds3.get(srcTable.toLowerCase())
+            const tId3v = verbTblIds3.get(tgtTable.toLowerCase())
+            if (!sId3v || !tId3v) continue
+            complexEdges.push({ id: `import-${ts}-je-${cei++}`, source: sId3v, target: tId3v,
+              type: 'sqlEdge', ...getEdgeStyle(joinType as any),
+              markerEnd: MarkerType.ArrowClosed, data: { joinType, mappings } })
+          }
+
+          // SUBQ(verbatim) placed after the last sub-row of tables
+          const sqid3 = `import-${ts}-${cteKey}-sq`
+          complexNodes.push({ id: sqid3, type: 'toolNode',
+            position: { x: verbTblX3, y: verbTblY3 },
+            data: { _toolId: 'subquery', nodeType: 'subquery',
+                    alias: cteKey, customSql: replaceCteRefs(body),
+                    selectItems: [], mathItems: [], caseWhens: [], conditions: [] } })
+          // Serial dep edge from previous CTE output (ordering guarantee)
+          if (prevToolId) {
+            complexEdges.push({ id: `import-${ts}-${cteKey}-sqe-${cei++}`, source: prevToolId, target: sqid3,
+              type: 'sqlEdge', ...getToolEdgeStyle('subquery'), markerEnd: MarkerType.ArrowClosed,
+              data: { joinType: 'LEFT JOIN', mappings: [], isTool: true, tgtToolId: 'subquery', srcCat: 'tool' } })
+          }
+          // Visual edge: primary table → SUBQ (shows which tables feed this verbatim block)
+          const verbAnchor3 = verbFrom3
+            ? (verbTblIds3.get(verbFrom3.toLowerCase()) ?? '')
+            : ([...verbTblIds3.values()][0] ?? '')
+          if (verbAnchor3) {
+            complexEdges.push({ id: `import-${ts}-${cteKey}-tqe-${cei++}`, source: verbAnchor3, target: sqid3,
+              type: 'sqlEdge', ...getToolEdgeStyle('subquery'), markerEnd: MarkerType.ArrowClosed,
+              data: { joinType: 'LEFT JOIN', mappings: [], isTool: true, tgtToolId: 'subquery', srcCat: 'table' } })
+          }
+          prevToolId = sqid3; lastToolX = verbTblX3; lastToolY = verbTblY3
+          rowY += ROW_H
+
+        } else {
+          // ── Pattern C: plain GROUP BY CTE ─────────────────────────────────
+          const primaryF3 = getFromTblLocal(body)
+          const joins3    = parseJoinsLocal(body)
+          const { groupCols: gc3, aggs: ag3 } = parseGroupBy(body)
+          const where3    = parseWhere(body)
+
+          const tblSet3 = new Map<string, string>()
+          if (primaryF3) tblSet3.set(primaryF3.toLowerCase(), primaryF3)
+          for (const { srcTable, tgtTable } of joins3) {
+            tblSet3.set(srcTable.toLowerCase(), srcTable)
+            tblSet3.set(tgtTable.toLowerCase(), tgtTable)
+          }
+          const { ids: tblIds3, toolX: tblToolX3, toolY: tblToolY3 } =
+            layoutTables([...tblSet3.values()], cteKey, rowY)
+          for (const { srcTable, tgtTable, joinType, mappings } of joins3) {
+            const sId3 = tblIds3.get(srcTable.toLowerCase())
+            const tId3 = tblIds3.get(tgtTable.toLowerCase())
+            if (!sId3 || !tId3) continue
+            complexEdges.push({ id: `import-${ts}-je-${cei++}`, source: sId3, target: tId3,
+              type: 'sqlEdge', ...getEdgeStyle(joinType as any),
+              markerEnd: MarkerType.ArrowClosed, data: { joinType, mappings } })
+          }
+          const anchor3 = primaryF3
+            ? (tblIds3.get(primaryF3.toLowerCase()) ?? [...tblIds3.values()][0]!)
+            : ([...tblIds3.values()][0] ?? '')
+          if (prevToolId) {
+            complexEdges.push({ id: `import-${ts}-dep-${cei++}`, source: prevToolId, target: anchor3,
+              type: 'sqlEdge', ...getToolEdgeStyle('group'), markerEnd: MarkerType.ArrowClosed,
+              data: { joinType: 'LEFT JOIN', mappings: [], isTool: true, tgtToolId: 'table', srcCat: 'tool' } })
+          }
+          let prevId3 = anchor3; let toolX3 = tblToolX3
+          if (where3.length) {
+            const wid3 = `import-${ts}-${cteKey}-w`
+            complexNodes.push({ id: wid3, type: 'toolNode', position: { x: toolX3, y: tblToolY3 },
+              data: { _toolId: 'where', nodeType: 'where', conditions: where3 } })
+            complexEdges.push({ id: `import-${ts}-${cteKey}-we-${cei++}`, source: prevId3, target: wid3,
+              type: 'sqlEdge', ...getToolEdgeStyle('where'), markerEnd: MarkerType.ArrowClosed,
+              data: { joinType: 'LEFT JOIN', mappings: [], isTool: true, tgtToolId: 'where', srcCat: 'table' } })
+            prevId3 = wid3; toolX3 += TOOL_X_GAP
+          }
+          const gid3 = `import-${ts}-${cteKey}-g`
+          complexNodes.push({ id: gid3, type: 'toolNode', position: { x: toolX3, y: tblToolY3 },
+            data: { _toolId: 'group', nodeType: 'group', groupCols: gc3, aggs: ag3, filters: [] } })
+          complexEdges.push({ id: `import-${ts}-${cteKey}-ge-${cei++}`, source: prevId3, target: gid3,
+            type: 'sqlEdge', ...getToolEdgeStyle('group'), markerEnd: MarkerType.ArrowClosed,
+            data: { joinType: 'LEFT JOIN', mappings: [], isTool: true, tgtToolId: 'group', srcCat: 'table' } })
+
+          prevToolId = gid3; lastToolX = toolX3; lastToolY = tblToolY3
+          rowY += ROW_H
+        }
       }
 
-      // WHERE from outer SQL
+      // ── Outer SQL: WHERE + ORDER BY ────────────────────────────────────────
       const outerConds = parseWhere(outerSql)
-      if (outerConds.length) {
-        const wid = `import-${ts}-w`
-        complexNodes.push({
-          id: wid, type: 'toolNode', position: { x: 360, y: gy },
-          data: { _toolId: 'where', nodeType: 'where', conditions: outerConds },
-        })
-        complexEdges.push({
-          id: `import-${ts}-we-${cei++}`, source: prevId, target: wid,
-          type: 'sqlEdge', ...getToolEdgeStyle('where'), markerEnd: MarkerType.ArrowClosed,
-          data: { joinType: 'LEFT JOIN', mappings: [], isTool: true, tgtToolId: 'where', srcCat: 'table' },
-        })
-        prevId = wid; gy += GH
-      }
+      const outerSort  = parseOrderBy(outerSql)
+      let outerPrevId  = prevToolId
+      let outerX       = lastToolX + TOOL_X_GAP
 
-      // ORDER BY from outer SQL
-      const outerSort = parseOrderBy(outerSql)
-      if (outerSort.length) {
-        const sid = `import-${ts}-s`
-        complexNodes.push({
-          id: sid, type: 'toolNode', position: { x: 360, y: gy },
-          data: { _toolId: 'sort', nodeType: 'sort', items: outerSort },
-        })
-        complexEdges.push({
-          id: `import-${ts}-se-${cei++}`, source: prevId, target: sid,
+      if (outerConds.length && outerPrevId) {
+        const wid4 = `import-${ts}-ow`
+        complexNodes.push({ id: wid4, type: 'toolNode', position: { x: outerX, y: lastToolY },
+          data: { _toolId: 'where', nodeType: 'where', conditions: outerConds } })
+        complexEdges.push({ id: `import-${ts}-owe-${cei++}`, source: outerPrevId, target: wid4,
+          type: 'sqlEdge', ...getToolEdgeStyle('where'), markerEnd: MarkerType.ArrowClosed,
+          data: { joinType: 'LEFT JOIN', mappings: [], isTool: true, tgtToolId: 'where', srcCat: 'tool' } })
+        outerPrevId = wid4; outerX += TOOL_X_GAP
+      }
+      if (outerSort.length && outerPrevId) {
+        const sid2 = `import-${ts}-os`
+        complexNodes.push({ id: sid2, type: 'toolNode', position: { x: outerX, y: lastToolY },
+          data: { _toolId: 'sort', nodeType: 'sort', items: outerSort } })
+        complexEdges.push({ id: `import-${ts}-ose-${cei++}`, source: outerPrevId, target: sid2,
           type: 'sqlEdge', ...getToolEdgeStyle('sort'), markerEnd: MarkerType.ArrowClosed,
-          data: { joinType: 'LEFT JOIN', mappings: [], isTool: true, tgtToolId: 'sort', srcCat: 'table' },
-        })
+          data: { joinType: 'LEFT JOIN', mappings: [], isTool: true, tgtToolId: 'sort', srcCat: 'tool' } })
       }
 
       const added = appendNodesToCanvas(complexNodes, complexEdges)

@@ -402,8 +402,9 @@ export function useSqlGenerator() {
       let cteSql = ''
       let _groupResolvedCols: string[] | null = null
       switch (nt) {
-        case 'cte':    cteSql = buildCteToolBlock(node, upName); break
-        case 'where':  cteSql = buildWhereBlock(node, upName);   break
+        case 'cte':      cteSql = buildCteToolBlock(node, upName);  break
+        case 'where':    cteSql = buildWhereBlock(node, upName);    break
+        case 'subquery': cteSql = buildSubqueryBlock(node, upName); break
         case 'group': {
           const gr = buildGroupBlock(node, upName, cteOutputCols.get(upName) ?? [])
           cteSql = gr.sql
@@ -433,7 +434,22 @@ export function useSqlGenerator() {
         nodeOutput.set(node.id, cteName)
         lastCTE = cteName
         // Track output cols for this CTE
-        if (nt === 'union') {
+        if (nt === 'subquery') {
+          const subCustom = (node.data.customSql as string | undefined)?.trim()
+          const subItems: Array<{ col: string; alias: string }> = node.data.selectItems ?? []
+          const subMath:  Array<{ expr: string; alias: string }> = node.data.mathItems ?? []
+          const subCws:   any[] = node.data.caseWhens ?? []
+          if (subItems.length || subMath.length || subCws.length) {
+            const cols = [
+              ...subItems.map((i: { col: string; alias: string }) => i.alias?.trim() || i.col),
+              ...subMath.filter((m: { expr: string; alias: string }) => m.alias?.trim()).map((m: { expr: string; alias: string }) => m.alias.trim()),
+              ...subCws.filter((cw: any) => cw.alias?.trim()).map((cw: any) => cw.alias.trim()),
+            ]
+            cteOutputCols.set(cteName, cols.length ? cols : (cteOutputCols.get(upName) ?? []))
+          } else {
+            cteOutputCols.set(cteName, subCustom ? [] : (cteOutputCols.get(upName) ?? []))
+          }
+        } else if (nt === 'union') {
           // union output — prefer new columnMapping model, fall back to legacy
           const columnMapping = (node.data.columnMapping ?? []) as Array<{ outputName: string; picks: Record<string, string> }>
           if (columnMapping.length) {
@@ -473,8 +489,31 @@ export function useSqlGenerator() {
       }
     }
 
-    // ── Step 3: assemble ───────────────────────────────────────────────
-    const withBlock  = ctes.map(c => `  ${c.name} AS (\n${indent(c.sql)}\n  )`).join(',\n\n')
+    // ── Step 3: dead-code elimination ─────────────────────────────────
+    // Walk backwards from lastCTE and collect every CTE that is transitively
+    // referenced so that unreachable CTEs (e.g. an _src that was built from
+    // imported table nodes but is never used because all downstream nodes have
+    // their own verbatim SQL) are silently dropped instead of emitting invalid
+    // column references that would cause SQL Server to reject the query.
+    const usedCteNames = new Set<string>([lastCTE])
+    let addedAny = true
+    while (addedAny) {
+      addedAny = false
+      for (const c of ctes) {
+        if (!usedCteNames.has(c.name)) continue
+        for (const other of ctes) {
+          if (usedCteNames.has(other.name)) continue
+          if (new RegExp(`\\b${other.name}\\b`, 'i').test(c.sql)) {
+            usedCteNames.add(other.name)
+            addedAny = true
+          }
+        }
+      }
+    }
+    const activeCtes = ctes.filter(c => usedCteNames.has(c.name))
+
+    // ── Step 4: assemble ───────────────────────────────────────────────
+    const withBlock  = activeCtes.map(c => `  ${c.name} AS (\n${indent(c.sql)}\n  )`).join(',\n\n')
     const orderClause = sortOrder ? `\nORDER BY ${sortOrder}` : ''
     return `WITH\n${withBlock}\n\nSELECT\n  *\nFROM ${lastCTE}${orderClause}`
   }
@@ -820,6 +859,66 @@ export function useSqlGenerator() {
       }
     }
 
+    return sql
+  }
+
+  // ── Subquery CTE block ────────────────────────────────────────────────
+  // Three modes:
+  //  • Full verbatim  — customSql set, no selectItems/caseWhens → return as-is
+  //  • Hybrid         — customSql = inner query + selectItems/caseWhens → wrap as derived table
+  //  • Builder        — no customSql → SELECT <items> FROM <upstream CTE>
+  function buildSubqueryBlock(node: Node, upstream: string): string {
+    const custom      = (node.data.customSql as string | undefined)?.trim()
+    const selectItems: Array<{ col: string; alias: string }> = node.data.selectItems ?? []
+    const mathItems:   Array<{ expr: string; alias: string }> = node.data.mathItems ?? []
+    const caseWhens:   any[]  = node.data.caseWhens  ?? []
+    const conditions:  any[]  = node.data.conditions ?? []
+
+    // Full verbatim: no structured columns → return inner SQL body as-is
+    if (custom && !selectItems.length && !mathItems.length && !caseWhens.length) return custom
+
+    const parts: string[] = []
+
+    for (const item of selectItems) {
+      const a = item.alias?.trim()
+      parts.push(a ? `${item.col} AS ${a}` : item.col)
+    }
+
+    for (const m of mathItems) {
+      if (!m.expr?.trim()) continue
+      const a = m.alias?.trim()
+      parts.push(a ? `${m.expr} AS ${a}` : m.expr)
+    }
+
+    for (const cw of caseWhens) {
+      const branches = (cw.branches ?? []).filter((b: any) => b.condition?.trim())
+      if (!branches.length && !cw.elsePart?.trim()) continue
+      const alias = cw.alias?.trim()
+      const whenLines = branches.map((b: any) =>
+        `        WHEN ${b.condition} THEN ${b.result?.trim() || 'NULL'}`
+      ).join('\n')
+      const elseLine = cw.elsePart?.trim() ? `\n        ELSE ${cw.elsePart}` : ''
+      const expr = `CASE\n${whenLines}${elseLine}\n      END`
+      parts.push(alias ? `${expr} AS ${alias}` : expr)
+    }
+
+    const sel = parts.length ? parts.join(',\n       ') : '*'
+
+    const whereParts = conditions
+      .filter((c: any) => c.column && c.operator)
+      .map((c: any) => {
+        const op = c.operator as string
+        if (op === 'IS NULL' || op === 'IS NOT NULL') return `${c.column} ${op}`
+        if (op === 'IN') return `${c.column} IN (${c.value})`
+        return `${c.column} ${op} '${c.value}'`
+      })
+
+    // Hybrid: wrap customSql as derived table; Builder: reference upstream CTE directly
+    const nodeAlias = ((node.data.alias as string | undefined)?.trim()) || '_sub'
+    const fromSrc   = custom ? `(\n${custom}\n) ${nodeAlias}` : upstream
+
+    let sql = `SELECT ${sel}\nFROM   ${fromSrc}`
+    if (whereParts.length) sql += `\nWHERE  ${whereParts.join('\n   AND ')}`
     return sql
   }
 

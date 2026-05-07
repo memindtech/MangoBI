@@ -61,12 +61,13 @@ export function getEdgeStyle(joinType: JoinType): EdgeStyleConfig {
 
 // ── Tool Edge Styles (one color per tool type) ─────────────────────────────
 export const TOOL_EDGE_COLORS: Record<string, string> = {
-  cte:   '#8b5cf6',  // violet-500
-  calc:  '#14b8a6',  // teal-500
-  group: '#f97316',  // orange-500
-  sort:  '#22c55e',  // green-500
-  union: '#eab308',  // yellow-500
-  where: '#f43f5e',  // rose-500
+  cte:      '#8b5cf6',  // violet-500
+  calc:     '#14b8a6',  // teal-500
+  group:    '#f97316',  // orange-500
+  sort:     '#22c55e',  // green-500
+  union:    '#eab308',  // yellow-500
+  where:    '#f43f5e',  // rose-500
+  subquery: '#6366f1',  // indigo-500
 }
 
 export function getToolEdgeStyle(toolId: string) {
@@ -76,7 +77,7 @@ export function getToolEdgeStyle(toolId: string) {
 
 // ── Tool Node Types ─────────────────────────────────────────────────────────
 
-export type ToolId = 'cte' | 'calc' | 'group' | 'sort' | 'union' | 'where'
+export type ToolId = 'cte' | 'calc' | 'group' | 'sort' | 'union' | 'where' | 'subquery'
 
 export interface ToolDefinition {
   id:     ToolId
@@ -245,9 +246,41 @@ export interface WhereNodeData {
   conditions: WhereCondition[]
 }
 
+export interface SubQuerySelectItem {
+  col:   string   // source column name
+  alias: string   // AS alias (empty = use col name)
+}
+
+export interface MathItem {
+  expr:  string   // free-form SQL expression, e.g. COALESCE(a,0)+COALESCE(b,0)
+  alias: string   // AS alias
+}
+
+export interface CaseWhenBranch {
+  condition: string   // WHEN condition expression
+  result:    string   // THEN result expression
+}
+
+export interface CaseWhenItem {
+  alias:    string             // AS alias for the whole CASE expr
+  branches: CaseWhenBranch[]  // WHEN … THEN … clauses
+  elsePart: string             // ELSE expression (empty = no ELSE)
+}
+
+export interface SubqueryNodeData {
+  nodeType:    'subquery'
+  _toolId:     'subquery'
+  alias:       string
+  customSql?:  string               // verbatim SQL — overrides builder when non-empty
+  selectItems: SubQuerySelectItem[] // columns to SELECT (builder mode)
+  mathItems:   MathItem[]           // free-form math/expression columns (builder mode)
+  caseWhens:   CaseWhenItem[]       // CASE WHEN expressions (builder mode)
+  conditions:  WhereCondition[]     // WHERE filter (builder mode)
+}
+
 export type ToolNodeData =
   | CteNodeData | CalcNodeData | GroupNodeData
-  | SortNodeData | UnionNodeData | WhereNodeData
+  | SortNodeData | UnionNodeData | WhereNodeData | SubqueryNodeData
 
 // ── Flow Aliases ────────────────────────────────────────────────────────────
 
@@ -271,12 +304,13 @@ export interface GroupCteNodeData {
 // ── Tool Defaults ───────────────────────────────────────────────────────────
 
 export const TOOL_NODE_DEFAULTS: Record<ToolId, ToolNodeData> = {
-  cte:   { nodeType: 'cte',   _toolId: 'cte',   name: 'my_cte', selectedCols: [], conditions: [] },
-  calc:  { nodeType: 'calc',  _toolId: 'calc',   items: [], filters: [] as WhereCondition[] },
-  group: { nodeType: 'group', _toolId: 'group',  groupCols: [], aggs: [], filters: [] },
-  sort:  { nodeType: 'sort',  _toolId: 'sort',   items: [] },
-  union: { nodeType: 'union', _toolId: 'union',  name: '', unionType: 'UNION ALL', selectedCols: [], selectedColsMap: {}, conditions: [] },
-  where: { nodeType: 'where', _toolId: 'where',  conditions: [] },
+  cte:      { nodeType: 'cte',      _toolId: 'cte',      name: 'my_cte', selectedCols: [], conditions: [] },
+  calc:     { nodeType: 'calc',     _toolId: 'calc',     items: [], filters: [] as WhereCondition[] },
+  group:    { nodeType: 'group',    _toolId: 'group',    groupCols: [], aggs: [], filters: [] },
+  sort:     { nodeType: 'sort',     _toolId: 'sort',     items: [] },
+  union:    { nodeType: 'union',    _toolId: 'union',    name: '', unionType: 'UNION ALL', selectedCols: [], selectedColsMap: {}, conditions: [] },
+  where:    { nodeType: 'where',    _toolId: 'where',    conditions: [] },
+  subquery: { nodeType: 'subquery', _toolId: 'subquery', alias: 'sub', customSql: '', selectItems: [], mathItems: [], caseWhens: [], conditions: [] },
 }
 
 // ── ERP Data ────────────────────────────────────────────────────────────────

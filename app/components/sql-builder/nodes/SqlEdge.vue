@@ -46,21 +46,22 @@ const showJoinBadge = computed(() => !!props.data?.joinType && !props.data?.isTo
 
 // Show tool badge for all tool-connection edges
 const TOOL_BADGE_META: Record<string, { color: string; label: string }> = {
-  cte:   { color: '#8b5cf6', label: 'CTE'      },
-  calc:  { color: '#14b8a6', label: 'CALC'     },
-  group: { color: '#f97316', label: 'GROUP BY' },
-  sort:  { color: '#22c55e', label: 'ORDER BY' },
-  union: { color: '#eab308', label: 'UNION'    },
-  where: { color: '#f43f5e', label: 'WHERE'    },
+  cte:      { color: '#8b5cf6', label: 'CTE'      },
+  calc:     { color: '#14b8a6', label: 'CALC'     },
+  group:    { color: '#f97316', label: 'GROUP BY' },
+  sort:     { color: '#22c55e', label: 'ORDER BY' },
+  union:    { color: '#eab308', label: 'UNION'    },
+  where:    { color: '#f43f5e', label: 'WHERE'    },
+  subquery: { color: '#6366f1', label: 'SUBQUERY' },
 }
 const showToolBadge = computed(() => !!props.data?.isTool)
-const toolBadgeMeta = computed(() => {
+const toolBadgeMeta = computed((): { color: string; label: string } | null => {
   let tid = props.data?.tgtToolId ?? ''
   if (!tid && props.data?.isTool) {
     const tgtNode = store.nodes.find((n: any) => n.id === props.target) as any
     tid = tgtNode?.data?._toolId ?? ''
   }
-  return TOOL_BADGE_META[tid] ?? { color: '#94a3b8', label: 'TOOL' }
+  return TOOL_BADGE_META[tid] ?? null
 })
 
 function deleteEdge() {
@@ -99,7 +100,7 @@ function openEdit() {
 
       <!-- Tool type badge (table / tool → tool node edges) -->
       <span
-        v-if="showToolBadge"
+        v-if="showToolBadge && toolBadgeMeta"
         class="text-[8px] px-1.5 py-0.5 rounded-full font-bold font-mono leading-none shadow-sm pointer-events-none select-none"
         :style="{
           backgroundColor: toolBadgeMeta.color + '28',

@@ -4,7 +4,7 @@
  * Shows before adding a tool node to canvas.
  * User must click "สร้าง Node" to actually place the node.
  */
-import { X, Layers, Calculator, Database, SortAsc, GitMerge, Filter } from 'lucide-vue-next'
+import { X, Layers, Calculator, Database, SortAsc, GitMerge, Filter, Braces } from 'lucide-vue-next'
 import { useSqlBuilderStore } from '~/stores/sql-builder'
 import { useDragDrop } from '~/composables/sql-builder/useDragDrop'
 
@@ -49,6 +49,12 @@ const TOOL_DEFS: Record<string, {
     btnCls: 'bg-rose-500 hover:bg-rose-600',
     label: 'Where', desc: 'กรอง WHERE',
     detail: 'เพิ่มเงื่อนไข WHERE แบบ standalone สำหรับกรองข้อมูลก่อนส่งต่อ',
+  },
+  subquery: {
+    icon: Braces, color: 'text-indigo-500', bg: 'bg-indigo-500/10', border: 'border-indigo-500/40',
+    btnCls: 'bg-indigo-500 hover:bg-indigo-600',
+    label: 'Subquery', desc: 'FROM (SELECT...)',
+    detail: 'สร้าง derived table / inline subquery สำหรับ query ที่ซับซ้อน เช่น FROM (SELECT ... ) AS sub',
   },
 }
 

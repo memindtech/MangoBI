@@ -4,7 +4,7 @@
  * Based on ChartDB: ChartDBRightPanel.vue
  */
 import {
-  Layers, Calculator, Database, SortAsc, GitMerge, Filter,
+  Layers, Calculator, Database, SortAsc, GitMerge, Filter, Braces,
   Play, Plus, Loader2,
 } from 'lucide-vue-next'
 
@@ -23,7 +23,8 @@ const tools = [
   { id: 'group', icon: Database,   color: 'text-orange-500', bg: 'bg-orange-500/10', border: 'border-orange-500/40', label: 'Group/By',   desc: 'GROUP BY + Aggregate' },
   { id: 'sort',  icon: SortAsc,    color: 'text-green-500',  bg: 'bg-green-500/10',  border: 'border-green-500/40',  label: 'Sort Data',  desc: 'ORDER BY' },
   { id: 'union', icon: GitMerge,   color: 'text-yellow-500', bg: 'bg-yellow-500/10', border: 'border-yellow-500/40', label: 'Union',      desc: 'UNION / UNION ALL' },
-  { id: 'where', icon: Filter,     color: 'text-rose-500',   bg: 'bg-rose-500/10',   border: 'border-rose-500/40',   label: 'Where',      desc: 'กรอง WHERE' },
+  { id: 'where',    icon: Filter,   color: 'text-rose-500',   bg: 'bg-rose-500/10',   border: 'border-rose-500/40',   label: 'Where',      desc: 'กรอง WHERE' },
+  { id: 'subquery', icon: Braces,  color: 'text-indigo-500', bg: 'bg-indigo-500/10', border: 'border-indigo-500/40', label: 'Subquery',   desc: 'FROM (SELECT...)' },
 ]
 </script>
 
