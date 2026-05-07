@@ -292,18 +292,29 @@ export function useDragDrop() {
       })
       return
     }
-    const visibleCols: VisibleCol[] = cols
-      .filter(c => c.data_pk === 'Y')
-      .map(c => ({
-        name:   c.column_name,
-        type:   c.column_type || c.data_type,
-        remark: c.remark,
-        isPk:   true,
-        alias:  '',
-      }))
+    // If the node carries _importedCols (set by SQL import), use those
+    // as the visible selection instead of the PK-only default.
+    const nodeNow      = store.nodes.find((n: any) => n.id === nodeId)
+    const importedCols = nodeNow?.data?._importedCols as string[] | undefined
+    const colMap       = new Map(cols.map(c => [c.column_name.toLowerCase(), c]))
+
+    const visibleCols: VisibleCol[] = importedCols?.length
+      ? importedCols.map(name => {
+          const schema = colMap.get(name.toLowerCase())
+          return schema
+            ? { name: schema.column_name, type: schema.column_type || schema.data_type,
+                remark: schema.remark, isPk: schema.data_pk === 'Y', alias: '' }
+            : { name, alias: '' }
+        })
+      : cols
+          .filter(c => c.data_pk === 'Y')
+          .map(c => ({ name: c.column_name, type: c.column_type || c.data_type,
+                       remark: c.remark, isPk: true, alias: '' }))
+
     store.updateNodeData(nodeId, {
       details:           cols,
       visibleCols,
+      _importedCols:     undefined,   // clear after applying
       columnsLoading:    false,
       columnsLoadFailed: false,
     })
