@@ -500,10 +500,14 @@ function runImport(sql: string) {
         const last2 = outerStr.slice(st).trim(); if (last2) parts.push(last2)
         for (const raw of parts) {
           const c = raw.trim(); if (!c || /^\*$/.test(c)) continue
-          const asM2 = /^([\s\S]+?)\s+AS\s+(\w+)\s*$/i.exec(c)
-          if (asM2) {
-            const expr2  = asM2[1]!.replace(/\b[a-zA-Z_]\./g, '').trim()
-            const alias2 = asM2[2]!
+          // Use asMatch.index (start of the trailing ' AS alias') rather than capture group [1]
+          // so the expression slice is always correct regardless of lazy-quantifier edge cases.
+          const asMatch = /\s+AS\s+(\w+)\s*$/i.exec(c)
+          if (asMatch) {
+            const exprRaw = c.slice(0, asMatch.index).trim()
+            const alias2  = asMatch[1]!
+            // Strip single-char table aliases (a.col → col, b.col → col)
+            const expr2   = exprRaw.replace(/\b[a-zA-Z_]\./g, '').trim()
             if (/^[\w]+$/.test(expr2)) si.push({ col: expr2, alias: alias2 })
             else                        mi.push({ expr: expr2, alias: alias2 })
           } else {
@@ -514,15 +518,109 @@ function runImport(sql: string) {
         return { selectItems: si, mathItems: mi }
       }
 
+      // Replace every parenthesized group "(...)" with spaces of equal length — used
+      // before paren-naive regex parsers (parseWhere) on a body that may contain
+      // correlated subqueries, function calls, or grouped expressions. Preserves
+      // string offsets so error messages remain useful.
+      function stripParenGroups(s: string): string {
+        const out = s.split('')
+        const stack: number[] = []
+        for (let i = 0; i < out.length; i++) {
+          const ch = out[i]
+          if (ch === "'") { i++; while (i < out.length && out[i] !== "'") i++; continue }
+          if (ch === '(') stack.push(i)
+          else if (ch === ')') {
+            const start = stack.pop()
+            if (start !== undefined) for (let k = start; k <= i; k++) out[k] = ' '
+          }
+        }
+        return out.join('')
+      }
+
+      // Rich outer-SELECT parser: extends parseOuterSelect with CASE WHEN, correlated
+      // subquery (SELECT…), and "expr alias" trailing-word alias support. Used to
+      // populate structured fields on imported SUBQ nodes so users can inspect/edit
+      // each piece individually instead of seeing a raw SQL dump.
+      const SQL_KEYWORDS = /^(AS|END|FROM|WHERE|JOIN|ON|AND|OR|NULL|TRUE|FALSE|ASC|DESC|IS|NOT|IN|LIKE|BETWEEN|HAVING|GROUP|ORDER|BY|LIMIT|OFFSET|UNION|ALL|DISTINCT|WITH)$/i
+      function parseSelectClauseRich(outerStr: string): {
+        selectItems: Array<{ col: string; alias: string }>
+        mathItems:   Array<{ expr: string; alias: string }>
+        caseWhens:   Array<{ alias: string; branches: Array<{ condition: string; result: string }>; elsePart: string }>
+      } {
+        const si: Array<{ col: string; alias: string }> = []
+        const mi: Array<{ expr: string; alias: string }> = []
+        const cw: Array<{ alias: string; branches: Array<{ condition: string; result: string }>; elsePart: string }> = []
+
+        // Split by comma at depth 0
+        const parts: string[] = []; let dp = 0, st = 0
+        for (let i = 0; i < outerStr.length; i++) {
+          const ch = outerStr[i]
+          if (ch === "'") { i++; while (i < outerStr.length && outerStr[i] !== "'") i++; continue }
+          if (ch === '(') dp++
+          else if (ch === ')') dp--
+          else if (ch === ',' && dp === 0) { parts.push(outerStr.slice(st, i).trim()); st = i + 1 }
+        }
+        const tail = outerStr.slice(st).trim(); if (tail) parts.push(tail)
+
+        const splitAlias = (c: string): { expr: string; alias: string } => {
+          const asM = /\s+AS\s+(\w+)\s*$/i.exec(c)
+          if (asM) return { expr: c.slice(0, asM.index).trim(), alias: asM[1]! }
+          // Trailing-word alias without AS keyword: "a.col my_alias" or "expr) my_alias"
+          const tailM = /^([\s\S]+?)\s+(\w+)\s*$/.exec(c)
+          if (tailM) {
+            const word = tailM[2]!
+            const head = tailM[1]!.trim()
+            // Reject keywords; also require the head to look like an identifier or end with ) ]
+            if (!SQL_KEYWORDS.test(word) && (/^[\w]+(\.[\w]+)?$/.test(head) || /[)\]]\s*$/.test(head)))
+              return { expr: head, alias: word }
+          }
+          return { expr: c, alias: '' }
+        }
+
+        const parseCaseWhenStr = (expr: string) => {
+          const aliasM = /\bEND\s+(?:AS\s+)?(\w+)\s*$/i.exec(expr)
+          const alias  = aliasM?.[1] ?? ''
+          const branches: Array<{ condition: string; result: string }> = []
+          const re = /\bWHEN\s+([\s\S]+?)\s+THEN\s+([\s\S]+?)(?=\s+(?:WHEN|ELSE|END)\b)/gi
+          let m: RegExpExecArray | null
+          while ((m = re.exec(expr)) !== null) branches.push({ condition: m[1]!.trim(), result: m[2]!.trim() })
+          const elseM = /\bELSE\s+([\s\S]+?)\s+END\b/i.exec(expr)
+          if (!branches.length) return null
+          return { alias, branches, elsePart: elseM?.[1]?.trim() ?? '' }
+        }
+
+        for (const raw of parts) {
+          const c = raw.trim(); if (!c || /^\*$/.test(c)) continue
+
+          // CASE WHEN expression
+          if (/^\s*CASE\b/i.test(c)) {
+            const parsed = parseCaseWhenStr(c)
+            if (parsed) { cw.push(parsed); continue }
+          }
+
+          // Correlated subquery: starts with ( SELECT
+          if (/^\s*\(\s*SELECT\b/i.test(c)) {
+            const { expr, alias } = splitAlias(c)
+            mi.push({ expr, alias })
+            continue
+          }
+
+          // General split → expr + alias
+          const { expr, alias } = splitAlias(c)
+          // Strip single-char table aliases for clean column names
+          const stripped = expr.replace(/\b[a-zA-Z_]\./g, '').trim()
+          if (/^[\w]+$/.test(stripped)) si.push({ col: stripped, alias })
+          else                          mi.push({ expr, alias })
+        }
+
+        return { selectItems: si, mathItems: mi, caseWhens: cw }
+      }
+
       // Count tool nodes a CTE body will generate (for pre-computing _cteN numbers)
       function countCteTools(body: string): number {
-        const hasSq  = /\bFROM\s*\(\s*SELECT\b/i.test(body)
-        const hasGb  = /\bGROUP\s+BY\b/i.test(body)
-        if (hasSq) {
-          const parsed3 = parseSubqueryBody(body)
-          return (parseWhere(parsed3.innerSql).length ? 1 : 0) +
-                 (/\bGROUP\s+BY\b/i.test(parsed3.innerSql) ? 1 : 0) + 1
-        }
+        const hasSq = /\bFROM\s*\(\s*SELECT\b/i.test(body)
+        if (hasSq) return 1  // single hybrid SUBQ (customSql + selectItems/mathItems)
+        const hasGb = /\bGROUP\s+BY\b/i.test(body)
         if (hasGb) return (parseWhere(body).length ? 1 : 0) + 1
         return 1  // verbatim SUBQ
       }
@@ -545,6 +643,13 @@ function runImport(sql: string) {
         return out
       }
 
+      const formatVerbatim = (block: string) =>
+        block
+          .replace(/\b(SELECT|FROM|WHERE|GROUP\s+BY|ORDER\s+BY|HAVING|LEFT\s+JOIN|RIGHT\s+JOIN|INNER\s+JOIN|FULL\s+JOIN|CROSS\s+JOIN|ON|AND\s+(?=\w)|OR\s+(?=\w))\b/gi,
+            '\n$1')
+          .replace(/,\s*/g, ',\n  ')
+          .trim()
+
       // ── Layout constants ───────────────────────────────────────────────────
       const TBL_X_GAP  = 300   // x gap between table nodes in a row
       const TOOL_X_GAP = 200   // x gap between tool nodes
@@ -557,7 +662,9 @@ function runImport(sql: string) {
       let lastToolX  = 0    // x position of last placed tool node
       let lastToolY  = 0    // y position of last placed tool node
 
-      // Place table names in a grid (MAX_COLS wide), return ids + tool-start coords
+      // Place table names in a grid (MAX_COLS wide), return ids + tool-start coords.
+      // The first table (index 0) is marked as `isHeaderNode: true` — this matches the
+      // primary FROM table of the CTE body and gets highlighted on canvas.
       function layoutTables(
         tableNames: string[], cteKey2: string, baseY: number
       ): { ids: Map<string, string>; toolX: number; toolY: number } {
@@ -572,6 +679,7 @@ function runImport(sql: string) {
             position: { x: col * TBL_X_GAP, y: baseY + row * SUB_ROW_H },
             data: { label: tbl, tableName: tbl, objectName: tbl, module: '', type: 'T',
                     details: [], visibleCols: [], filters: [], columnsLoading: true,
+                    ...(i === 0 ? { isHeaderNode: true } : {}),
                     ...(impSet?.size ? { _importedCols: [...impSet] } : {}) } })
         }
         const numCols = Math.min(tableNames.length, MAX_COLS)
@@ -590,21 +698,20 @@ function runImport(sql: string) {
         const isVerbatim2  = !hasInlineSq2 && !hasGrpBy2
 
         if (hasInlineSq2) {
-          // ── Pattern A: inline subquery + outer math ────────────────────────
-          // e.g. cte_boq: SELECT ..., expr AS alias FROM (SELECT ... GROUP BY ...) src
-          // → inner table nodes + JOIN edges → WHERE → GROUP → SUBQ(math)
-          const parsedSub2   = parseSubqueryBody(body)        // parse BEFORE CTE renaming
-          const innerSql2    = parsedSub2.innerSql
-          const innerFrom2   = getFromTblLocal(innerSql2)
-          const innerJoins2  = parseJoinsLocal(innerSql2)
-          const innerWhere2  = parseWhere(innerSql2)
-          const { groupCols: gc2, aggs: ag2 } = parseGroupBy(innerSql2)
+          // ── Pattern A: inline subquery (hybrid SUBQ) ──────────────────────
+          // e.g. cte_boq: SELECT ..., (expr) AS alias FROM (SELECT ... GROUP BY ...) src
+          // customSql = inner query; selectItems/mathItems = outer SELECT columns.
+          // buildSubqueryBlock reconstructs: SELECT cols FROM (customSql) alias
+          const parsedSub2  = parseSubqueryBody(body)
+          const innerSql2   = parsedSub2.innerSql
+          const innerFrom2  = getFromTblLocal(innerSql2)
+          const innerJoins2 = parseJoinsLocal(innerSql2)
 
-          // Parse outer SELECT into plain column refs vs expressions
-          const fromPI      = /\bFROM\s*\(/i.exec(body)!.index
-          const selStart2   = /\bSELECT\b/i.exec(body)!.index + 'SELECT'.length
-          const outerStr2   = body.slice(selStart2, fromPI).trim()
-          const { selectItems: outSI, mathItems: outMI } = parseOuterSelect(outerStr2)
+          // Extract outer SELECT string (between SELECT keyword and FROM ()
+          const fpM2      = /\bFROM\s*\(/i.exec(body)!
+          const selStart2 = /\bSELECT\b/i.exec(body)?.index ?? 0
+          const outerStr2 = body.slice(selStart2 + 'SELECT'.length, fpM2.index).trim()
+          const { selectItems: outSI2, mathItems: outMI2 } = parseOuterSelect(outerStr2)
 
           // Build inner table map (primary first)
           const innerTblMap2 = new Map<string, string>()
@@ -640,45 +747,33 @@ function runImport(sql: string) {
             })
           }
 
-          let prevId2 = anchor2; let toolX2 = tblToolX2
-          if (innerWhere2.length) {
-            const wid2 = `import-${ts}-${cteKey}-w`
-            complexNodes.push({ id: wid2, type: 'toolNode', position: { x: toolX2, y: tblToolY2 },
-              data: { _toolId: 'where', nodeType: 'where', conditions: innerWhere2 } })
-            complexEdges.push({ id: `import-${ts}-${cteKey}-we-${cei++}`, source: prevId2, target: wid2,
-              type: 'sqlEdge', ...getToolEdgeStyle('where'), markerEnd: MarkerType.ArrowClosed,
-              data: { joinType: 'LEFT JOIN', mappings: [], isTool: true, tgtToolId: 'where', srcCat: 'table' } })
-            prevId2 = wid2; toolX2 += TOOL_X_GAP
-          }
-          if (gc2.length) {
-            const gid2 = `import-${ts}-${cteKey}-g`
-            complexNodes.push({ id: gid2, type: 'toolNode', position: { x: toolX2, y: tblToolY2 },
-              data: { _toolId: 'group', nodeType: 'group',
-                      customGroupSql: innerSql2,
-                      groupCols: gc2, aggs: ag2, filters: [] } })
-            complexEdges.push({ id: `import-${ts}-${cteKey}-ge-${cei++}`, source: prevId2, target: gid2,
-              type: 'sqlEdge', ...getToolEdgeStyle('group'), markerEnd: MarkerType.ArrowClosed,
-              data: { joinType: 'LEFT JOIN', mappings: [], isTool: true, tgtToolId: 'group', srcCat: 'table' } })
-            prevId2 = gid2; toolX2 += TOOL_X_GAP
-          }
+          // Hybrid SUBQ: inner query in customSql, outer SELECT split into fields.
+          // Modal shows: SQL textarea (inner body) + Columns section + Math section.
           const sqid2 = `import-${ts}-${cteKey}-sq`
-          complexNodes.push({ id: sqid2, type: 'toolNode', position: { x: toolX2, y: tblToolY2 },
+          complexNodes.push({ id: sqid2, type: 'toolNode', position: { x: tblToolX2, y: tblToolY2 },
             data: { _toolId: 'subquery', nodeType: 'subquery',
-                    alias: cteKey, customSql: '',
-                    selectItems: outSI, mathItems: outMI,
-                    caseWhens: [], conditions: parsedSub2.conditions } })
-          complexEdges.push({ id: `import-${ts}-${cteKey}-sqe-${cei++}`, source: prevId2, target: sqid2,
+                    alias: cteKey,
+                    customSql: formatVerbatim(replaceCteRefs(innerSql2)),
+                    selectItems: outSI2,
+                    mathItems:   outMI2,
+                    caseWhens:   parsedSub2.caseWhens,
+                    conditions:  parsedSub2.conditions } })
+          complexEdges.push({ id: `import-${ts}-${cteKey}-sqe-${cei++}`,
+            source: anchor2, target: sqid2,
             type: 'sqlEdge', ...getToolEdgeStyle('subquery'), markerEnd: MarkerType.ArrowClosed,
             data: { joinType: 'LEFT JOIN', mappings: [], isTool: true, tgtToolId: 'subquery', srcCat: 'table' } })
 
-          prevToolId = sqid2; lastToolX = toolX2; lastToolY = tblToolY2
+          prevToolId = sqid2; lastToolX = tblToolX2; lastToolY = tblToolY2
           rowY += ROW_H
 
         } else if (isVerbatim2) {
-          // ── Pattern B: verbatim — display table nodes + SUBQ(verbatim) ────
-          // Create visible table nodes + JOIN edges so the user can see which
-          // tables are involved. SUBQ holds the full verbatim body; its _src_N
-          // is silently dropped by dead-code elimination (customSql takes over).
+          // ── Pattern B: verbatim body + structured inspection ──────────────
+          // Body contains CASE WHEN / correlated subqueries / arithmetic but no
+          // FROM(SELECT) and no GROUP BY at depth 0. We parse the outer SELECT
+          // into selectItems / mathItems / caseWhens / conditions for display
+          // (so user sees+edits each piece) AND keep customSql = full body. The
+          // `_importVerbatim` flag tells the SQL generator to use customSql as
+          // source of truth (items are inspection-only until user clears flag).
           const verbFrom3  = getFromTblLocal(body)
           const verbJoins3 = parseJoinsLocal(body)
           const verbTblSet3 = new Map<string, string>()
@@ -699,13 +794,47 @@ function runImport(sql: string) {
               markerEnd: MarkerType.ArrowClosed, data: { joinType, mappings } })
           }
 
+          // Parse outer SELECT clause + WHERE for structured inspection
+          let outerSI3: Array<{ col: string; alias: string }> = []
+          let outerMI3: Array<{ expr: string; alias: string }> = []
+          let outerCW3: Array<{ alias: string; branches: any[]; elsePart: string }> = []
+          let outerCD3: ReturnType<typeof parseWhere> = []
+          try {
+            const selStart3 = /\bSELECT\b/i.exec(body)?.index
+            if (selStart3 !== undefined) {
+              // Find FROM at depth 0
+              let dp3 = 0, fromIdx3 = -1
+              for (let k = selStart3 + 'SELECT'.length; k < body.length; k++) {
+                const ch = body[k]
+                if (ch === "'") { k++; while (k < body.length && body[k] !== "'") k++; continue }
+                if (ch === '(') dp3++
+                else if (ch === ')') dp3--
+                else if (dp3 === 0 && /^FROM\b/i.test(body.slice(k))) { fromIdx3 = k; break }
+              }
+              if (fromIdx3 > selStart3) {
+                const outerSel3 = body.slice(selStart3 + 'SELECT'.length, fromIdx3).trim()
+                const richParse3 = parseSelectClauseRich(outerSel3)
+                outerSI3 = richParse3.selectItems
+                outerMI3 = richParse3.mathItems
+                outerCW3 = richParse3.caseWhens
+              }
+            }
+            // parseWhere is paren-naive — strip nested (...) groups (correlated
+            // subqueries, function calls) before parsing so we don't pick up
+            // a WHERE from inside a subquery as if it were the body's outer WHERE.
+            const flat3 = stripParenGroups(body)
+            outerCD3 = parseWhere(flat3)
+          } catch { /* parse failure → leave as raw verbatim, no structured fields */ }
+
           // SUBQ(verbatim) placed after the last sub-row of tables
           const sqid3 = `import-${ts}-${cteKey}-sq`
           complexNodes.push({ id: sqid3, type: 'toolNode',
             position: { x: verbTblX3, y: verbTblY3 },
             data: { _toolId: 'subquery', nodeType: 'subquery',
-                    alias: cteKey, customSql: replaceCteRefs(body),
-                    selectItems: [], mathItems: [], caseWhens: [], conditions: [] } })
+                    alias: cteKey, customSql: formatVerbatim(replaceCteRefs(body)),
+                    selectItems: outerSI3, mathItems: outerMI3,
+                    caseWhens: outerCW3, conditions: outerCD3,
+                    _importVerbatim: true } })
           // Serial dep edge from previous CTE output (ordering guarantee)
           if (prevToolId) {
             complexEdges.push({ id: `import-${ts}-${cteKey}-sqe-${cei++}`, source: prevToolId, target: sqid3,
@@ -824,6 +953,7 @@ function runImport(sql: string) {
         position: { x: (i % COLS) * GAP_X, y: Math.floor(i / COLS) * GAP_Y },
         data: { label: tbl, tableName: tbl, objectName: tbl, module: '', type: 'T',
                 details: [], visibleCols: [], filters: [], columnsLoading: true,
+                ...(i === 0 ? { isHeaderNode: true } : {}),
                 ...(importedSet?.size ? { _importedCols: [...importedSet] } : {}) },
       }
     })

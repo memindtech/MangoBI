@@ -863,19 +863,24 @@ export function useSqlGenerator() {
   }
 
   // ── Subquery CTE block ────────────────────────────────────────────────
-  // Three modes:
-  //  • Full verbatim  — customSql set, no selectItems/caseWhens → return as-is
-  //  • Hybrid         — customSql = inner query + selectItems/caseWhens → wrap as derived table
-  //  • Builder        — no customSql → SELECT <items> FROM <upstream CTE>
+  // Modes:
+  //  • Full verbatim       — customSql set, no items → return as-is
+  //  • Imported verbatim   — `_importVerbatim` flag set → return customSql as-is
+  //                          regardless of items (items are inspection-only).
+  //                          User clears the flag to switch to Hybrid editing.
+  //  • Hybrid              — customSql = inner query + items → wrap as derived table
+  //  • Builder             — no customSql → SELECT <items> FROM <upstream CTE>
   function buildSubqueryBlock(node: Node, upstream: string): string {
     const custom      = (node.data.customSql as string | undefined)?.trim()
     const selectItems: Array<{ col: string; alias: string }> = node.data.selectItems ?? []
     const mathItems:   Array<{ expr: string; alias: string }> = node.data.mathItems ?? []
     const caseWhens:   any[]  = node.data.caseWhens  ?? []
     const conditions:  any[]  = node.data.conditions ?? []
+    const importVerbatim = node.data._importVerbatim === true
 
-    // Full verbatim: no structured columns → return inner SQL body as-is
-    if (custom && !selectItems.length && !mathItems.length && !caseWhens.length) return custom
+    // Verbatim: imported nodes (flag wins over items presence) OR plain verbatim
+    if (custom && (importVerbatim || (!selectItems.length && !mathItems.length && !caseWhens.length)))
+      return custom
 
     const parts: string[] = []
 

@@ -384,12 +384,33 @@ function removeNode()  { store.removeNode(props.id) }
       <!-- ── SUBQUERY rich summary ────────────────────────────────── -->
       <template v-else-if="isSubquery">
         <div class="px-3 py-2 flex flex-col gap-1.5">
-          <!-- alias badge -->
+          <!-- alias + import badge -->
           <div class="flex items-center gap-1.5">
             <span class="text-[8px] font-bold uppercase tracking-wider text-indigo-400/70">( … )</span>
-            <span class="text-[10px] font-mono font-semibold text-indigo-300">{{ subqueryAlias }}</span>
+            <span class="text-[10px] font-mono font-semibold text-indigo-300 truncate">{{ subqueryAlias }}</span>
+            <span v-if="props.data._importVerbatim"
+              class="text-[8px] px-1 py-0 rounded bg-amber-500/20 text-amber-400 font-bold border border-amber-500/30 leading-4 shrink-0">imported</span>
           </div>
-          <!-- SQL preview (first 60 chars of first non-empty line) -->
+          <!-- Structured counts for imported nodes -->
+          <div v-if="props.data._importVerbatim" class="flex flex-wrap items-center gap-1">
+            <span v-if="(props.data.selectItems ?? []).length"
+              class="text-[8px] px-1.5 py-0 rounded bg-indigo-500/15 text-indigo-300 font-mono leading-4">
+              {{ (props.data.selectItems as any[]).length }} cols
+            </span>
+            <span v-if="(props.data.caseWhens ?? []).length"
+              class="text-[8px] px-1.5 py-0 rounded bg-violet-500/15 text-violet-300 font-mono leading-4">
+              {{ (props.data.caseWhens as any[]).length }} CASE
+            </span>
+            <span v-if="(props.data.mathItems ?? []).filter((m: any) => m.expr?.trim()).length"
+              class="text-[8px] px-1.5 py-0 rounded bg-teal-500/15 text-teal-300 font-mono leading-4">
+              {{ (props.data.mathItems as any[]).filter((m: any) => m.expr?.trim()).length }} MATH
+            </span>
+            <span v-if="(props.data.conditions ?? []).filter((c: any) => c.column).length"
+              class="text-[8px] px-1.5 py-0 rounded bg-rose-500/15 text-rose-300 font-mono leading-4">
+              {{ (props.data.conditions as any[]).filter((c: any) => c.column).length }} WHERE
+            </span>
+          </div>
+          <!-- SQL preview (first non-empty line) -->
           <p v-if="subquerySql" class="text-[9px] font-mono text-foreground/50 truncate leading-relaxed">
             {{ subquerySql.split('\n').find(l => l.trim()) ?? subquerySql.slice(0, 60) }}
           </p>

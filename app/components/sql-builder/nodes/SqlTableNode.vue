@@ -151,28 +151,50 @@ const connectedTools = computed(() => {
   <div class="relative nowheel" style="min-width:220px;max-width:300px">
     <Handle
       type="target" :position="Position.Left"
-      class="!bg-sky-400 !w-3 !h-3 !border-2 !border-background !rounded-full"
+      :class="[
+        '!w-3 !h-3 !border-2 !border-background !rounded-full',
+        data.isHeaderNode ? '!bg-emerald-400' : '!bg-sky-400',
+      ]"
     />
     <Handle
       type="source" :position="Position.Right"
-      class="!bg-sky-400 !w-3 !h-3 !border-2 !border-background !rounded-full"
+      :class="[
+        '!w-3 !h-3 !border-2 !border-background !rounded-full',
+        data.isHeaderNode ? '!bg-emerald-400' : '!bg-sky-400',
+      ]"
     />
+
+    <!-- "MAIN" ribbon for header node — sits above the card -->
+    <div v-if="data.isHeaderNode"
+      class="absolute -top-2.5 left-3 z-10 flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-emerald-500 text-white text-[8px] font-bold tracking-wider shadow-lg shadow-emerald-500/40 leading-none">
+      <span>★</span><span>MAIN</span>
+    </div>
 
     <!-- Card -->
     <div :class="[
         'rounded-xl border-2 shadow-lg overflow-hidden bg-card transition-all duration-150',
-        props.selected
-          ? 'border-sky-400 shadow-sky-500/30 shadow-xl ring-2 ring-sky-400/30'
-          : 'border-sky-500/40 hover:border-sky-500/70',
+        data.isHeaderNode
+          ? (props.selected
+              ? 'border-emerald-400 shadow-emerald-500/40 shadow-xl ring-2 ring-emerald-400/40'
+              : 'border-emerald-500/70 shadow-emerald-500/20 hover:border-emerald-400')
+          : (props.selected
+              ? 'border-sky-400 shadow-sky-500/30 shadow-xl ring-2 ring-sky-400/30'
+              : 'border-sky-500/40 hover:border-sky-500/70'),
       ]"
     >
 
       <!-- ── Header ─────────────────────────────────────────── -->
-      <div class="flex items-center gap-2 px-3 py-2 bg-sky-500/10 border-b border-sky-500/20">
-        <Database class="size-3.5 text-sky-400 shrink-0" />
+      <div :class="[
+        'flex items-center gap-2 px-3 py-2 border-b',
+        data.isHeaderNode
+          ? 'bg-emerald-500/15 border-emerald-500/30'
+          : 'bg-sky-500/10 border-sky-500/20',
+      ]">
+        <Database :class="['size-3.5 shrink-0', data.isHeaderNode ? 'text-emerald-500' : 'text-sky-400']" />
         <div class="flex-1 min-w-0">
           <p class="text-[11px] font-semibold text-foreground truncate leading-tight">{{ data.label }}</p>
-          <p v-if="data.tableName !== data.label" class="text-[9px] text-sky-400/60 font-mono truncate leading-tight">
+          <p v-if="data.tableName !== data.label"
+            :class="['text-[9px] font-mono truncate leading-tight', data.isHeaderNode ? 'text-emerald-500/70' : 'text-sky-400/60']">
             {{ data.tableName }}
           </p>
         </div>

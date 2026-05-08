@@ -1153,7 +1153,8 @@ const subqSqlPreview = computed((): string => {
   const caseWhens:   any[]  = data.caseWhens  ?? []
   const conditions:  any[]  = data.conditions ?? []
 
-  if (custom && !selectItems.length && !mathItems.length && !caseWhens.length) return custom
+  if (custom && (data._importVerbatim === true || (!selectItems.length && !mathItems.length && !caseWhens.length)))
+    return custom
 
   const parts: string[] = []
   for (const item of selectItems) {
@@ -3804,25 +3805,42 @@ const finishBtnStyle = computed(() => {
             <!-- Builder mode: 2-column layout (includes hybrid when customSql = inner query) -->
             <template v-else>
 
-              <!-- Hybrid mode banner: inner query is set alongside selectItems -->
+              <!-- Hybrid / Imported-Verbatim banner: inner SQL textarea + mode-aware copy -->
               <div v-if="store.modalNode.data.customSql?.trim()"
                 class="flex flex-col gap-2 mb-4 border rounded-xl p-3 bg-indigo-500/5 border-indigo-500/20">
-                <div class="flex items-center justify-between">
-                  <div class="flex items-center gap-2">
-                    <span class="text-[9px] px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-400 font-mono border border-indigo-500/30 font-bold">hybrid</span>
-                    <span class="text-[10px] text-muted-foreground">Inner query (FROM) · คอลัมน์ด้านล่างเป็น outer SELECT</span>
+                <div class="flex items-center justify-between gap-2 flex-wrap">
+                  <div class="flex items-center gap-2 min-w-0">
+                    <span v-if="store.modalNode.data._importVerbatim"
+                      class="text-[9px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-400 font-mono border border-amber-500/30 font-bold shrink-0">imported</span>
+                    <span v-else
+                      class="text-[9px] px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-400 font-mono border border-indigo-500/30 font-bold shrink-0">hybrid</span>
+                    <span class="text-[10px] text-muted-foreground truncate">
+                      <template v-if="store.modalNode.data._importVerbatim">
+                        Raw SQL ด้านบนเป็นแหล่งข้อมูลจริง · ฟีลด์ด้านล่างใช้ inspect / แก้ raw SQL ตามต้องการ
+                      </template>
+                      <template v-else>Inner query (FROM) · คอลัมน์ด้านล่างเป็น outer SELECT</template>
+                    </span>
                   </div>
-                  <button @click="tn.setModalData({ customSql: '' })"
-                    class="text-[9px] px-2 py-0.5 rounded border border-indigo-500/30 text-indigo-500/70 hover:bg-indigo-500/10 transition-colors">
-                    ล้าง inner query
-                  </button>
+                  <div class="flex items-center gap-1.5 shrink-0">
+                    <button v-if="store.modalNode.data._importVerbatim"
+                      @click="tn.setModalData({ customSql: '', _importVerbatim: false })"
+                      title="ลบ raw SQL ออก ใช้ฟีลด์ด้านล่างเป็น builder (cols/CASE/MATH/WHERE) — JOIN ของ tables บน canvas ทำหน้าที่ FROM"
+                      class="text-[9px] px-2 py-0.5 rounded border border-amber-500/30 text-amber-500/80 hover:bg-amber-500/10 transition-colors">
+                      เปลี่ยนเป็น Builder mode
+                    </button>
+                    <button v-else
+                      @click="tn.setModalData({ customSql: '', _importVerbatim: false })"
+                      class="text-[9px] px-2 py-0.5 rounded border border-indigo-500/30 text-indigo-500/70 hover:bg-indigo-500/10 transition-colors">
+                      ล้าง raw SQL
+                    </button>
+                  </div>
                 </div>
                 <SqlAutoInput
                   tag="textarea"
                   col-source="all"
                   :model-value="store.modalNode.data.customSql ?? ''"
                   @update:model-value="tn.setModalData({ customSql: $event })"
-                  :rows="5"
+                  :rows="store.modalNode.data._importVerbatim ? 12 : 5"
                   input-class="w-full text-[10px] font-mono border border-indigo-500/20 rounded-lg px-3 py-2 bg-background/60 focus:outline-none focus:ring-1 focus:ring-indigo-400/40 resize-none leading-relaxed text-foreground/70"
                 />
               </div>
@@ -4261,6 +4279,12 @@ const finishBtnStyle = computed(() => {
               <span v-if="store.modalNode?.data?.customSql?.trim() && !(store.modalNode.data.selectItems as any[])?.length && !(store.modalNode.data.mathItems as any[])?.length && !(store.modalNode.data.caseWhens as any[])?.length">
                 <span class="font-semibold text-indigo-400">{{ store.modalNode.data.alias || 'verbatim' }}</span>
                 · <span class="text-muted-foreground">{{ (store.modalNode.data.customSql as string).trim().split('\n').length }} lines</span>
+              </span>
+              <span v-else-if="store.modalNode?.data?._importVerbatim && store.modalNode?.data?.customSql?.trim()">
+                <span class="font-semibold text-amber-400">imported</span>
+                · <span class="text-muted-foreground">{{ (store.modalNode.data.customSql as string).trim().split('\n').length }} lines</span>
+                · <span class="text-indigo-400">{{ (store.modalNode?.data?.selectItems ?? []).length }} cols</span>
+                <span v-if="(store.modalNode?.data?.caseWhens ?? []).length"> · <span class="text-indigo-400">{{ (store.modalNode.data.caseWhens as any[]).length }}</span> CASE</span>
               </span>
               <span v-else-if="store.modalNode?.data?.customSql?.trim()">
                 hybrid · <span class="text-indigo-400">{{ (store.modalNode?.data?.selectItems ?? []).length }} cols</span>
