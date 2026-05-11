@@ -1,0 +1,36 @@
+services:
+  mangobi-frontend:
+    container_name: mangobi-frontend-test
+    ports: !override
+      - "3001:3000"
+    environment:
+      # Mango ERP = remote production service (auth authority + token issuer)
+      # ใช้ remote URL เพื่อให้ Login/ViewInitData2 ใช้ DB ตัวเดียวกัน
+      - NUXT_MANGO_BASE=https://demotokbud.mangoanywhere.com/production.service/
+      - NUXT_PUBLIC_API_BASE=https://demotokbud.mangoanywhere.com/production.service/
+      # Planning Backend ยัง deploy local (ใน container) → ผ่าน host.docker.internal
+      - NUXT_PUBLIC_PLANNING_BASE=http://host.docker.internal:8311/api/v1/
+      - NUXT_PUBLIC_BI_BASE=http://host.docker.internal:8311/api/v1/
+      # biSession cookie Secure flag ผูกกับ NODE_ENV — บน HTTP test ต้องปิด
+      # มิเช่นนั้น browser ไม่ส่ง bi_session กลับ → /api/auth/me 401 → ลูป login
+      - NODE_ENV=development
+      # ผูก timezone ตรงกับ SQL Server (Bangkok) — กันบั๊ก DateTime.Now
+      # ของ .NET / Nitro คำนวณเทียบ GETDATE() ของ SQL Server แล้วได้ค่า 7 ชม.
+      # คลาดเคลื่อน
+      - TZ=Asia/Bangkok
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  mangobi-backend:
+    container_name: mangobi-backend-test
+    ports: !override
+      - "8311:8080"
+    environment:
+      # Backend → ชี้ Mango Anywhere ตัวจริง (remote) เพื่อ verify token ตรงกัน
+      - Anywhere__BaseUrl=https://demotokbud.mangoanywhere.com/production.service/
+      - MangoBIScheduler__ReportBaseUrl=http://mangobi-frontend:3000/view/
+      # ผูก timezone ตรงกับ SQL Server (Bangkok) — ป้องกัน DateTime.Now ใน .NET
+      # เพี้ยน 7 ชม. จาก SQL Server's GETDATE() (สาเหตุเดิมของ x-mg-auth-error: 3)
+      - TZ=Asia/Bangkok
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
