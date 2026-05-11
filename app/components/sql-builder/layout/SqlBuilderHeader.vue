@@ -1111,6 +1111,18 @@ function appendNodesToCanvas(rawNodes: any[], rawEdges: any[]): any[] {
   return remappedNodes
 }
 
+/** Re-fetch column schema (`details`) for any sqlTable node that lacks it.
+ *  FinishModal.doSave strips `details` from saved JSON to shrink payload, so
+ *  on load we have to pull the schema again. visibleCols (with user aliases)
+ *  is preserved by loadColumnsForNode when no `_importedCols` is present. */
+function refreshTableDetailsIfMissing(nodes: any[]) {
+  for (const n of nodes) {
+    if (n.type !== 'sqlTable' || !n.data?.tableName) continue
+    if ((n.data.details ?? []).length) continue
+    dragDrop.loadColumnsForNode(n.id, n.data.tableName)
+  }
+}
+
 /** REPLACE: clear canvas and load item as the active document */
 async function loadCloudToCanvas(item: BIListItem) {
   loadingId.value = item.id
@@ -1127,6 +1139,7 @@ async function loadCloudToCanvas(item: BIListItem) {
     store.savedId       = item.id
     store.savedName     = item.name
     store.savedIsPublic = item.isPublic ?? false
+    refreshTableDetailsIfMissing(store.nodes)
     showLoadModal.value = false
   } catch {
     // ignore
@@ -1143,7 +1156,8 @@ async function addCloudToCanvas(item: BIListItem) {
     if (!data) return
     const nodes = JSON.parse(data.nodesJson ?? '[]')
     const edges = JSON.parse(data.edgesJson ?? '[]')
-    appendNodesToCanvas(nodes, edges)
+    const added = appendNodesToCanvas(nodes, edges)
+    refreshTableDetailsIfMissing(added)
     // Set as current save target only if canvas was empty before
     if (!store.savedId) {
       store.savedId   = item.id
@@ -1167,6 +1181,7 @@ function loadLocalToCanvas(id: string) {
       : n
   )
   store.edges = tpl.edges ?? []
+  refreshTableDetailsIfMissing(store.nodes)
   showLoadModal.value = false
 }
 
@@ -1174,7 +1189,8 @@ function loadLocalToCanvas(id: string) {
 function addLocalToCanvas(id: string) {
   const tpl = store.listTemplates().find((t: any) => t.id === id)
   if (!tpl) return
-  appendNodesToCanvas(tpl.nodes ?? [], tpl.edges ?? [])
+  const added = appendNodesToCanvas(tpl.nodes ?? [], tpl.edges ?? [])
+  refreshTableDetailsIfMissing(added)
 }
 
 async function deleteFromCloud(id: string) {

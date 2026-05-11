@@ -292,11 +292,16 @@ export function useDragDrop() {
       })
       return
     }
-    // If the node carries _importedCols (set by SQL import), use those
-    // as the visible selection instead of the PK-only default.
-    const nodeNow      = store.nodes.find((n: any) => n.id === nodeId)
-    const importedCols = nodeNow?.data?._importedCols as string[] | undefined
-    const colMap       = new Map(cols.map(c => [c.column_name.toLowerCase(), c]))
+    // Decide visibleCols by precedence:
+    //   1. `_importedCols` (set by SQL import) — first-time SELECT projection
+    //   2. existing user-selected visibleCols — preserves choices + aliases on
+    //      reload (FinishModal save strips `details` to shrink payload, so on
+    //      load we re-fetch the schema while keeping the user's column picks)
+    //   3. PK-only default — fresh drag from the ERP tree
+    const nodeNow         = store.nodes.find((n: any) => n.id === nodeId)
+    const importedCols    = nodeNow?.data?._importedCols as string[] | undefined
+    const existingVisible = (nodeNow?.data?.visibleCols ?? []) as VisibleCol[]
+    const colMap          = new Map(cols.map(c => [c.column_name.toLowerCase(), c]))
 
     const visibleCols: VisibleCol[] = importedCols?.length
       ? importedCols.map(name => {
@@ -306,10 +311,18 @@ export function useDragDrop() {
                 remark: schema.remark, isPk: schema.data_pk === 'Y', alias: '' }
             : { name, alias: '' }
         })
-      : cols
-          .filter(c => c.data_pk === 'Y')
-          .map(c => ({ name: c.column_name, type: c.column_type || c.data_type,
-                       remark: c.remark, isPk: true, alias: '' }))
+      : existingVisible.length
+        ? existingVisible.map(v => {
+            const schema = colMap.get(v.name.toLowerCase())
+            return schema
+              ? { ...v, type: schema.column_type || schema.data_type,
+                  remark: v.remark ?? schema.remark, isPk: schema.data_pk === 'Y' }
+              : v
+          })
+        : cols
+            .filter(c => c.data_pk === 'Y')
+            .map(c => ({ name: c.column_name, type: c.column_type || c.data_type,
+                         remark: c.remark, isPk: true, alias: '' }))
 
     store.updateNodeData(nodeId, {
       details:           cols,
