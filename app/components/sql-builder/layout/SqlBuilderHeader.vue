@@ -934,6 +934,7 @@ function runImport(sql: string) {
       for (const n of added) {
         if (n.data?.tableName) dragDrop.loadColumnsForNode(n.id, n.data.tableName)
       }
+      store.sourceSql = sql
       importSuccess.value = true
       importSQL.value     = ''
       setTimeout(() => { importSuccess.value = false; showLoadModal.value = false }, 1500)
@@ -1006,6 +1007,7 @@ function runImport(sql: string) {
     for (const n of added) {
       if (n.data?.tableName) dragDrop.loadColumnsForNode(n.id, n.data.tableName)
     }
+    store.sourceSql = sql
     importSuccess.value = true
     importSQL.value     = ''
     setTimeout(() => {
@@ -1139,6 +1141,7 @@ async function loadCloudToCanvas(item: BIListItem) {
     store.savedId       = item.id
     store.savedName     = item.name
     store.savedIsPublic = item.isPublic ?? false
+    store.sourceSql     = data.sourceSql ?? ''
     refreshTableDetailsIfMissing(store.nodes)
     showLoadModal.value = false
   } catch {
@@ -1202,6 +1205,13 @@ async function deleteFromCloud(id: string) {
     deletingId.value = null
   }
 }
+
+// External trigger — SqlEditorModal sets store.pendingImportSql, we apply via runImport
+watch(() => store.pendingImportSql, (sql) => {
+  if (!sql) return
+  store.pendingImportSql = null
+  runImport(sql)
+})
 
 function nodeStats(nodes: any[]) {
   const tables = nodes.filter((n: any) => n.type === 'sqlTable').length
@@ -1306,6 +1316,15 @@ function nodeStats(nodes: any[]) {
           </div>
         </Transition>
       </div>
+
+      <!-- SQL Editor (free-form Navicat-like editor with autocomplete) -->
+      <button @click="store.showSqlEditor = true"
+        class="flex items-center gap-1 text-xs px-2 py-1.5 border rounded-lg hover:bg-accent transition-colors"
+        title="เขียน SQL เอง + autocomplete → Reverse-parse กลับเป็น nodes">
+        <FileCode2 class="size-3.5" />
+        <span class="hidden sm:inline">SQL Editor</span>
+        <span v-if="store.sourceSql" class="size-1.5 rounded-full bg-emerald-500" title="มี source SQL บันทึกไว้" />
+      </button>
 
       <!-- JSON Export -->
       <button @click="downloadJSON" :disabled="!store.hasNodes"
