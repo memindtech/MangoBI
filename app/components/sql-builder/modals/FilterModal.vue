@@ -180,19 +180,35 @@ const totalSelected = computed(() => {
 
 // ── Column search ─────────────────────────────────────────────────────────────
 const colSearch = ref('')
+const viewMode  = ref<'all' | 'selected'>('all')
+
+function isSelectedInGroup(nodeId: string, colName: string): boolean {
+  return localVisibleColsMap.value.get(nodeId)?.some(v => v.name === colName) ?? false
+}
 
 const filteredGroups = computed(() => {
   const q = colSearch.value.toLowerCase().trim()
-  if (!q) return columnGroups.value
+  const onlySelected = viewMode.value === 'selected'
   return columnGroups.value
     .map(g => ({
       ...g,
-      cols: g.cols.filter(c =>
-        c.column_name.toLowerCase().includes(q) ||
-        (c.remark ?? '').toLowerCase().includes(q)
-      ),
+      cols: g.cols.filter(c => {
+        if (onlySelected && !isSelectedInGroup(g.nodeId, c.column_name)) return false
+        if (!q) return true
+        return (
+          c.column_name.toLowerCase().includes(q) ||
+          (c.remark ?? '').toLowerCase().includes(q)
+        )
+      }),
     }))
     .filter(g => g.cols.length > 0)
+})
+
+// In "Selected" mode, auto-expand every group so users can audit all picks at once
+watch(viewMode, (mode) => {
+  if (mode === 'selected') {
+    expandedGroups.value = new Set(columnGroups.value.map(g => g.nodeId))
+  }
 })
 
 // ── WHERE conditions (secondary, collapsible) ─────────────────────────────────
@@ -357,22 +373,70 @@ function close() { store.filterNodeId = null }
             <!-- ── LEFT: Column Picker ─────────────────────────────────── -->
             <div class="flex flex-col overflow-hidden min-h-0">
 
-              <!-- Left sub-header: search + global controls -->
-              <div class="px-4 py-2.5 border-b bg-muted/10 shrink-0 flex items-center gap-2">
-                <div class="relative flex-1">
-                  <Search class="absolute left-2.5 size-3.5 text-muted-foreground/50 pointer-events-none top-1/2 -translate-y-1/2" />
-                  <input v-model="colSearch" placeholder="ค้นหา column…"
-                    class="w-full text-xs border rounded-lg pl-8 pr-3 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-sky-400/60 font-mono" />
+              <!-- Left sub-header: view toggle + search + global controls -->
+              <div class="border-b bg-muted/10 shrink-0">
+
+                <!-- View mode toggle (All / Selected) -->
+                <div class="px-4 pt-2.5 pb-1.5 flex items-center gap-2">
+                  <div class="inline-flex items-center rounded-lg border bg-background p-0.5 shrink-0">
+                    <button
+                      @click="viewMode = 'all'"
+                      :class="[
+                        'flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1 rounded-md transition-colors',
+                        viewMode === 'all'
+                          ? 'bg-sky-500 text-white shadow-sm'
+                          : 'text-muted-foreground hover:text-foreground',
+                      ]"
+                    >
+                      All
+                      <span :class="[
+                        'text-[10px] font-mono px-1 rounded',
+                        viewMode === 'all' ? 'bg-white/20 text-white' : 'bg-muted/60 text-muted-foreground/70',
+                      ]">{{ availableColumns.length }}</span>
+                    </button>
+                    <button
+                      @click="viewMode = 'selected'"
+                      :class="[
+                        'flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1 rounded-md transition-colors',
+                        viewMode === 'selected'
+                          ? 'bg-sky-500 text-white shadow-sm'
+                          : 'text-muted-foreground hover:text-foreground',
+                      ]"
+                    >
+                      Selected
+                      <span :class="[
+                        'text-[10px] font-mono px-1 rounded',
+                        viewMode === 'selected' ? 'bg-white/20 text-white' : 'bg-sky-500/15 text-sky-500',
+                      ]">{{ totalSelected }}</span>
+                    </button>
+                  </div>
+                  <p
+                    v-if="viewMode === 'selected'"
+                    class="text-[10px] text-muted-foreground/70 truncate"
+                  >
+                    แสดงเฉพาะ field ที่เลือกแล้ว — คลิก ✓ เพื่อเอาออก
+                  </p>
                 </div>
-                <button @click="toggleExpandAll"
-                  class="text-[11px] text-muted-foreground hover:text-foreground font-medium whitespace-nowrap transition-colors border-r border-border/40 pr-2.5 shrink-0">
-                  {{ allExpanded ? 'Collapse' : 'Expand' }}
-                </button>
-                <button @click="selectAllGroups"
-                  class="text-[11px] font-semibold text-sky-500 hover:underline shrink-0 whitespace-nowrap">ทั้งหมด</button>
-                <span class="text-muted-foreground/40 text-[11px]">/</span>
-                <button @click="clearAllGroups"
-                  class="text-[11px] text-muted-foreground hover:underline shrink-0 whitespace-nowrap">ล้าง</button>
+
+                <!-- Search + global controls -->
+                <div class="px-4 pb-2.5 flex items-center gap-2">
+                  <div class="relative flex-1">
+                    <Search class="absolute left-2.5 size-3.5 text-muted-foreground/50 pointer-events-none top-1/2 -translate-y-1/2" />
+                    <input v-model="colSearch" placeholder="ค้นหา column…"
+                      class="w-full text-xs border rounded-lg pl-8 pr-3 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-sky-400/60 font-mono" />
+                  </div>
+                  <button @click="toggleExpandAll"
+                    class="text-[11px] text-muted-foreground hover:text-foreground font-medium whitespace-nowrap transition-colors border-r border-border/40 pr-2.5 shrink-0">
+                    {{ allExpanded ? 'Collapse' : 'Expand' }}
+                  </button>
+                  <button
+                    v-if="viewMode === 'all'"
+                    @click="selectAllGroups"
+                    class="text-[11px] font-semibold text-sky-500 hover:underline shrink-0 whitespace-nowrap">ทั้งหมด</button>
+                  <span v-if="viewMode === 'all'" class="text-muted-foreground/40 text-[11px]">/</span>
+                  <button @click="clearAllGroups"
+                    class="text-[11px] text-muted-foreground hover:underline shrink-0 whitespace-nowrap">ล้าง</button>
+                </div>
               </div>
 
               <!-- Column list (scrollable) -->
@@ -388,8 +452,19 @@ function close() { store.filterNodeId = null }
                 </div>
 
                 <!-- No match -->
-                <div v-else-if="!filteredGroups.length" class="px-5 py-8 text-center text-[11px] text-muted-foreground italic">
-                  ไม่พบ "{{ colSearch }}"
+                <div v-else-if="!filteredGroups.length" class="px-5 py-10 text-center flex flex-col items-center gap-2">
+                  <div class="size-10 rounded-full bg-muted/40 flex items-center justify-center">
+                    <Search class="size-4 text-muted-foreground/50" />
+                  </div>
+                  <p class="text-xs text-muted-foreground/80 font-medium">
+                    <template v-if="viewMode === 'selected' && !totalSelected">ยังไม่ได้เลือก field ใดๆ</template>
+                    <template v-else-if="colSearch">ไม่พบ "{{ colSearch }}"</template>
+                    <template v-else>ไม่พบ field</template>
+                  </p>
+                  <p v-if="viewMode === 'selected' && !totalSelected" class="text-[10px] text-muted-foreground/55 leading-relaxed max-w-[260px]">
+                    สลับไป <button @click="viewMode = 'all'" class="text-sky-500 font-semibold hover:underline">All</button>
+                    เพื่อเลือก column ที่ต้องการ SELECT
+                  </p>
                 </div>
 
                 <!-- Tree groups -->
