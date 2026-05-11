@@ -7,23 +7,110 @@
  * so the existing parser rebuilds canvas nodes from the typed SQL.
  */
 import { storeToRefs } from 'pinia'
-import { Code2, X, Sparkles, Play, FileText, Database, KeyRound, Hash, Loader2 } from 'lucide-vue-next'
+import { Code2, X, Sparkles, Play, FileText, KeyRound, Loader2, TableIcon, AlertCircle, ChevronDown } from 'lucide-vue-next'
+import type { ColDef } from 'ag-grid-community'
 import { useSqlBuilderStore } from '~/stores/sql-builder'
 import { useErpData } from '~/composables/sql-builder/useErpData'
+import { useMangoBIApi } from '~/composables/useMangoBIApi'
 import type { ColumnInfo } from '~/types/sql-builder'
+
+// Lazy-load AG Grid — mirrors the pattern in pages/datamodel.vue so we share
+// the same module registration and theme across the app.
+let _agGridReady = false
+const AgGridVue = defineAsyncComponent(async () => {
+  const [{ AgGridVue: Grid }, { ClientSideRowModelModule, CommunityFeaturesModule, ModuleRegistry }] = await Promise.all([
+    import('ag-grid-vue3'),
+    import('ag-grid-community'),
+  ])
+  if (!_agGridReady) {
+    ModuleRegistry.registerModules([ClientSideRowModelModule, CommunityFeaturesModule])
+    _agGridReady = true
+  }
+  return Grid
+})
+
+const colorMode  = useColorMode()
+const isDark     = computed(() => colorMode.value === 'dark')
+const themeClass = computed(() => isDark.value ? 'ag-theme-quartz-dark' : 'ag-theme-quartz')
 
 const store   = useSqlBuilderStore()
 const erpData = useErpData()
+const api     = useMangoBIApi()
 const { showSqlEditor, sourceSql } = storeToRefs(store)
 
 const sqlText  = ref('')
 const elRef    = ref<HTMLTextAreaElement | null>(null)
 const errorMsg = ref('')
 
+// ── Run / Preview (raw rows from executeQuery) ────────────────────────────
+// Mirrors the DataModel page sample-data grid: AgGrid with auto-generated
+// ColDefs from the first row's keys. No transforms — just the raw result.
+const previewRows    = ref<Record<string, unknown>[]>([])
+const previewLoading = ref(false)
+const previewError   = ref('')
+const previewShown   = ref(false)
+const previewRanAt   = ref<Date | null>(null)
+
+const previewColDefs = computed<ColDef[]>(() => {
+  const sample = previewRows.value[0]
+  if (!sample) return []
+  return Object.keys(sample).map(k => ({
+    field:                  k,
+    headerName:             k,
+    sortable:               true,
+    resizable:              true,
+    filter:                 true,
+    enableCellTextSelection: true,
+    valueFormatter:         (p: any) => p?.value == null ? '' : String(p.value),
+  }))
+})
+
+async function runPreview() {
+  const sql = sqlText.value.trim()
+  if (!sql) { previewError.value = 'กรุณาพิมพ์ SQL ก่อน'; previewShown.value = true; return }
+  if (!/^\s*(WITH|SELECT)\b/i.test(sql)) {
+    previewError.value = 'รองรับเฉพาะ SELECT / WITH (CTE) เท่านั้น'
+    previewShown.value = true
+    return
+  }
+  previewError.value = ''
+  previewLoading.value = true
+  previewShown.value   = true
+  try {
+    const res = await api.executeQuery(sql)
+    if (!res || !Array.isArray(res.rows)) {
+      previewError.value = 'Execute ล้มเหลว — backend ไม่ตอบ หรือ SQL ผิด'
+      previewRows.value  = []
+    } else {
+      previewRows.value = res.rows
+      previewRanAt.value = new Date()
+      if (!res.rows.length) previewError.value = '— ไม่มีข้อมูล (0 rows)'
+    }
+  } catch (e: any) {
+    previewError.value = e?.message ?? 'Execute error'
+    previewRows.value  = []
+  } finally {
+    previewLoading.value = false
+  }
+}
+
+function closePreview() {
+  previewShown.value = false
+  previewError.value = ''
+}
+
 watch(showSqlEditor, async (open) => {
-  if (!open) return
+  if (!open) {
+    previewShown.value = false
+    previewRows.value  = []
+    previewError.value = ''
+    return
+  }
   sqlText.value  = sourceSql.value || ''
   errorMsg.value = ''
+  previewRows.value  = []
+  previewError.value = ''
+  previewShown.value = false
   // Eagerly populate autocomplete sources
   // - addspecTables: ALL DB tables (richer — Master/Addspec_Table_ReadList)
   // - modules/objects: kept for fallback in case addspec call fails
@@ -497,9 +584,83 @@ const charCount = computed(() => sqlText.value.length)
                 @click="dropdown.show = false"
                 spellcheck="false"
                 placeholder="-- พิมพ์ SQL ที่นี่...&#10;-- ตัวอย่าง:&#10;WITH cte_demo AS (&#10;  SELECT a.maincode, a.projno&#10;  FROM bd_proj_h a&#10;  WHERE a.maincode = 'MG1'&#10;)&#10;SELECT * FROM cte_demo"
-                class="flex-1 w-full font-mono text-[12.5px] leading-[1.5] px-4 py-3 bg-background resize-none focus:outline-none text-foreground"
+                :class="['w-full font-mono text-[12.5px] leading-[1.5] px-4 py-3 bg-background resize-none focus:outline-none text-foreground min-h-0',
+                         previewShown ? 'flex-[1_1_45%]' : 'flex-1']"
                 style="font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace; tab-size: 2;"
               />
+
+              <!-- ── Preview panel (raw rows from executeQuery) ───────── -->
+              <div
+                v-if="previewShown"
+                class="flex-[1_1_55%] border-t flex flex-col min-h-0 bg-background"
+              >
+                <!-- Preview header -->
+                <div class="flex items-center gap-2 px-3 py-1.5 border-b bg-emerald-500/5 shrink-0">
+                  <TableIcon class="size-3.5 text-emerald-600" />
+                  <span class="text-xs font-semibold text-emerald-700 dark:text-emerald-400">Result Preview</span>
+                  <span v-if="previewLoading" class="flex items-center gap-1 text-[10px] text-muted-foreground">
+                    <Loader2 class="size-3 animate-spin" /> กำลังดึงข้อมูล…
+                  </span>
+                  <span v-else-if="previewRows.length" class="text-[10px] font-mono text-muted-foreground">
+                    {{ previewRows.length.toLocaleString() }} rows ·
+                    {{ previewColDefs.length }} cols
+                    <span v-if="previewRanAt" class="opacity-60">
+                      · {{ previewRanAt.toLocaleTimeString() }}
+                    </span>
+                  </span>
+                  <button @click="runPreview"
+                    :disabled="previewLoading"
+                    class="ml-auto flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-emerald-500/40 text-emerald-600 hover:bg-emerald-500/10 transition-colors disabled:opacity-40">
+                    <Loader2 v-if="previewLoading" class="size-3 animate-spin" />
+                    <Play v-else class="size-3" />
+                    Re-run
+                  </button>
+                  <button @click="closePreview"
+                    class="size-5 flex items-center justify-center rounded hover:bg-accent text-muted-foreground transition-colors"
+                    title="ซ่อน preview">
+                    <ChevronDown class="size-3.5" />
+                  </button>
+                </div>
+
+                <!-- Body: grid / empty / error -->
+                <div class="flex-1 min-h-0 relative">
+                  <div v-if="previewLoading"
+                    class="absolute inset-0 flex items-center justify-center gap-2 bg-background/70 backdrop-blur-sm z-10">
+                    <Loader2 class="size-4 animate-spin text-emerald-500" />
+                    <span class="text-xs text-muted-foreground">กำลัง execute query…</span>
+                  </div>
+
+                  <div v-if="previewError && !previewRows.length"
+                    class="absolute inset-0 flex flex-col items-center justify-center gap-2 p-6 text-center">
+                    <AlertCircle class="size-6 text-rose-500" />
+                    <p class="text-xs font-medium text-rose-500">{{ previewError }}</p>
+                    <p class="text-[10px] text-muted-foreground/70">
+                      ตรวจสอบ syntax + table name + JOIN condition แล้วลองใหม่
+                    </p>
+                  </div>
+
+                  <ClientOnly>
+                    <AgGridVue
+                      v-if="previewRows.length"
+                      :class="[themeClass, 'w-full h-full']"
+                      :rowData="previewRows"
+                      :columnDefs="previewColDefs"
+                      :rowHeight="26"
+                      :headerHeight="30"
+                      :suppressMovableColumns="false"
+                      :suppressCellFocus="false"
+                      :enableCellTextSelection="true"
+                      :tooltipShowDelay="300"
+                    />
+                  </ClientOnly>
+                </div>
+
+                <!-- Inline notice when rows arrived but error/0 — keep grid visible above -->
+                <div v-if="previewError && previewRows.length"
+                  class="px-3 py-1 border-t text-[10px] text-amber-600 bg-amber-500/5 shrink-0">
+                  {{ previewError }}
+                </div>
+              </div>
 
               <!-- Footer / status bar -->
               <div class="flex items-center gap-3 px-4 py-2 border-t bg-muted/20 text-[10px] text-muted-foreground shrink-0">
@@ -546,7 +707,8 @@ const charCount = computed(() => sqlText.value.length)
                 <p>• พิมพ์ <code class="font-mono text-sky-500">alias.</code> เพื่อดู column ของตารางนั้น</p>
                 <p>• กด <kbd class="px-1 py-0.5 rounded border bg-background text-foreground text-[9px]">Tab</kbd> รับ suggestion</p>
                 <p>• กด <kbd class="px-1 py-0.5 rounded border bg-background text-foreground text-[9px]">Ctrl+Space</kbd> เปิด popup</p>
-                <p>• Apply → reverse-parse → canvas nodes</p>
+                <p>• <span class="text-emerald-500 font-semibold">Run</span> → ดูข้อมูลจริง (ไม่กระทบ canvas)</p>
+                <p>• <span class="text-sky-500 font-semibold">Apply</span> → reverse-parse → canvas nodes</p>
               </div>
             </aside>
           </div>
@@ -561,6 +723,14 @@ const charCount = computed(() => sqlText.value.length)
               <button @click="close"
                 class="text-xs px-4 py-2 border rounded-lg hover:bg-accent transition-colors text-muted-foreground">
                 ยกเลิก
+              </button>
+              <button @click="runPreview"
+                :disabled="!sqlText.trim() || previewLoading"
+                class="flex items-center gap-1.5 text-xs px-4 py-2 border border-emerald-500/50 text-emerald-600 hover:bg-emerald-500/10 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg font-semibold transition-colors"
+                title="Execute SQL → ดู raw data (ไม่กระทบ canvas)">
+                <Loader2 v-if="previewLoading" class="size-3.5 animate-spin" />
+                <TableIcon v-else class="size-3.5" />
+                Run Preview
               </button>
               <button @click="apply"
                 :disabled="!sqlText.trim()"
