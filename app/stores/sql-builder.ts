@@ -27,6 +27,9 @@ export const useSqlBuilderStore = defineStore('sql-builder', () => {
   const savedName         = ref('')
   const savedIsPublic     = ref(false)
   const showFinishModal   = ref(false)               // shared trigger: open save-to-API modal
+  const showSqlEditor     = ref(false)               // shared trigger: open Navicat-like SQL Editor
+  const sourceSql         = ref<string>('')          // last hand-written SQL imported via SQL Editor — persisted with builder
+  const pendingImportSql  = ref<string | null>(null) // when set, SqlBuilderHeader's watcher runs runImport on it
   const activeEdgeId    = ref<string | null>(null)
   const selectedNodeId  = ref<string | null>(null)
   const selectedNodeIds = ref<string[]>([])
@@ -55,6 +58,20 @@ export const useSqlBuilderStore = defineStore('sql-builder', () => {
   const loadingMods    = ref(false)
   const loadingObjs    = ref<Record<string, boolean>>({})
   const searchLoading  = ref(false)
+
+  // ── Addspec Tables (full flat list from Master/Addspec_Table_ReadList) ──
+  // Richer than `objects` — covers ALL DB tables, not just registered objects.
+  // Used by SQL Editor autocomplete so user can reference any table by name.
+  interface AddspecTable {
+    table_name: string
+    remark:     string | null
+    module:     string | null
+    edituser?:  string | null
+    editdate?:  string | null
+  }
+  const addspecTables        = ref<AddspecTable[]>([])
+  const addspecTablesLoading = ref(false)
+  const addspecTablesLoadedAt = ref<Date | null>(null)
 
   // ── Mango Schema Sync Status ─────────────────────────────────────────────
   // idle     = ยังไม่เริ่ม
@@ -353,6 +370,7 @@ export const useSqlBuilderStore = defineStore('sql-builder', () => {
     nodes.value = []
     edges.value = []
     generatedSQL.value = ''
+    sourceSql.value = ''
     modalNodeId.value = null
     filterNodeId.value = null
     activeEdgeId.value = null
@@ -447,9 +465,11 @@ export const useSqlBuilderStore = defineStore('sql-builder', () => {
     // State
     nodes, edges, generatedSQL, sqlPanelOpen, lastGenerationWarnings,
     savedId, savedName, savedIsPublic, showFinishModal,
+    showSqlEditor, sourceSql, pendingImportSql,
     activeEdgeId, selectedNodeId, selectedNodeIds,
     modalNodeId, filterNodeId, pendingToolId, pendingVp, relationEdgeId, newToolNodeId, search, clipboard, groupModalData,
     modules, objects, expandedMods, loadingMods, loadingObjs, searchLoading,
+    addspecTables, addspecTablesLoading, addspecTablesLoadedAt,
     syncStatus, syncLastAt,
     columnCache, history, historyIndex, isUndoing, MAX_HISTORY, nodeCounter,
 

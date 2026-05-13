@@ -189,6 +189,7 @@ export function useMangoBIApi() {
     nodesJson:     string
     edgesJson:     string
     sqlText:       string
+    sourceSql?:    string   // raw user-typed SQL from SQL Editor (round-trip for re-edit)
     columnMapping?: string   // JSON: ColumnMapEntry[]
     isPublic?:     boolean
   }): Promise<string | null> {

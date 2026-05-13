@@ -1143,7 +1143,10 @@ const colSearch     = ref('')
 const sortColSearch = ref('')
 const subqColSearch = ref('')
 
-const filteredSubqGroupedCols = computed(() => applyGroupSearch(subqColSearch.value.trim()))
+// All / Selected view mode (shared across tool pickers)
+const viewMode = ref<'all' | 'selected'>('all')
+
+const filteredSubqGroupedCols = computed(() => applyGroupSearch(subqColSearch.value.trim(), isSubqColSelected))
 
 const subqSqlPreview = computed((): string => {
   if (!store.modalNode || nodeType.value !== 'subquery') return ''
@@ -1242,18 +1245,25 @@ const groupedUpstreamCols = computed((): ColGroup[] => {
   return [...map.values()]
 })
 
-function applyGroupSearch(q: string): ColGroup[] {
-  if (!q) return groupedUpstreamCols.value
+function applyGroupSearch(q: string, isSelected?: (name: string) => boolean): ColGroup[] {
+  const onlySelected = viewMode.value === 'selected' && !!isSelected
+  if (!q && !onlySelected) return groupedUpstreamCols.value
   const lq = q.toLowerCase()
   return groupedUpstreamCols.value
-    .map(g => ({ ...g, cols: g.cols.filter(c =>
-      c.name.toLowerCase().includes(lq) || (c.remark ?? '').toLowerCase().includes(lq)
-    )}))
+    .map(g => ({ ...g, cols: g.cols.filter(c => {
+      if (onlySelected && !isSelected!(c.name)) return false
+      if (!lq) return true
+      return c.name.toLowerCase().includes(lq) || (c.remark ?? '').toLowerCase().includes(lq)
+    })}))
     .filter(g => g.cols.length > 0)
 }
 
-const filteredGroupedCols     = computed(() => applyGroupSearch(colSearch.value.trim()))
-const filteredGroupedSortCols = computed(() => applyGroupSearch(sortColSearch.value.trim()))
+function isGroupColSelected(name: string): boolean {
+  return ((store.modalNode?.data?.groupCols ?? []) as string[]).includes(name)
+}
+
+const filteredGroupedCols     = computed(() => applyGroupSearch(colSearch.value.trim(), isGroupColSelected))
+const filteredGroupedSortCols = computed(() => applyGroupSearch(sortColSearch.value.trim(), isSortSelected))
 
 // keep flat versions for dropdowns / datalists
 const filteredCols = computed(() => {
@@ -1551,7 +1561,8 @@ function selectCalcCol(i: number, colName: string) {
 // Auto-init on modal open
 // flush:'sync' ensures the init runs before first render so cols appear pre-checked
 watch(() => store.modalNode, (node, oldNode) => {
-  if (!node) { colSearch.value = ''; sortColSearch.value = ''; subqColSearch.value = ''; return }
+  if (!node) { colSearch.value = ''; sortColSearch.value = ''; subqColSearch.value = ''; viewMode.value = 'all'; return }
+  if (node !== oldNode) viewMode.value = 'all'
   const type = node.data.nodeType
   // True only when the modal just opened for a different node (not a data update on the same node)
   const isNewOpen = node.id !== oldNode?.id
@@ -2600,6 +2611,20 @@ const finishBtnStyle = computed(() => {
                   </i18n-t>
                 </div>
 
+                <!-- View mode toggle (All / Selected) -->
+                <div class="inline-flex items-center rounded-lg border bg-background p-0.5 self-start">
+                  <button @click="viewMode = 'all'"
+                    :class="['flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md transition-colors',
+                      viewMode === 'all' ? 'bg-orange-500 text-white' : 'text-muted-foreground hover:text-foreground']">
+                    {{ t('sqlbuilder_view_all') }} <span :class="['text-[9px] font-mono px-1 rounded', viewMode === 'all' ? 'bg-white/20' : 'bg-muted/60 text-muted-foreground/70']">{{ upstreamCols.length }}</span>
+                  </button>
+                  <button @click="viewMode = 'selected'"
+                    :class="['flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md transition-colors',
+                      viewMode === 'selected' ? 'bg-orange-500 text-white' : 'text-muted-foreground hover:text-foreground']">
+                    {{ t('sqlbuilder_view_selected') }} <span :class="['text-[9px] font-mono px-1 rounded', viewMode === 'selected' ? 'bg-white/20' : 'bg-orange-500/15 text-orange-500']">{{ groupColCount }}</span>
+                  </button>
+                </div>
+
                 <div class="relative">
                   <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground/50" />
                   <input v-model="colSearch" :placeholder="t('sqlbuilder_common_search_column')"
@@ -2642,7 +2667,9 @@ const finishBtnStyle = computed(() => {
                   </template>
                   <div v-if="filteredGroupedCols.length === 0"
                     class="px-3 py-3 text-[10px] text-muted-foreground/60 italic text-center">
-                    {{ colSearch ? t('sqlbuilder_tool_config_loading_match', { q: colSearch }) : t('sqlbuilder_tool_config_loading_cols') }}
+                    <template v-if="viewMode === 'selected' && !groupColCount">{{ t('sqlbuilder_view_selected_empty_groupby') }}</template>
+                    <template v-else-if="colSearch">{{ t('sqlbuilder_tool_config_loading_match', { q: colSearch }) }}</template>
+                    <template v-else>{{ t('sqlbuilder_tool_config_loading_cols') }}</template>
                   </div>
                 </div>
               </div>
@@ -2902,6 +2929,20 @@ const finishBtnStyle = computed(() => {
                 </div>
               </div>
 
+              <!-- View mode toggle (All / Selected) -->
+              <div class="inline-flex items-center rounded-lg border bg-background p-0.5 self-start">
+                <button @click="viewMode = 'all'"
+                  :class="['flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md transition-colors',
+                    viewMode === 'all' ? 'bg-green-500 text-white' : 'text-muted-foreground hover:text-foreground']">
+                  {{ t('sqlbuilder_view_all') }} <span :class="['text-[9px] font-mono px-1 rounded', viewMode === 'all' ? 'bg-white/20' : 'bg-muted/60 text-muted-foreground/70']">{{ upstreamCols.length }}</span>
+                </button>
+                <button @click="viewMode = 'selected'"
+                  :class="['flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md transition-colors',
+                    viewMode === 'selected' ? 'bg-green-500 text-white' : 'text-muted-foreground hover:text-foreground']">
+                  {{ t('sqlbuilder_view_selected') }} <span :class="['text-[9px] font-mono px-1 rounded', viewMode === 'selected' ? 'bg-white/20' : 'bg-green-500/15 text-green-600']">{{ sortItemCount }}</span>
+                </button>
+              </div>
+
               <div class="relative">
                 <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground/50" />
                 <input v-model="sortColSearch" :placeholder="t('sqlbuilder_common_search_column')"
@@ -2950,7 +2991,9 @@ const finishBtnStyle = computed(() => {
                 </template>
                 <div v-if="filteredGroupedSortCols.length === 0"
                   class="px-3 py-3 text-[10px] text-muted-foreground/60 italic text-center">
-                  {{ sortColSearch ? t('sqlbuilder_tool_config_loading_match', { q: sortColSearch }) : t('sqlbuilder_tool_config_loading_cols') }}
+                  <template v-if="viewMode === 'selected' && !sortItemCount">{{ t('sqlbuilder_view_selected_empty_orderby') }}</template>
+                  <template v-else-if="sortColSearch">{{ t('sqlbuilder_tool_config_loading_match', { q: sortColSearch }) }}</template>
+                  <template v-else>{{ t('sqlbuilder_tool_config_loading_cols') }}</template>
                 </div>
               </div>
             </div><!-- /LEFT -->
@@ -3866,6 +3909,20 @@ const finishBtnStyle = computed(() => {
                     </div>
                   </div>
 
+                  <!-- View mode toggle (All / Selected) -->
+                  <div class="inline-flex items-center rounded-lg border bg-background p-0.5 self-start">
+                    <button @click="viewMode = 'all'"
+                      :class="['flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md transition-colors',
+                        viewMode === 'all' ? 'bg-indigo-500 text-white' : 'text-muted-foreground hover:text-foreground']">
+                      {{ t('sqlbuilder_view_all') }} <span :class="['text-[9px] font-mono px-1 rounded', viewMode === 'all' ? 'bg-white/20' : 'bg-muted/60 text-muted-foreground/70']">{{ upstreamCols.length }}</span>
+                    </button>
+                    <button @click="viewMode = 'selected'"
+                      :class="['flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md transition-colors',
+                        viewMode === 'selected' ? 'bg-indigo-500 text-white' : 'text-muted-foreground hover:text-foreground']">
+                      {{ t('sqlbuilder_view_selected') }} <span :class="['text-[9px] font-mono px-1 rounded', viewMode === 'selected' ? 'bg-white/20' : 'bg-indigo-500/15 text-indigo-500']">{{ (store.modalNode.data.selectItems ?? []).length }}</span>
+                    </button>
+                  </div>
+
                   <div class="relative">
                     <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground/50" />
                     <input v-model="subqColSearch" :placeholder="t('sqlbuilder_common_search_column')"
@@ -3908,7 +3965,9 @@ const finishBtnStyle = computed(() => {
                     </template>
                     <div v-if="!filteredSubqGroupedCols.length"
                       class="px-3 py-3 text-[10px] text-muted-foreground/60 italic text-center">
-                      {{ subqColSearch ? t('sqlbuilder_tool_config_loading_match', { q: subqColSearch }) : t('sqlbuilder_tool_config_loading_cols') }}
+                      <template v-if="viewMode === 'selected' && !(store.modalNode.data.selectItems ?? []).length">{{ t('sqlbuilder_view_selected_empty_subquery') }}</template>
+                      <template v-else-if="subqColSearch">{{ t('sqlbuilder_tool_config_loading_match', { q: subqColSearch }) }}</template>
+                      <template v-else>{{ t('sqlbuilder_tool_config_loading_cols') }}</template>
                     </div>
                   </div>
                 </div><!-- /SELECT Columns -->
