@@ -7,6 +7,8 @@ import {
 import { useSqlBuilderStore } from '~/stores/sql-builder'
 import { useToolNodes } from '~/composables/sql-builder/useToolNodes'
 
+const { t } = useI18n()
+
 const props = defineProps<{
   id: string
   data: Record<string, any>
@@ -252,7 +254,7 @@ function removeNode()  { store.removeNode(props.id) }
 
         </div>
         <div v-else class="px-3 py-2">
-          <p class="text-[10px] text-muted-foreground/60 italic">คลิกเพื่อตั้งค่า…</p>
+          <p class="text-[10px] text-muted-foreground/60 italic">{{ t('sqlbuilder_node_tool_click_to_config') }}</p>
         </div>
       </template>
 
@@ -267,7 +269,7 @@ function removeNode()  { store.removeNode(props.id) }
           <span v-if="sortItems.length > 4" class="text-[8px] text-muted-foreground/50">+{{ sortItems.length - 4 }} more</span>
         </div>
         <div v-else class="px-3 py-2">
-          <p class="text-[10px] text-muted-foreground/60 italic">คลิกเพื่อตั้งค่า…</p>
+          <p class="text-[10px] text-muted-foreground/60 italic">{{ t('sqlbuilder_node_tool_click_to_config') }}</p>
         </div>
       </template>
 
@@ -303,7 +305,7 @@ function removeNode()  { store.removeNode(props.id) }
 
         </div>
         <div v-else class="px-3 py-2">
-          <p class="text-[10px] text-muted-foreground/60 italic">คลิกเพื่อตั้งค่า…</p>
+          <p class="text-[10px] text-muted-foreground/60 italic">{{ t('sqlbuilder_node_tool_click_to_config') }}</p>
         </div>
       </template>
 
@@ -319,7 +321,7 @@ function removeNode()  { store.removeNode(props.id) }
           <span v-if="whereConds.length > 4" class="text-[8px] text-muted-foreground/50">+{{ whereConds.length - 4 }} more</span>
         </div>
         <div v-else class="px-3 py-2">
-          <p class="text-[10px] text-muted-foreground/60 italic">คลิกเพื่อตั้งค่า…</p>
+          <p class="text-[10px] text-muted-foreground/60 italic">{{ t('sqlbuilder_node_tool_click_to_config') }}</p>
         </div>
       </template>
 
@@ -425,7 +427,7 @@ function removeNode()  { store.removeNode(props.id) }
             class="text-[10px] font-medium text-foreground/80 truncate">
             {{ summary }}
           </p>
-          <p v-else class="text-[10px] text-muted-foreground/60 italic">คลิกเพื่อตั้งค่า…</p>
+          <p v-else class="text-[10px] text-muted-foreground/60 italic">{{ t('sqlbuilder_node_tool_click_to_config') }}</p>
         </div>
       </template>
 

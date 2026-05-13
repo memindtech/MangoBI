@@ -16,6 +16,8 @@ import { getContextLimit } from '~/composables/useAiModels'
 
 import type { AiCanvasAction } from '~/composables/sql-builder/useAiActions'
 
+const { t } = useI18n()
+
 const props = defineProps<{
   page:          AiPageKey
   context:       AiContext
@@ -124,28 +126,28 @@ const suggestions = computed(() => {
   switch (props.page) {
     case 'sql-builder':
       return [
-        'ช่วยแนะนำ table ที่ควร join สำหรับเอกสาร PO',
-        'อธิบาย SQL ที่ generate ออกมาให้หน่อย',
-        'ควรใช้ LEFT JOIN หรือ INNER JOIN ดี',
+        t('sqlbuilder_ai_panel_sug_sql_1'),
+        t('sqlbuilder_ai_panel_sug_sql_2'),
+        t('sqlbuilder_ai_panel_sug_sql_3'),
       ]
     case 'datamodel':
       return [
-        'ควร join table ไหนกับไหนบ้าง',
-        'แนะนำ Transform สำหรับข้อมูลชุดนี้',
-        'อธิบาย relation ที่เหมาะสมให้หน่อย',
+        t('sqlbuilder_ai_panel_sug_dm_1'),
+        t('sqlbuilder_ai_panel_sug_dm_2'),
+        t('sqlbuilder_ai_panel_sug_dm_3'),
       ]
     case 'report':
       return [
-        'ควรใช้ chart ประเภทไหนกับข้อมูลนี้',
-        'แนะนำ KPI ที่น่าสนใจจาก dataset นี้',
-        'วิธี group by เพื่อดู trend ตามเวลา',
+        t('sqlbuilder_ai_panel_sug_rp_1'),
+        t('sqlbuilder_ai_panel_sug_rp_2'),
+        t('sqlbuilder_ai_panel_sug_rp_3'),
       ]
     case 'view':
       return [
-        'วันนี้มีอะไรที่น่ากังวลไหม',
-        'ตัวเลขไหนผิดปกติจากปกติ',
-        'สรุปภาพรวมรายงานนี้ให้หน่อย',
-        'ยอดรวมทั้งหมดอยู่ที่เท่าไหร่',
+        t('sqlbuilder_ai_panel_sug_view_1'),
+        t('sqlbuilder_ai_panel_sug_view_2'),
+        t('sqlbuilder_ai_panel_sug_view_3'),
+        t('sqlbuilder_ai_panel_sug_view_4'),
       ]
     default:
       return []
@@ -211,7 +213,7 @@ const PAGE_LABELS: Record<AiPageKey, string> = {
           @click="store.clearHistory(page)"
           :disabled="!messages.length"
           class="size-7 flex items-center justify-center rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-40"
-          title="ล้างประวัติ"
+          :title="t('sqlbuilder_ai_panel_clear_history')"
         >
           <Trash2 class="size-3.5" />
         </button>
@@ -234,14 +236,14 @@ const PAGE_LABELS: Record<AiPageKey, string> = {
             <Bot class="size-6 text-violet-500" />
           </div>
           <div>
-            <p class="text-sm font-semibold">สวัสดี! ฉันคือ AI Assistant</p>
-            <p class="text-xs text-muted-foreground mt-1">ถามอะไรก็ได้เกี่ยวกับ {{ PAGE_LABELS[page] }}</p>
+            <p class="text-sm font-semibold">{{ t('sqlbuilder_ai_panel_hello') }}</p>
+            <p class="text-xs text-muted-foreground mt-1">{{ t('sqlbuilder_ai_panel_ask_about', { page: PAGE_LABELS[page] }) }}</p>
           </div>
         </div>
 
         <!-- Suggestion chips -->
         <div class="flex flex-col gap-2">
-          <p class="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">ลองถามได้เลย</p>
+          <p class="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">{{ t('sqlbuilder_ai_panel_try') }}</p>
           <button
             v-for="s in suggestions"
             :key="s"
@@ -274,7 +276,7 @@ const PAGE_LABELS: Record<AiPageKey, string> = {
           class="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border border-red-300 text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"
         >
           <Loader2 class="size-3 animate-spin" />
-          กำลังตอบ… คลิกเพื่อหยุด
+          {{ t('sqlbuilder_ai_panel_stop') }}
         </button>
       </div>
 
@@ -285,7 +287,7 @@ const PAGE_LABELS: Record<AiPageKey, string> = {
           @keydown="handleKeydown"
           @input="autoResize"
           :disabled="loading"
-          placeholder="ถามอะไรก็ได้… (Enter ส่ง, Shift+Enter ขึ้นบรรทัด)"
+          :placeholder="t('sqlbuilder_ai_panel_input_ph')"
           rows="1"
           class="flex-1 text-sm border rounded-xl px-3 py-2 bg-background resize-none
                  focus:outline-none focus:ring-2 focus:ring-violet-400/50

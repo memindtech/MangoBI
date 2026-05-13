@@ -7,6 +7,8 @@ import { useSqlBuilderStore } from '~/stores/sql-builder'
 import { objectTypeColor } from '~/composables/sql-builder/useErpData'
 import { useDragDrop } from '~/composables/sql-builder/useDragDrop'
 
+const { t } = useI18n()
+
 const props = defineProps<{
   id: string
   data: Record<string, any>
@@ -217,8 +219,8 @@ const connectedTools = computed(() => {
           v-if="details.length"
           class="text-[9px] px-1.5 py-0.5 bg-sky-500/15 text-sky-500 rounded-full font-semibold shrink-0 font-mono"
           :title="visibleCols.length
-            ? `เลือก ${visibleCols.length} จาก ${details.length} คอลัมน์`
-            : `มีทั้งหมด ${details.length} คอลัมน์ (ยังไม่ได้เลือก)`"
+            ? t('sqlbuilder_node_table_selected_count', { selected: visibleCols.length, total: details.length })
+            : t('sqlbuilder_node_table_total_count', { total: details.length })"
         >
           <template v-if="visibleCols.length">{{ visibleCols.length }}/{{ details.length }}</template>
           <template v-else>📋 {{ details.length }}</template>
@@ -228,7 +230,7 @@ const connectedTools = computed(() => {
         <!-- CTE frame membership badge -->
         <span v-if="parentCteFrame"
           class="text-[8px] px-1.5 py-0.5 bg-violet-500/20 text-violet-400 rounded font-bold shrink-0 border border-violet-500/30"
-          :title="`อยู่ใน CTE: ${parentCteFrame.data?.name ?? 'my_cte'}`">
+          :title="t('sqlbuilder_node_table_in_cte', { name: parentCteFrame.data?.name ?? 'my_cte' })">
           CTE
         </span>
 
@@ -237,7 +239,7 @@ const connectedTools = computed(() => {
           @click.stop="expandRelations"
           :disabled="expanding"
           class="size-5 flex items-center justify-center rounded transition-colors shrink-0 text-muted-foreground hover:bg-violet-500/15 hover:text-violet-500 disabled:opacity-40"
-          title="โหลดตารางที่เกี่ยวข้อง"
+          :title="t('sqlbuilder_node_table_load_relations')"
         >
           <div v-if="expanding" class="size-3 rounded-full border border-muted-foreground/30 border-t-violet-400 animate-spin" />
           <Network v-else class="size-3" />
@@ -252,7 +254,7 @@ const connectedTools = computed(() => {
           :title="filters.length ? `${filters.length} filter(s)` : 'Add filter'">
           <SlidersHorizontal class="size-3" />
         </button>
-        <span v-if="hasFilters" title="มี filter">
+        <span v-if="hasFilters" :title="t('sqlbuilder_node_table_filter_has')">
           <Filter class="size-3 text-amber-400 shrink-0" />
         </span>
 
@@ -275,9 +277,9 @@ const connectedTools = computed(() => {
         <div v-if="expanded && details.length" class="overflow-hidden">
           <!-- Select all / clear -->
           <div class="flex items-center gap-2 px-3 py-1 border-b border-border/30 bg-muted/20">
-            <button @click.stop="selectAll" class="text-[9px] text-sky-500 hover:underline font-medium">ทั้งหมด</button>
+            <button @click.stop="selectAll" class="text-[9px] text-sky-500 hover:underline font-medium">{{ t('sqlbuilder_node_table_select_all') }}</button>
             <span class="text-muted-foreground text-[9px]">/</span>
-            <button @click.stop="clearAll" class="text-[9px] text-muted-foreground hover:underline">ล้าง</button>
+            <button @click.stop="clearAll" class="text-[9px] text-muted-foreground hover:underline">{{ t('sqlbuilder_node_table_clear') }}</button>
           </div>
 
           <div class="max-h-[220px] overflow-y-auto">
@@ -372,7 +374,7 @@ const connectedTools = computed(() => {
       <!-- ── Loading state ───────────────────────────────────── -->
       <div v-if="data.columnsLoading !== false && !details.length" class="px-3 py-2 text-[9px] text-muted-foreground/60 flex items-center gap-1.5">
         <div class="size-2 rounded-full border border-muted-foreground/30 border-t-sky-400 animate-spin" />
-        กำลังโหลดคอลัมน์…
+        {{ t('sqlbuilder_node_table_loading_cols') }}
       </div>
       <!-- Load failed: clearly flag and offer retry (A5, C2) -->
       <div
@@ -381,17 +383,17 @@ const connectedTools = computed(() => {
       >
         <div class="flex items-center gap-1.5 text-[10px] text-amber-500">
           <AlertTriangle class="size-3" />
-          <span>โหลดคอลัมน์ไม่สำเร็จ</span>
+          <span>{{ t('sqlbuilder_node_table_load_failed') }}</span>
         </div>
         <button
           class="flex items-center gap-1 px-2 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/30 text-[9px] text-amber-300 font-medium"
           @click.stop="dragDrop.retryLoadColumns(id)"
         >
-          <RefreshCw class="size-2.5" /> ลองใหม่
+          <RefreshCw class="size-2.5" /> {{ t('sqlbuilder_node_table_retry') }}
         </button>
       </div>
       <div v-else-if="data.columnsLoading === false && !details.length" class="px-3 py-2 text-[9px] text-muted-foreground/60 italic">
-        ไม่พบ columns
+        {{ t('sqlbuilder_node_table_no_cols') }}
       </div>
 
       <!-- ── Connected tools ───────────────────────────────── -->

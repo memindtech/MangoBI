@@ -8,58 +8,59 @@ import { X, Layers, Calculator, Database, SortAsc, GitMerge, Filter, Braces } fr
 import { useSqlBuilderStore } from '~/stores/sql-builder'
 import { useDragDrop } from '~/composables/sql-builder/useDragDrop'
 
+const { t } = useI18n()
 const store   = useSqlBuilderStore()
 const dragDrop = useDragDrop()
 
-const TOOL_DEFS: Record<string, {
+const TOOL_DEFS = computed((): Record<string, {
   icon: any; color: string; bg: string; border: string; btnCls: string; label: string; desc: string; detail: string
-}> = {
+}> => ({
   cte: {
     icon: Layers, color: 'text-violet-500', bg: 'bg-violet-500/10', border: 'border-violet-500/40',
     btnCls: 'bg-violet-500 hover:bg-violet-600',
-    label: 'CTE Frame', desc: 'ลาก Table เข้ากรอบ',
-    detail: 'สร้าง Common Table Expression (WITH clause) โดยวาง Table nodes ภายในกรอบ',
+    label: t('sqlbuilder_tool_create_cte_label'), desc: t('sqlbuilder_tool_create_cte_desc'),
+    detail: t('sqlbuilder_tool_create_cte_detail'),
   },
   calc: {
     icon: Calculator, color: 'text-teal-500', bg: 'bg-teal-500/10', border: 'border-teal-500/40',
     btnCls: 'bg-teal-500 hover:bg-teal-600',
-    label: 'Calculator', desc: 'คำนวณ column',
-    detail: 'เพิ่ม calculated columns โดยเขียน SQL expression เช่น price * qty AS total',
+    label: t('sqlbuilder_tool_create_calc_label'), desc: t('sqlbuilder_tool_create_calc_desc'),
+    detail: t('sqlbuilder_tool_create_calc_detail'),
   },
   group: {
     icon: Database, color: 'text-orange-500', bg: 'bg-orange-500/10', border: 'border-orange-500/40',
     btnCls: 'bg-orange-500 hover:bg-orange-600',
-    label: 'Group By', desc: 'GROUP BY + Aggregate',
-    detail: 'จัดกลุ่มข้อมูลและคำนวณ SUM / COUNT / AVG / MIN / MAX ต่อกลุ่ม',
+    label: t('sqlbuilder_tool_create_group_label'), desc: t('sqlbuilder_tool_create_group_desc'),
+    detail: t('sqlbuilder_tool_create_group_detail'),
   },
   sort: {
     icon: SortAsc, color: 'text-green-500', bg: 'bg-green-500/10', border: 'border-green-500/40',
     btnCls: 'bg-green-500 hover:bg-green-600',
-    label: 'Sort Data', desc: 'ORDER BY',
-    detail: 'เรียงข้อมูล ASC / DESC ตาม columns ที่เลือก',
+    label: t('sqlbuilder_tool_create_sort_label'), desc: t('sqlbuilder_tool_create_sort_desc'),
+    detail: t('sqlbuilder_tool_create_sort_detail'),
   },
   union: {
     icon: GitMerge, color: 'text-yellow-500', bg: 'bg-yellow-500/10', border: 'border-yellow-500/40',
     btnCls: 'bg-yellow-500 hover:bg-yellow-600',
-    label: 'Union', desc: 'UNION / UNION ALL',
-    detail: 'รวมผลลัพธ์จากหลาย Table หรือ query เข้าด้วยกัน',
+    label: t('sqlbuilder_tool_create_union_label'), desc: t('sqlbuilder_tool_create_union_desc'),
+    detail: t('sqlbuilder_tool_create_union_detail'),
   },
   where: {
     icon: Filter, color: 'text-rose-500', bg: 'bg-rose-500/10', border: 'border-rose-500/40',
     btnCls: 'bg-rose-500 hover:bg-rose-600',
-    label: 'Where', desc: 'กรอง WHERE',
-    detail: 'เพิ่มเงื่อนไข WHERE แบบ standalone สำหรับกรองข้อมูลก่อนส่งต่อ',
+    label: t('sqlbuilder_tool_create_where_label'), desc: t('sqlbuilder_tool_create_where_desc'),
+    detail: t('sqlbuilder_tool_create_where_detail'),
   },
   subquery: {
     icon: Braces, color: 'text-indigo-500', bg: 'bg-indigo-500/10', border: 'border-indigo-500/40',
     btnCls: 'bg-indigo-500 hover:bg-indigo-600',
-    label: 'Subquery', desc: 'FROM (SELECT...)',
-    detail: 'สร้าง derived table / inline subquery สำหรับ query ที่ซับซ้อน เช่น FROM (SELECT ... ) AS sub',
+    label: t('sqlbuilder_tool_create_subquery_label'), desc: t('sqlbuilder_tool_create_subquery_desc'),
+    detail: t('sqlbuilder_tool_create_subquery_detail'),
   },
-}
+}))
 
 const tool = computed(() =>
-  store.pendingToolId ? (TOOL_DEFS[store.pendingToolId] ?? null) : null
+  store.pendingToolId ? (TOOL_DEFS.value[store.pendingToolId] ?? null) : null
 )
 
 function confirm() {
@@ -108,9 +109,8 @@ function cancel() {
             <p class="text-sm text-muted-foreground leading-relaxed">{{ tool.detail }}</p>
 
             <div class="mt-4 p-3 rounded-xl bg-muted/30 border border-border/40 text-xs text-muted-foreground leading-relaxed">
-              <span class="font-semibold text-foreground">วิธีใช้:</span>
-              เมื่อสร้าง Node แล้ว ให้ต่อสาย (edge) จาก Table หรือ Tool อื่น
-              เข้าหา Node นี้ เพื่อรับข้อมูล columns สำหรับตั้งค่าต่อไป
+              <span class="font-semibold text-foreground">{{ t('sqlbuilder_tool_create_how_label') }}</span>
+              {{ t('sqlbuilder_tool_create_how_desc') }}
             </div>
           </div>
 
@@ -118,11 +118,11 @@ function cancel() {
           <div class="px-5 py-4 border-t flex items-center justify-end gap-2">
             <button @click="cancel"
               class="text-sm px-4 py-2 border rounded-lg hover:bg-accent transition-colors">
-              ยกเลิก
+              {{ t('sqlbuilder_common_cancel') }}
             </button>
             <button @click="confirm"
               :class="['text-sm px-5 py-2 rounded-lg font-semibold text-white transition-colors', tool.btnCls]">
-              + สร้าง Node
+              {{ t('sqlbuilder_tool_create_btn') }}
             </button>
           </div>
         </div>

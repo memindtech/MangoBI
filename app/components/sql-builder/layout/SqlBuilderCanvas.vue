@@ -13,6 +13,7 @@ import { useSqlBuilderStore } from '~/stores/sql-builder'
 import { useFlowEvents } from '~/composables/sql-builder/useFlowEvents'
 import { useHistory } from '~/composables/sql-builder/useHistory'
 
+const { t } = useI18n()
 const store = useSqlBuilderStore()
 const flowEvents = useFlowEvents()
 const history = useHistory()
@@ -134,13 +135,17 @@ class="bg-background bg-[radial-gradient(circle,_hsl(var(--border))_1px,_transpa
           <div class="absolute inset-0 flex flex-col items-center justify-center gap-3 pointer-events-none">
             <div class="bg-background/90 rounded-2xl border px-8 py-6 text-center shadow-xl max-w-xs">
               <Code2 class="size-10 text-sky-400 mx-auto mb-3" />
-              <p class="font-semibold text-sm mb-1">เริ่มต้นสร้าง SQL</p>
+              <p class="font-semibold text-sm mb-1">{{ t('sqlbuilder_canvas_start_title') }}</p>
               <p class="text-xs text-muted-foreground leading-relaxed">
-                ลาก <strong>Table</strong> จากแถบซ้ายลงบน Canvas
+                <i18n-t keypath="sqlbuilder_canvas_drag_table" tag="span">
+                  <template #table><strong>Table</strong></template>
+                </i18n-t>
               </p>
               <p class="text-xs text-muted-foreground mt-1">
-                เชื่อม Table ด้วยเส้น = <strong>JOIN</strong><br/>
-                เพิ่ม Operation จากแถบ Tools ขวา
+                <i18n-t keypath="sqlbuilder_canvas_join_hint" tag="span">
+                  <template #join><strong>JOIN</strong></template>
+                </i18n-t><br/>
+                {{ t('sqlbuilder_canvas_op_hint') }}
               </p>
             </div>
           </div>

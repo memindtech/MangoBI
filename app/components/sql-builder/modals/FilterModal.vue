@@ -4,6 +4,7 @@ import type { FilterCondition, VisibleCol } from '~/types/sql-builder'
 import { getFilterType, getColTypeBadgeSolid } from '~/types/sql-builder'
 import { useSqlBuilderStore } from '~/stores/sql-builder'
 
+const { t } = useI18n()
 const store = useSqlBuilderStore()
 
 // ── Column groups (current node + all directly connected table nodes) ─────────
@@ -196,33 +197,33 @@ const filteredGroups = computed(() => {
 })
 
 // ── WHERE conditions (secondary, collapsible) ─────────────────────────────────
-const OP_GROUPS = [
-  { label: 'เปรียบเทียบ', ops: [
-    { value: '=',  label: '=',  title: 'เท่ากับ' },
-    { value: '!=', label: '≠',  title: 'ไม่เท่ากับ' },
-    { value: '>',  label: '>',  title: 'มากกว่า' },
-    { value: '<',  label: '<',  title: 'น้อยกว่า' },
-    { value: '>=', label: '≥',  title: 'มากกว่าหรือเท่ากับ' },
-    { value: '<=', label: '≤',  title: 'น้อยกว่าหรือเท่ากับ' },
+const OP_GROUPS = computed(() => [
+  { label: t('sqlbuilder_filter_modal_op_group_compare'), ops: [
+    { value: '=',  label: '=',  title: t('sqlbuilder_filter_modal_op_eq') },
+    { value: '!=', label: '≠',  title: t('sqlbuilder_filter_modal_op_neq') },
+    { value: '>',  label: '>',  title: t('sqlbuilder_filter_modal_op_gt') },
+    { value: '<',  label: '<',  title: t('sqlbuilder_filter_modal_op_lt') },
+    { value: '>=', label: '≥',  title: t('sqlbuilder_filter_modal_op_gte') },
+    { value: '<=', label: '≤',  title: t('sqlbuilder_filter_modal_op_lte') },
   ]},
-  { label: 'ข้อความ / ช่วง', ops: [
-    { value: 'LIKE', label: 'LIKE', title: 'มีข้อความ (% = ตัวอักษรอะไรก็ได้)' },
-    { value: 'IN',   label: 'IN',   title: 'อยู่ในชุด (เช่น 10,20,30)' },
+  { label: t('sqlbuilder_filter_modal_op_group_text'), ops: [
+    { value: 'LIKE', label: 'LIKE', title: t('sqlbuilder_filter_modal_op_like') },
+    { value: 'IN',   label: 'IN',   title: t('sqlbuilder_filter_modal_op_in') },
   ]},
-  { label: 'ว่างเปล่า', ops: [
-    { value: 'IS NULL',     label: 'NULL',  title: 'ว่างเปล่า' },
-    { value: 'IS NOT NULL', label: '!NULL', title: 'ไม่ว่างเปล่า' },
+  { label: t('sqlbuilder_filter_modal_op_group_empty'), ops: [
+    { value: 'IS NULL',     label: 'NULL',  title: t('sqlbuilder_filter_modal_op_isnull') },
+    { value: 'IS NOT NULL', label: '!NULL', title: t('sqlbuilder_filter_modal_op_isnotnull') },
   ]},
-]
+])
 
 // C4: rich placeholder text per operator so users don't have to know SQL
 // wildcard syntax. Shown inside the value input when no value is set yet.
 function valuePlaceholder(op: string, type: string): string {
-  if (op === 'LIKE') return 'เช่น %mango% = มีคำว่า mango ที่ไหนก็ได้'
-  if (op === 'IN')   return 'เช่น 10,20,30 (คั่นด้วย ,)'
-  if (type === 'date') return 'เลือกวันที่'
-  if (type === 'int' || type === 'decimal') return 'เช่น 100'
-  return 'พิมพ์ค่าที่ต้องการ'
+  if (op === 'LIKE') return t('sqlbuilder_filter_modal_ph_like')
+  if (op === 'IN')   return t('sqlbuilder_filter_modal_ph_in')
+  if (type === 'date') return t('sqlbuilder_filter_modal_ph_date')
+  if (type === 'int' || type === 'decimal') return t('sqlbuilder_filter_modal_ph_number')
+  return t('sqlbuilder_common_value_required')
 }
 
 const localFilters   = ref<FilterCondition[]>([])
@@ -342,7 +343,7 @@ function close() { store.filterNodeId = null }
                 </span>
               </div>
               <p class="text-xs text-muted-foreground mt-0.5">
-                {{ availableColumns.length }} fields จาก {{ columnGroups.length }} table{{ columnGroups.length !== 1 ? 's' : '' }}
+                {{ availableColumns.length }} fields / {{ columnGroups.length }} table{{ columnGroups.length !== 1 ? 's' : '' }}
               </p>
             </div>
             <button @click="close"
@@ -361,18 +362,18 @@ function close() { store.filterNodeId = null }
               <div class="px-4 py-2.5 border-b bg-muted/10 shrink-0 flex items-center gap-2">
                 <div class="relative flex-1">
                   <Search class="absolute left-2.5 size-3.5 text-muted-foreground/50 pointer-events-none top-1/2 -translate-y-1/2" />
-                  <input v-model="colSearch" placeholder="ค้นหา column…"
+                  <input v-model="colSearch" :placeholder="t('sqlbuilder_common_search_column')"
                     class="w-full text-xs border rounded-lg pl-8 pr-3 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-sky-400/60 font-mono" />
                 </div>
                 <button @click="toggleExpandAll"
                   class="text-[11px] text-muted-foreground hover:text-foreground font-medium whitespace-nowrap transition-colors border-r border-border/40 pr-2.5 shrink-0">
-                  {{ allExpanded ? 'Collapse' : 'Expand' }}
+                  {{ allExpanded ? t('sqlbuilder_filter_modal_collapse') : t('sqlbuilder_filter_modal_expand') }}
                 </button>
                 <button @click="selectAllGroups"
-                  class="text-[11px] font-semibold text-sky-500 hover:underline shrink-0 whitespace-nowrap">ทั้งหมด</button>
+                  class="text-[11px] font-semibold text-sky-500 hover:underline shrink-0 whitespace-nowrap">{{ t('sqlbuilder_common_all') }}</button>
                 <span class="text-muted-foreground/40 text-[11px]">/</span>
                 <button @click="clearAllGroups"
-                  class="text-[11px] text-muted-foreground hover:underline shrink-0 whitespace-nowrap">ล้าง</button>
+                  class="text-[11px] text-muted-foreground hover:underline shrink-0 whitespace-nowrap">{{ t('sqlbuilder_common_clear') }}</button>
               </div>
 
               <!-- Column list (scrollable) -->
@@ -383,13 +384,13 @@ function close() { store.filterNodeId = null }
                   <div class="size-12 rounded-full bg-sky-500/10 flex items-center justify-center">
                     <SlidersHorizontal class="size-5 text-sky-400" />
                   </div>
-                  <p class="text-sm font-medium text-muted-foreground">ยังไม่มีตารางที่เชื่อมต่อ</p>
-                  <p class="text-xs text-muted-foreground/60">เชื่อม Table node เพื่อเลือก columns</p>
+                  <p class="text-sm font-medium text-muted-foreground">{{ t('sqlbuilder_filter_modal_no_tables') }}</p>
+                  <p class="text-xs text-muted-foreground/60">{{ t('sqlbuilder_filter_modal_connect_hint') }}</p>
                 </div>
 
                 <!-- No match -->
                 <div v-else-if="!filteredGroups.length" class="px-5 py-8 text-center text-[11px] text-muted-foreground italic">
-                  ไม่พบ "{{ colSearch }}"
+                  {{ t('sqlbuilder_filter_modal_no_match', { q: colSearch }) }}
                 </div>
 
                 <!-- Tree groups -->
@@ -405,10 +406,10 @@ function close() { store.filterNodeId = null }
                         {{ localVisibleColsMap.get(g.nodeId)?.length ?? 0 }}</span><span class="text-muted-foreground/40">/{{ g.cols.length }}</span>
                     </span>
                     <button @click.stop="selectAllGroup(g.nodeId, g.cols)"
-                      class="text-[11px] text-sky-500 hover:underline font-medium ml-2 shrink-0">ทั้งหมด</button>
+                      class="text-[11px] text-sky-500 hover:underline font-medium ml-2 shrink-0">{{ t('sqlbuilder_common_all') }}</button>
                     <span class="text-muted-foreground/40 text-[11px]">/</span>
                     <button @click.stop="clearGroup(g.nodeId)"
-                      class="text-[11px] text-muted-foreground hover:underline shrink-0">ล้าง</button>
+                      class="text-[11px] text-muted-foreground hover:underline shrink-0">{{ t('sqlbuilder_common_clear') }}</button>
                   </div>
 
                   <!-- Children -->
@@ -461,14 +462,14 @@ function close() { store.filterNodeId = null }
                 <div class="flex size-6 items-center justify-center rounded-md bg-amber-500/20 shrink-0">
                   <Filter class="size-3.5 text-amber-500" />
                 </div>
-                <span class="text-sm font-semibold text-amber-600 flex-1">WHERE Conditions</span>
+                <span class="text-sm font-semibold text-amber-600 flex-1">{{ t('sqlbuilder_filter_modal_where_title') }}</span>
                 <span v-if="localFilters.filter(f => f.column).length"
                   class="text-xs px-2 py-0.5 rounded-full bg-amber-500 text-white font-bold shrink-0">
                   {{ localFilters.filter(f => f.column).length }}
                 </span>
                 <button @click="addFilter"
                   class="flex items-center gap-1 text-[11px] px-2 py-0.5 rounded border border-amber-500/30 text-amber-500 hover:bg-amber-500/10 transition-colors shrink-0">
-                  <Plus class="size-3" /> เพิ่ม
+                  <Plus class="size-3" /> {{ t('sqlbuilder_common_add') }}
                 </button>
               </div>
 
@@ -480,11 +481,11 @@ function close() { store.filterNodeId = null }
                   <div class="size-12 rounded-full bg-amber-500/10 flex items-center justify-center">
                     <Filter class="size-5 text-amber-400" />
                   </div>
-                  <p class="text-sm font-medium text-muted-foreground">ยังไม่มีเงื่อนไข</p>
-                  <p class="text-xs text-muted-foreground/60">กด "+ เพิ่ม" เพื่อเพิ่ม WHERE condition</p>
+                  <p class="text-sm font-medium text-muted-foreground">{{ t('sqlbuilder_filter_modal_no_conditions') }}</p>
+                  <p class="text-xs text-muted-foreground/60">{{ t('sqlbuilder_filter_modal_add_hint') }}</p>
                   <button @click="addFilter"
                     class="mt-1 text-xs px-4 py-1.5 rounded-lg border border-amber-500/40 text-amber-600 hover:bg-amber-500/8 font-semibold transition-colors flex items-center gap-1.5">
-                    <Plus class="size-3.5" /> เพิ่ม Condition
+                    <Plus class="size-3.5" /> {{ t('sqlbuilder_filter_modal_add_condition') }}
                   </button>
                 </div>
 
@@ -523,7 +524,7 @@ function close() { store.filterNodeId = null }
                           </div>
                         </div>
                       </template>
-                      <span v-else class="text-muted-foreground text-[11px] flex-1">— เลือก Column —</span>
+                      <span v-else class="text-muted-foreground text-[11px] flex-1">{{ t('sqlbuilder_common_select_column') }}</span>
                       <ChevronDown :class="['size-3 shrink-0 text-muted-foreground transition-transform', openColIdx === i ? 'rotate-180' : '']" />
                     </button>
 
@@ -546,7 +547,7 @@ function close() { store.filterNodeId = null }
 
                     <!-- Value input -->
                     <div v-if="!noValueOps.includes(f.operator)" class="flex items-center gap-2">
-                      <label class="text-[10px] font-semibold text-muted-foreground w-8 shrink-0">ค่า</label>
+                      <label class="text-[10px] font-semibold text-muted-foreground w-8 shrink-0">{{ t('sqlbuilder_common_value') }}</label>
                       <div v-if="f.type === 'date'" class="flex-1 relative flex items-center">
                         <input :ref="(el) => setDateInputRef(i, el)" type="date" :value="f.value"
                           @input="localFilters[i] = { ...f, value: ($event.target as HTMLInputElement).value }"
@@ -567,7 +568,7 @@ function close() { store.filterNodeId = null }
                     </div>
                     <div v-else class="flex items-center gap-1.5 px-3 py-1.5 bg-muted/30 rounded-lg">
                       <span class="text-[10px] text-muted-foreground italic">
-                        {{ f.operator === 'IS NULL' ? 'ตรวจสอบว่าข้อมูลเป็น NULL' : 'ตรวจสอบว่าข้อมูลไม่เป็น NULL' }} — ไม่ต้องระบุค่า
+                        {{ f.operator === 'IS NULL' ? t('sqlbuilder_filter_modal_is_null') : t('sqlbuilder_filter_modal_is_not_null') }} — {{ t('sqlbuilder_filter_modal_no_value_needed') }}
                       </span>
                     </div>
 
@@ -578,7 +579,7 @@ function close() { store.filterNodeId = null }
                 <div v-if="localFilters.length" class="px-4 pb-4">
                   <button @click="addFilter"
                     class="w-full text-xs py-2 rounded-xl border border-dashed border-amber-500/40 text-amber-600 hover:bg-amber-500/8 font-semibold transition-colors flex items-center justify-center gap-1.5">
-                    <Plus class="size-3.5" /> เพิ่ม Condition
+                    <Plus class="size-3.5" /> {{ t('sqlbuilder_filter_modal_add_condition') }}
                   </button>
                 </div>
 
@@ -598,12 +599,12 @@ function close() { store.filterNodeId = null }
             <div class="flex gap-2">
               <button @click="close"
                 class="text-sm px-5 py-2 border rounded-lg hover:bg-accent transition-colors">
-                ยกเลิก
+                {{ t('sqlbuilder_common_cancel') }}
               </button>
               <button @click="save"
                 class="text-sm px-6 py-2 bg-sky-500 hover:bg-sky-600 text-white rounded-lg font-semibold transition-colors flex items-center gap-2">
                 <SlidersHorizontal class="size-4" />
-                บันทึก
+                {{ t('sqlbuilder_common_save') }}
               </button>
             </div>
           </div>
@@ -629,7 +630,7 @@ function close() { store.filterNodeId = null }
       <div class="px-2.5 py-2 border-b shrink-0">
         <input
           v-model="whereColSearch"
-          placeholder="ค้นหา column…"
+          :placeholder="t('sqlbuilder_common_search_column')"
           class="w-full text-xs border rounded-lg px-2.5 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-amber-400/60 placeholder:text-muted-foreground/40"
           @click.stop
         />
@@ -663,7 +664,7 @@ function close() { store.filterNodeId = null }
           </template>
         </template>
         <div v-else class="px-3 py-4 text-[10px] text-muted-foreground italic text-center">
-          {{ availableColumns.length ? `ไม่พบ "${whereColSearch}"` : 'ไม่พบ columns' }}
+          {{ availableColumns.length ? t('sqlbuilder_filter_modal_no_match', { q: whereColSearch }) : t('sqlbuilder_common_no_columns') }}
         </div>
       </div>
     </div>
