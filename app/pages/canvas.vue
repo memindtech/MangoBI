@@ -35,12 +35,13 @@ const {
 } = useVueFlow({ id: FLOW_ID })
 
 // Node type registry — must use markRaw to prevent Vue from making components reactive
+// Cast as any: Vue Flow's NodeTypesObject expects NodeProps generics our SFCs don't expose
 const nodeTypes = {
   dataSource: markRaw(CanvasDataSourceNode),
   transform:  markRaw(CanvasTransformNode),
   chart:      markRaw(CanvasChartNode),
   table:      markRaw(CanvasTableNode),
-}
+} as any
 
 // ─── State ────────────────────────────────────────────────────────────────────
 const nodes = ref<Node[]>([
@@ -121,7 +122,7 @@ const selectedInputRows = computed(() => {
 })
 
 const selectedCols = computed(() =>
-  selectedInputRows.value.length ? Object.keys(selectedInputRows.value[0]) : []
+  selectedInputRows.value.length ? Object.keys(selectedInputRows.value[0]!) : []
 )
 
 const selectedNumericCols = computed(() =>

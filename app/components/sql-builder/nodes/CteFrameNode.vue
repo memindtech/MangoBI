@@ -10,6 +10,8 @@ import { NodeResizer } from '@vue-flow/node-resizer'
 import { Layers, Settings2, X, ChevronDown, ChevronRight } from 'lucide-vue-next'
 import { useSqlBuilderStore } from '~/stores/sql-builder'
 
+const { t } = useI18n()
+
 const props = defineProps<{
   id:       string
   data:     Record<string, any>
@@ -28,12 +30,41 @@ const condCount    = computed(() =>
   ((props.data.conditions ?? []) as any[]).filter((c: any) => c.column).length
 )
 
+const TOOL_BADGE_META: Record<string, { color: string; label: string }> = {
+  cte:   { color: '#8b5cf6', label: 'CTE'      },
+  calc:  { color: '#14b8a6', label: 'CALC'     },
+  group: { color: '#f97316', label: 'GROUP BY' },
+  sort:  { color: '#22c55e', label: 'ORDER BY' },
+  union: { color: '#eab308', label: 'UNION'    },
+  where: { color: '#f43f5e', label: 'WHERE'    },
+}
+
+const connectedTools = computed(() => {
+  const seen = new Set<string>()
+  const result: Array<{ id: string; label: string; color: string }> = []
+  for (const edge of store.edges as any[]) {
+    if (edge.source === props.id && edge.data?.isTool) {
+      let toolId = edge.data?.tgtToolId as string | undefined
+      if (!toolId) {
+        const tgtNode = store.nodes.find((n: any) => n.id === edge.target) as any
+        toolId = tgtNode?.data?._toolId
+      }
+      if (toolId && !seen.has(toolId)) {
+        seen.add(toolId)
+        const meta = TOOL_BADGE_META[toolId] ?? { color: '#94a3b8', label: toolId.toUpperCase() }
+        result.push({ id: toolId, ...meta })
+      }
+    }
+  }
+  return result
+})
+
 // Nodes inside this frame by bounds (no parentNode — pure position check)
 const nodesInFrame = computed(() => {
   const self = store.nodes.find((n: any) => n.id === props.id)
   if (!self) return []
-  const fw    = parseFloat(String(self.style?.width  ?? '420'))
-  const fh    = parseFloat(String(self.style?.height ?? '280'))
+  const fw    = parseFloat(String((self.style as any)?.width  ?? '420'))
+  const fh    = parseFloat(String((self.style as any)?.height ?? '280'))
   const fx    = self.position.x
   const fy    = self.position.y
   const NW    = 112   // half of node card width (~224)
@@ -70,8 +101,8 @@ function toggleOpen() {
       n.id === props.id ? { ...n, style: { width: `${w}px`, height: `${h}px` } } : n
     )
   } else {
-    const cw = parseFloat(String(current?.style?.width  ?? '420'))
-    const ch = parseFloat(String(current?.style?.height ?? '280'))
+    const cw = parseFloat(String((current?.style as any)?.width  ?? '420'))
+    const ch = parseFloat(String((current?.style as any)?.height ?? '280'))
     store.updateNodeData(props.id, { isOpen: false, _expandedW: cw, _expandedH: ch })
     store.nodes = store.nodes.map((n: any) =>
       n.id === props.id ? { ...n, style: { width: '200px', height: '56px' } } : n
@@ -103,7 +134,7 @@ function toggleOpen() {
       <!-- Collapse toggle -->
       <button @click.stop="toggleOpen"
         class="size-5 flex items-center justify-center rounded hover:bg-violet-500/20 text-violet-400 transition-colors shrink-0"
-        title="ย่อ">
+        :title="t('sqlbuilder_node_cte_collapse')">
         <ChevronDown class="size-3.5" />
       </button>
 
@@ -124,15 +155,20 @@ function toggleOpen() {
         class="text-[9px] font-bold px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-400 font-mono shrink-0">
         {{ condCount }} cond{{ condCount > 1 ? 's' : '' }}
       </span>
+      <span
+        v-for="tool in connectedTools" :key="tool.id"
+        class="text-[8px] px-1.5 py-0.5 rounded-full font-bold font-mono leading-none shrink-0"
+        :style="{ backgroundColor: tool.color + '28', color: tool.color, border: `1px solid ${tool.color}55` }"
+      >→ {{ tool.label }}</span>
 
       <button @click.stop="openModal"
         class="size-5 flex items-center justify-center rounded-md hover:bg-violet-500/20 text-violet-400 transition-colors shrink-0"
-        title="ตั้งค่า CTE">
+        :title="t('sqlbuilder_node_cte_settings')">
         <Settings2 class="size-3" />
       </button>
       <button @click.stop="deleteFrame"
         class="size-5 flex items-center justify-center rounded-md hover:bg-rose-500/20 text-muted-foreground hover:text-rose-400 transition-colors shrink-0"
-        title="ลบ CTE Frame">
+        :title="t('sqlbuilder_node_cte_delete_frame')">
         <X class="size-3" />
       </button>
     </div>
@@ -141,7 +177,7 @@ function toggleOpen() {
     <div v-if="!childCount"
       class="flex flex-col items-center justify-center gap-1.5 h-[calc(100%-40px)] text-violet-400/40 pointer-events-none select-none">
       <ChevronRight class="size-5 rotate-90" />
-      <span class="text-[10px] font-mono">ลาก Table เข้ามาที่นี่</span>
+      <span class="text-[10px] font-mono">{{ t('sqlbuilder_node_cte_drag_here') }}</span>
     </div>
 
     <!-- Table name strip — bottom of frame, pointer-events-none so nodes stay draggable -->
@@ -167,7 +203,7 @@ function toggleOpen() {
     <!-- Expand toggle -->
     <button @click.stop="toggleOpen"
       class="size-5 flex items-center justify-center rounded hover:bg-violet-500/20 text-violet-400 transition-colors shrink-0"
-      title="ขยาย">
+      :title="t('sqlbuilder_node_cte_expand')">
       <ChevronRight class="size-3.5" />
     </button>
 
@@ -186,14 +222,23 @@ function toggleOpen() {
       <span v-if="!childTables.length" class="text-[9px] text-violet-400/40 italic font-mono">empty</span>
     </div>
 
+    <!-- Connected tool badges -->
+    <div v-if="connectedTools.length" class="flex items-center gap-1 shrink-0">
+      <span
+        v-for="tool in connectedTools" :key="tool.id"
+        class="text-[8px] px-1.5 py-0.5 rounded-full font-bold font-mono leading-none"
+        :style="{ backgroundColor: tool.color + '28', color: tool.color, border: `1px solid ${tool.color}55` }"
+      >→ {{ tool.label }}</span>
+    </div>
+
     <button @click.stop="openModal"
       class="size-5 flex items-center justify-center rounded-md hover:bg-violet-500/20 text-violet-400/60 hover:text-violet-400 transition-colors shrink-0"
-      title="ตั้งค่า CTE">
+      :title="t('sqlbuilder_node_cte_settings')">
       <Settings2 class="size-3" />
     </button>
     <button @click.stop="deleteFrame"
       class="size-5 flex items-center justify-center rounded-md hover:bg-rose-500/20 text-muted-foreground/50 hover:text-rose-400 transition-colors shrink-0"
-      title="ลบ CTE">
+      :title="t('sqlbuilder_node_cte_delete')">
       <X class="size-3" />
     </button>
   </div>

@@ -8,8 +8,12 @@ import { formatDateValue, formatNumericValue } from '~/utils/formatValue'
 import type { NumericFormat } from '~/utils/formatValue'
 import { useMangoBIApi } from '~/composables/useMangoBIApi'
 import type { FilterCondition, FilterOperator } from '~/stores/report'
-import { MousePointer2, X, LayoutDashboard, Loader2, Sun, Moon, Filter, Plus, Trash2 } from 'lucide-vue-next'
+import { MousePointer2, X, LayoutDashboard, Loader2, Sun, Moon, Filter, Plus, Trash2, Bot, Lock } from 'lucide-vue-next'
+import { useViewAiContext } from '~/composables/view/useViewAiContext'
+import { useAiChatStore } from '~/stores/ai-chat'
+import { useAiFeature } from '~/composables/useAiFeature'
 import { metaToColType, isDateMeta } from '~/utils/columnMapping'
+import { useWindowSize } from '@vueuse/core'
 import { resolveDynamicValue, DATE_TOKEN_TODAY, DATE_TOKEN_YESTERDAY } from '~/utils/transformData'
 
 ModuleRegistry.registerModules([ClientSideRowModelModule, CommunityFeaturesModule])
@@ -53,7 +57,75 @@ const reportName = ref('')
 const datasets   = ref<Dataset[]>([])
 const widgets    = ref<Widget[]>([])
 
+// ── Mobile layout ─────────────────────────────────────────────────────────────
+const { width: windowWidth } = useWindowSize()
+const isMobile = computed(() => windowWidth.value < 768)
+
+const mobileWidgets = computed(() =>
+  [...widgets.value].sort((a, b) => a.y !== b.y ? a.y - b.y : a.x - b.x)
+)
+
+function mobileWidgetHeight(w: Widget): number {
+  if (w.type === 'kpi') return 120
+  if (w.type === 'table' || w.type === 'ag-grid') return Math.max(260, Math.min(380, w.h))
+  return Math.max(240, Math.min(320, w.h))
+}
+
+// ── Auth for AI Assist ────────────────────────────────────────────────────────
+const isAuthed        = ref(false)
+const showLoginForAi  = ref(false)
+const loginBusy       = ref(false)
+const loginError      = ref('')
+const loginForm       = reactive({ maincode: '', userid: '', userpass: '' })
+
+interface Company { maincode: string; mainname: string }
+const companies = ref<Company[]>([])
+const loginCompanyName = computed(() => {
+  if (!loginForm.maincode) return ''
+  return companies.value.find(c => c.maincode === loginForm.maincode)?.mainname ?? loginForm.maincode
+})
+
+async function checkAuth() {
+  try { await $fetch('/api/auth/me'); isAuthed.value = true } catch { isAuthed.value = false }
+}
+
+async function loadCompanies() {
+  try {
+    const res: any = await $fetch('/api/auth/companies')
+    companies.value = (res?.data ?? []).filter((c: any) => c.show === 'Y')
+  } catch { /* ignore */ }
+}
+
+async function submitViewerLogin() {
+  if (!loginForm.maincode || !loginForm.userid || !loginForm.userpass) {
+    loginError.value = 'กรุณากรอกข้อมูลให้ครบ'; return
+  }
+  loginBusy.value  = true
+  loginError.value = ''
+  try {
+    const resp: any = await $fetch('/api/auth/login', {
+      method: 'POST',
+      body: { ...loginForm, oauth2: 'N', attempt: '1' },
+    }).catch((err: any) => err?.data ?? { error: err?.message ?? 'Login failed' })
+    if (resp?.error) { loginError.value = resp.error; return }
+    isAuthed.value       = true
+    showLoginForAi.value = false
+    loginForm.userid     = ''
+    loginForm.userpass   = ''
+    aiStore.togglePanel('view')
+  } catch { loginError.value = 'Login failed' }
+  finally { loginBusy.value = false }
+}
+
+function onAiButtonClick() {
+  if (isAuthed.value) aiStore.togglePanel('view')
+  else showLoginForAi.value = true
+}
+
 onMounted(async () => {
+  checkAuth()       // silent — don't block page load
+  loadCompanies()   // pre-fetch for login form display
+
   // ── ตรวจสอบ link expiry ─────────────────────────────────────────────────
   const expParam = route.query.exp
   if (expParam) {
@@ -70,9 +142,17 @@ onMounted(async () => {
   try {
     const row = await biApi.loadPublicReport(route.params.id as string)
     if (!row) { error.value = 'Report not found'; return }
-    reportName.value = row.name ?? ''
-    const payload = JSON.parse(row.widgetsJson ?? '{}')
-    datasets.value  = payload.datasets ?? []
+    reportName.value    = row.name ?? ''
+    loginForm.maincode  = row.maincode ?? ''
+    const payload     = JSON.parse(row.widgetsJson  ?? '{}')
+    const cachedRows: any[] = row.datasetsJson ? JSON.parse(row.datasetsJson) : []
+
+    // Merge: config metadata from widgetsJson, rows from cache snapshot
+    const configDs: any[] = payload.datasets ?? []
+    datasets.value = configDs.map((ds: any) => {
+      const cached = cachedRows.find((c: any) => c.id === ds.id)
+      return cached ? { ...ds, rows: cached.rows ?? [] } : ds
+    })
     widgets.value   = payload.widgets  ?? []
     // Init view filters from defaults set by report sender
     if (payload.defaultViewFilters && Object.keys(payload.defaultViewFilters).length) {
@@ -316,7 +396,7 @@ function viewFilteredRows(w: Widget): any[] {
       if (op === 'contains') return cell.includes(v)
       return cell === v
     }
-    return matchCondition(r, { column: f.column, operator: f.operator, value: resolved, values: [] })
+    return matchCondition(r, { id: '', column: f.column, operator: f.operator, value: resolved, values: [] })
   }))
 }
 
@@ -363,7 +443,9 @@ function chartOption(w: Widget) {
   const bottomPad = rotate === 0 ? 28 : Math.min(80, Math.abs(rotate))
   const grid    = { top: 20, right: 8, bottom: bottomPad, left: 8, containLabel: true }
   const legend  = { top: 0, textStyle: { fontSize: fsSmall, color: tc } }
-  const itemTip = { trigger: 'item' as const, formatter: '{b}: {c} ({d}%)', textStyle: { fontSize: fsSmall }, confine: true }
+  const yLabel  = labelOf(w.datasetId, yField)
+  const itemTip = { trigger: 'item' as const, textStyle: { fontSize: fsSmall }, confine: true,
+    formatter: (p: any) => `${p.name} : (${yLabel}) ${Number(p.value).toLocaleString()}` }
 
   if (t === 'ecOption') { try { return JSON.parse(w.fields.ecOptionJson?.trim() ?? '') } catch { return {} } }
   if (t === 'bar')  return { color: COLORS, grid, tooltip: tip,
@@ -640,6 +722,16 @@ function onChartClick(w: Widget, params: { name: string; value: any; seriesName:
 }
 
 function onRelatedFirstData(e: any) { e.api.autoSizeAllColumns() }
+
+// ── AI Assistant ──────────────────────────────────────────────────────────────
+const aiStore = useAiChatStore()
+const { enabled: aiEnabled } = useAiFeature()
+const { context: aiContext, contextLabel: aiContextLabel } = useViewAiContext(
+  reportName,
+  datasets,
+  widgets,
+  groupedRows,
+)
 </script>
 
 <template>
@@ -649,11 +741,11 @@ function onRelatedFirstData(e: any) { e.api.autoSizeAllColumns() }
     <header class="h-12 px-4 flex items-center gap-3 border-b bg-background shrink-0">
       <LayoutDashboard class="size-4 text-indigo-500" />
       <span class="text-sm font-semibold truncate flex-1">{{ reportName || 'Report Viewer' }}</span>
-      <span class="text-[11px] text-muted-foreground">
+      <span class="text-[11px] text-muted-foreground hidden sm:block">
         {{ widgets.length }} visual{{ widgets.length !== 1 ? 's' : '' }}
       </span>
       <span v-if="expiresAt && !expired"
-        class="text-[11px] text-amber-600 dark:text-amber-400 ml-2"
+        class="text-[11px] text-amber-600 dark:text-amber-400 ml-2 hidden sm:block"
         :title="`ลิ้งค์หมดอายุ: ${expiresAt.toLocaleString('th-TH')}`"
       >
         หมดอายุ {{ expiresAt.toLocaleDateString('th-TH') }}
@@ -671,6 +763,25 @@ function onRelatedFirstData(e: any) { e.api.autoSizeAllColumns() }
           class="absolute -top-0.5 -right-0.5 size-3.5 bg-indigo-500 text-white text-[9px] font-bold
                  flex items-center justify-center rounded-full leading-none"
         >{{ activeViewFilterCount }}</span>
+      </button>
+
+      <!-- AI toggle -->
+      <button
+        v-if="aiEnabled"
+        @click="onAiButtonClick"
+        class="relative p-1.5 rounded-lg hover:bg-muted transition-colors"
+        :class="aiStore.openPage === 'view' ? 'text-violet-500' : 'text-muted-foreground'"
+        :title="isAuthed ? 'AI Analyst' : 'AI Analyst (ต้องเข้าสู่ระบบ)'"
+      >
+        <Bot class="size-4" />
+        <span
+          v-if="aiStore.openPage === 'view'"
+          class="absolute -top-0.5 -right-0.5 size-2 rounded-full bg-violet-500"
+        />
+        <Lock
+          v-else-if="!isAuthed"
+          class="absolute -top-0.5 -right-0.5 size-2.5 text-amber-500"
+        />
       </button>
 
       <!-- Theme toggle -->
@@ -719,19 +830,22 @@ function onRelatedFirstData(e: any) { e.api.autoSizeAllColumns() }
     </div>
 
     <!-- Canvas -->
-    <div v-else class="flex-1 relative overflow-auto">
+    <div v-else class="flex-1 overflow-auto">
       <div
-        class="relative"
-        :style="{
+        :class="isMobile ? 'p-3 space-y-3' : 'relative'"
+        :style="!isMobile ? {
           width:  Math.max(...widgets.map(w => w.x + w.w), 800) + 32 + 'px',
           height: Math.max(...widgets.map(w => w.y + w.h), 600) + 32 + 'px',
-        }"
+        } : undefined"
       >
         <div
-          v-for="w in widgets"
+          v-for="w in (isMobile ? mobileWidgets : widgets)"
           :key="w.id"
-          class="absolute rounded-xl border bg-background shadow-md overflow-hidden flex flex-col"
-          :style="{ left: `${w.x}px`, top: `${w.y}px`, width: `${w.w}px`, height: `${w.h}px` }"
+          class="rounded-xl border bg-background shadow-md overflow-hidden flex flex-col"
+          :class="!isMobile ? 'absolute' : ''"
+          :style="!isMobile
+            ? { left: `${w.x}px`, top: `${w.y}px`, width: `${w.w}px`, height: `${w.h}px` }
+            : { height: mobileWidgetHeight(w) + 'px' }"
         >
           <!-- Widget header -->
           <div class="flex items-center gap-2 px-3 py-2 border-b shrink-0 bg-muted/30">
@@ -793,7 +907,8 @@ function onRelatedFirstData(e: any) { e.api.autoSizeAllColumns() }
       <Transition name="slide-right">
         <div
           v-if="showFilterPanel"
-          class="fixed right-0 top-0 bottom-0 z-40 w-80 bg-background border-l shadow-2xl flex flex-col"
+          class="fixed right-0 top-0 bottom-0 z-40 bg-background border-l shadow-2xl flex flex-col"
+          :class="isMobile ? 'w-full' : 'w-80'"
         >
           <!-- Panel header -->
           <div class="flex items-center gap-2 px-4 py-3 border-b shrink-0">
@@ -993,19 +1108,21 @@ function onRelatedFirstData(e: any) { e.api.autoSizeAllColumns() }
           @click.self="clickCtx = null"
         >
           <div
-            class="modal-box bg-background rounded-2xl shadow-2xl flex flex-col overflow-hidden select-none"
-            :style="{
+            class="modal-box bg-background shadow-2xl flex flex-col overflow-hidden select-none"
+            :class="isMobile ? 'fixed inset-3 rounded-2xl' : 'rounded-2xl'"
+            :style="!isMobile ? {
               width:    modalW + 'px',
               height:   modalH + 'px',
               position: modalX !== null ? 'fixed' : 'relative',
               left:     modalX !== null ? modalX + 'px' : undefined,
               top:      modalY !== null ? modalY + 'px' : undefined,
-            }"
+            } : undefined"
           >
-            <!-- Header (drag to move) -->
+            <!-- Header -->
             <div
-              class="flex items-center gap-2.5 px-5 py-3 border-b shrink-0 cursor-move"
-              @mousedown="startModalMove"
+              class="flex items-center gap-2.5 px-5 py-3 border-b shrink-0"
+              :class="!isMobile ? 'cursor-move' : ''"
+              @mousedown="!isMobile && startModalMove($event)"
             >
               <MousePointer2 class="size-4 text-indigo-500" />
               <div class="flex items-center gap-1.5 min-w-0 flex-1">
@@ -1098,17 +1215,91 @@ function onRelatedFirstData(e: any) { e.api.autoSizeAllColumns() }
               </div>
             </div>
 
-            <!-- Resize handles -->
-            <div class="absolute right-0 top-0 bottom-4 w-1.5 cursor-ew-resize hover:bg-indigo-400/30 rounded-r-2xl"
+            <!-- Resize handles (desktop only) -->
+            <div v-if="!isMobile" class="absolute right-0 top-0 bottom-4 w-1.5 cursor-ew-resize hover:bg-indigo-400/30 rounded-r-2xl"
                  @mousedown.stop="startModalResize($event, 'r')" />
-            <div class="absolute bottom-0 left-4 right-4 h-1.5 cursor-ns-resize hover:bg-indigo-400/30 rounded-b-2xl"
+            <div v-if="!isMobile" class="absolute bottom-0 left-4 right-4 h-1.5 cursor-ns-resize hover:bg-indigo-400/30 rounded-b-2xl"
                  @mousedown.stop="startModalResize($event, 'b')" />
-            <div class="absolute bottom-0 right-0 w-4 h-4 cursor-nwse-resize"
+            <div v-if="!isMobile" class="absolute bottom-0 right-0 w-4 h-4 cursor-nwse-resize"
                  @mousedown.stop="startModalResize($event, 'br')">
               <svg class="absolute bottom-1 right-1 text-muted-foreground/40" width="10" height="10" viewBox="0 0 10 10">
                 <path d="M9 1L1 9M9 5L5 9M9 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
               </svg>
             </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
+    <!-- AI Analyst Panel -->
+    <AiPanel
+      v-if="aiEnabled && aiStore.openPage === 'view'"
+      page="view"
+      :context="aiContext"
+      :context-label="aiContextLabel"
+    />
+
+    <!-- AI Login Modal -->
+    <Teleport to="body">
+      <Transition name="fade">
+        <div
+          v-if="showLoginForAi"
+          class="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4"
+          @click.self="showLoginForAi = false"
+        >
+          <div class="bg-background rounded-2xl shadow-2xl w-80 p-6 space-y-4">
+            <!-- Header -->
+            <div class="flex items-center gap-2.5">
+              <div class="flex size-8 items-center justify-center rounded-full bg-violet-100 dark:bg-violet-950/40">
+                <Bot class="size-4 text-violet-500" />
+              </div>
+              <div class="flex-1 min-w-0">
+                <p class="text-sm font-semibold">AI Analyst</p>
+                <p class="text-[11px] text-muted-foreground">เข้าสู่ระบบเพื่อใช้งาน</p>
+              </div>
+              <button @click="showLoginForAi = false" class="text-muted-foreground hover:text-foreground">
+                <X class="size-4" />
+              </button>
+            </div>
+
+            <!-- Form -->
+            <div class="space-y-2">
+              <div class="w-full text-xs border rounded-lg px-3 py-2 bg-muted/50
+                          text-muted-foreground select-none truncate">
+                {{ loginCompanyName || '—' }}
+              </div>
+              <input
+                v-model="loginForm.userid"
+                placeholder="ชื่อผู้ใช้"
+                autocomplete="username"
+                class="w-full text-xs border rounded-lg px-3 py-2 bg-background
+                       focus:outline-none focus:ring-2 focus:ring-violet-500
+                       placeholder:text-muted-foreground/50"
+              />
+              <input
+                v-model="loginForm.userpass"
+                type="password"
+                placeholder="รหัสผ่าน"
+                autocomplete="current-password"
+                class="w-full text-xs border rounded-lg px-3 py-2 bg-background
+                       focus:outline-none focus:ring-2 focus:ring-violet-500
+                       placeholder:text-muted-foreground/50"
+                @keydown.enter="submitViewerLogin"
+              />
+            </div>
+
+            <p v-if="loginError" class="text-[11px] text-destructive">{{ loginError }}</p>
+
+            <button
+              @click="submitViewerLogin"
+              :disabled="loginBusy"
+              class="w-full flex items-center justify-center gap-2 text-xs py-2 rounded-lg
+                     bg-violet-500 hover:bg-violet-600 text-white font-semibold
+                     transition-colors disabled:opacity-50"
+            >
+              <Loader2 v-if="loginBusy" class="size-3.5 animate-spin" />
+              {{ loginBusy ? 'กำลังเข้าสู่ระบบ...' : 'เข้าสู่ระบบ' }}
+            </button>
           </div>
         </div>
       </Transition>

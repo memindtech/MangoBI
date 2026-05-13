@@ -27,8 +27,12 @@ export default defineEventHandler(async (event): Promise<unknown> => {
       setHeader(event, 'X-Cache-Age', String(Math.round((Date.now() - cached.ts) / 1000)))
       return cached.data
     }
-    // ไม่มีอะไรเลย
+    // ไม่มีอะไรเลย → B2: throw 502 so clients' try/catch runs
     setHeader(event, 'X-Cache', 'miss-error')
-    return { data: [], error: 'Mango API unreachable' }
+    throw createError({
+      statusCode: 502,
+      statusMessage: 'Upstream Mango API unreachable',
+      data: { reason: (err as any)?.message ?? 'timeout or network error' },
+    })
   }
 })

@@ -20,26 +20,38 @@ export default defineNuxtConfig({
     mangoBase: '',
     mangoSchemaPasscode: '',
     public: {
-      // ค่าจริงอยู่ใน .env → NUXT_PUBLIC_API_BASE / NUXT_PUBLIC_PLANNING_BASE
+      // ค่าจริงอยู่ใน .env → NUXT_PUBLIC_API_BASE / NUXT_PUBLIC_PLANNING_BASE / NUXT_PUBLIC_BI_BASE
       apiBase:      '',
       planningBase: '',
+      biBase:       '',   // MangoBI backend (MicroBackend)
     }
   },
 
   nitro: {
     storage: {
-      'mango-schema': { driver: 'memory' },
+      'mango-schema':  { driver: 'memory' },
+      // server-side session store — swap driver เป็น redis ใน production
+      // NUXT_NITRO_STORAGE_BI_SESSIONS_DRIVER=redis
+      // NUXT_NITRO_STORAGE_BI_SESSIONS_URL=redis://...
+      'bi-sessions':   { driver: 'memory' },
+    },
+  },
+
+  app: {
+    head: {
+      meta: [{ name: 'viewport', content: 'width=device-width, initial-scale=1.0' }],
     },
   },
 
   devtools: { enabled: true },
   css: [
     '~/assets/css/tailwind.css',
+    '~/assets/css/main.css',
     'ag-grid-community/styles/ag-grid.css',
     'ag-grid-community/styles/ag-theme-quartz.css',
   ],
 
-  fontFamily: "THSarabunNew, sans-serif",
+  // fontFamily ตั้งค่าใน app/assets/css/tailwind.css (--font-sans) ไม่ใช่ nuxt.config
 
   vite: {
     vue: {
@@ -68,7 +80,6 @@ export default defineNuxtConfig({
       { code: 'en', file: 'en.json' },
       { code: 'cn', file: 'cn.json' }
     ],
-    lazy: true,
     // ใช้ resolve เพื่อดึงพาธจาก app/locales ตรงๆ ป้องกัน i18n v10 เติมพาธซ้อน
     langDir: resolve(__dirname, 'app/locales'),
     defaultLocale: 'th',

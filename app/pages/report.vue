@@ -4,8 +4,12 @@ import {
   Database, Download, Loader2, AlertCircle,
   LayoutDashboard, Home, Plus, X, Trash2,
   ChevronDown, ChevronLeft, Hash as HashIcon, Type as TypeIcon, Filter,
-  Layers, Activity, Network, Code2, MousePointer2, Link2, Check, RotateCcw,
+  Layers, Activity, Network, Code2, MousePointer2, Link2, Check, RotateCcw, Sparkles,
 } from 'lucide-vue-next'
+import { useAiContext } from '~/composables/report/useAiContext'
+import { applyColumnMapping } from '~/composables/useMangoBIApi'
+import { useAiChatStore } from '~/stores/ai-chat'
+import { useAiFeature } from '~/composables/useAiFeature'
 import ReportWidget from '~/components/report/ReportWidget.vue'
 import { MOCK_DATA, DATASET_META, type DatasetKey } from '~/stores/canvas'
 import type { WidgetType, WidgetFields, FilterCondition, FilterOperator, ReportWidget as RWidget, AggregationType } from '~/stores/report'
@@ -13,11 +17,20 @@ import type { DataRow } from '~/stores/canvas'
 import { parseColumnMapping } from '~/utils/columnMapping'
 import { resolveDynamicValue, DATE_TOKEN_TODAY, DATE_TOKEN_YESTERDAY, DATE_TOKEN_LABELS } from '~/utils/transformData'
 import { formatDateValue, formatNumericValue } from '~/utils/formatValue'
-import { AgGridVue } from 'ag-grid-vue3'
-import { ClientSideRowModelModule, CommunityFeaturesModule, ModuleRegistry } from 'ag-grid-community'
 import type { ColDef } from 'ag-grid-community'
 
-ModuleRegistry.registerModules([ClientSideRowModelModule, CommunityFeaturesModule])
+let _agGridReady = false
+const AgGridVue = defineAsyncComponent(async () => {
+  const [{ AgGridVue: Grid }, { ClientSideRowModelModule, CommunityFeaturesModule, ModuleRegistry }] = await Promise.all([
+    import('ag-grid-vue3'),
+    import('ag-grid-community'),
+  ])
+  if (!_agGridReady) {
+    ModuleRegistry.registerModules([ClientSideRowModelModule, CommunityFeaturesModule])
+    _agGridReady = true
+  }
+  return Grid
+})
 
 // ─── Page meta ────────────────────────────────────────────────────────────────
 definePageMeta({ layout: false, auth: true })
@@ -30,6 +43,10 @@ useHead({ title: computed(() => `${t('page_title_report')} | MangoBI`) })
 const store  = useReportStore()
 const router = useRouter()
 const { $xt } = useNuxtApp() as any
+
+const { context: aiContext, contextLabel: aiContextLabel } = useAiContext()
+const aiStore = useAiChatStore()
+const { enabled: aiEnabled } = useAiFeature()
 
 // ─── Selection ────────────────────────────────────────────────────────────────
 const selectedWidgetId = ref<string | null>(null)
@@ -71,6 +88,9 @@ function onColumnClick(datasetId: string, colName: string) {
     if (activeField.value) activeField.value = null  // advance only when field well was explicitly active
   }
 }
+
+// ─── Layers panel ─────────────────────────────────────────────────────────────
+const showLayersPanel = ref(false)
 
 // ─── Add Visual ───────────────────────────────────────────────────────────────
 const showVisualMenu = ref(false)
@@ -742,10 +762,20 @@ const shareCopied = ref(false)
 function copyShareUrl() {
   if (!rpSavedId.value) return
   const url = `${globalThis.location.origin}/view/${rpSavedId.value}`
-  navigator.clipboard.writeText(url).then(() => {
-    shareCopied.value = true
-    setTimeout(() => { shareCopied.value = false }, 2000)
-  })
+  navigator.clipboard.writeText(url).then(
+    () => {
+      shareCopied.value = true
+      setTimeout(() => { shareCopied.value = false }, 2000)
+    },
+    // Clipboard write can be rejected by the browser (e.g. non-HTTPS,
+    // focus lost). Fall back to a prompt so the user still gets the URL
+    // instead of a silent no-op they can't explain.
+    (err) => {
+      console.warn('[copyShareUrl] clipboard write failed', err)
+      try { globalThis.prompt('คัดลอกลิงก์ไม่สำเร็จ — กด Ctrl+C เพื่อคัดลอกด้วยตนเอง', url) }
+      catch { /* prompt not available */ }
+    },
+  )
 }
 
 async function doSaveRp() {
@@ -754,8 +784,16 @@ async function doSaveRp() {
   rpSaveMsg.value = ''
   try {
     const datasetsPayload = store.datasets.map(d => ({
+      id: d.id, name: d.name,
+      columnLabels:  d.columnLabels,
+      columnSources: d.columnSources,
+      numericFormat: d.numericFormat,
+      sqlText:       d.sqlText,
+      columnMapping: d.columnMapping,
+    }))
+    const cachePayload = store.datasets.map(d => ({
       id: d.id, name: d.name, rows: d.rows,
-      columnLabels: d.columnLabels,
+      columnLabels:  d.columnLabels,
       columnSources: d.columnSources,
       numericFormat: d.numericFormat,
     }))
@@ -767,6 +805,7 @@ async function doSaveRp() {
     })
     if (savedId) {
       rpSavedId.value = savedId
+      biApi.refreshReportCache(savedId, JSON.stringify(cachePayload))
       rpSaveMsg.value = t('bi_save_success')
       setTimeout(() => { rpSaveMsg.value = ''; showRpSave.value = false }, 1200)
     } else {
@@ -792,12 +831,26 @@ async function doLoadRp(id: string) {
     if (!row) return
     const payload = JSON.parse(row.widgetsJson ?? '{}')
     store.resetAll()
-    for (const ds of (payload.datasets ?? [])) store.addDataset(ds)
+    for (const ds of (payload.datasets ?? [])) store.addDataset({ ...ds, rows: ds.rows ?? [] })
     for (const w  of (payload.widgets  ?? [])) store.addWidget(w)
     rpSavedId.value  = id
     rpSaveName.value = row.name ?? ''
     selectedWidgetId.value = null
     showRpLoad.value = false
+
+    // Re-execute SQL for fresh data — datasets without sqlText keep their saved rows
+    await Promise.all(
+      store.datasets
+        .filter(d => d.sqlText)
+        .map(async (d) => {
+          try {
+            const result = await biApi.executeQuery(d.sqlText!)
+            if (!result?.rows?.length) return
+            const rows = applyColumnMapping(result.rows as any[], d.columnMapping)
+            store.updateDatasetRows(d.id, rows)
+          } catch { /* keep stale rows */ }
+        }),
+    )
   } catch (err) { console.error(err) }
   finally { rpLoadBusy.value = false }
 }
@@ -924,6 +977,24 @@ async function doDeleteRp(id: string) {
             </button>
           </div>
         </div>
+
+        <!-- AI Assistant (paying customers only) -->
+        <button
+          v-if="aiEnabled"
+          @click.stop="aiStore.togglePanel('report')"
+          :class="[
+            'flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border font-medium transition-all',
+            aiStore.openPage === 'report'
+              ? 'bg-violet-500 text-white border-violet-500'
+              : 'border-violet-300 text-violet-600 hover:bg-violet-50 dark:border-violet-700 dark:text-violet-400 dark:hover:bg-violet-950/30',
+          ]"
+        >
+          <Sparkles class="size-3.5" />
+          AI
+        </button>
+
+        <div class="h-4 w-px bg-border" />
+        <AppDisplayControls />
       </div>
     </header>
 
@@ -1158,6 +1229,67 @@ async function doDeleteRp(id: string) {
             {{ t('bi_hint_assign_field') }}
           </p>
         </div>
+
+        <!-- ── Layers toggle button (top-right) ────────────────────────── -->
+        <button
+          v-if="!showLayersPanel && store.widgets.length"
+          @click.stop="showLayersPanel = true"
+          class="absolute top-3 right-3 z-20 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-all shadow-sm bg-background text-muted-foreground border-border hover:border-indigo-400/50 hover:text-indigo-500"
+        >
+          <Layers class="size-3.5" />
+          Layers
+        </button>
+
+        <!-- ── Layers Panel ──────────────────────────────────────────────── -->
+        <Transition name="slide-right">
+          <div
+            v-if="showLayersPanel && store.widgets.length"
+            class="absolute top-3 right-3 z-20 w-60 rounded-xl border bg-background shadow-2xl flex flex-col overflow-hidden"
+            style="max-height: calc(100% - 24px)"
+            @click.stop
+          >
+            <!-- Header -->
+            <div class="px-3 py-2.5 border-b flex items-center justify-between shrink-0 bg-muted/30">
+              <div class="flex items-center gap-1.5">
+                <Layers class="size-3.5 text-indigo-500" />
+                <span class="text-xs font-semibold">Layers</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="text-xs text-muted-foreground">{{ store.widgets.length }} items</span>
+                <button @click="showLayersPanel = false" class="text-muted-foreground hover:text-foreground transition-colors">
+                  <X class="size-3.5" />
+                </button>
+              </div>
+            </div>
+            <!-- Widget list -->
+            <div class="flex-1 overflow-y-auto min-h-0 py-1">
+              <button
+                v-for="widget in [...store.widgets].reverse()"
+                :key="widget.id"
+                @click="selectedWidgetId = widget.id; activeField = null"
+                class="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-accent transition-colors"
+                :class="selectedWidgetId === widget.id ? 'bg-indigo-50 dark:bg-indigo-950/40' : ''"
+              >
+                <component
+                  :is="WIDGET_TYPES.find(t => t.type === widget.type)?.icon ?? LayoutDashboard"
+                  class="size-3.5 shrink-0"
+                  :class="selectedWidgetId === widget.id
+                    ? 'text-indigo-500'
+                    : (WIDGET_TYPES.find(t => t.type === widget.type)?.color ?? 'text-muted-foreground')"
+                />
+                <div class="flex-1 min-w-0">
+                  <p class="text-xs font-medium truncate"
+                    :class="selectedWidgetId === widget.id ? 'text-indigo-600 dark:text-indigo-400' : ''">
+                    {{ widget.title || WIDGET_TYPES.find(t => t.type === widget.type)?.label || widget.type }}
+                  </p>
+                  <p class="text-xs text-muted-foreground">
+                    {{ WIDGET_TYPES.find(t => t.type === widget.type)?.label ?? widget.type }}
+                  </p>
+                </div>
+              </button>
+            </div>
+          </div>
+        </Transition>
 
         <!-- Canvas size extender -->
         <div style="min-width: 1400px; min-height: 900px; position: relative; padding: 12px;">
@@ -1921,6 +2053,14 @@ async function doDeleteRp(id: string) {
         </div>
       </Transition>
     </Teleport>
+
+    <!-- AI Panel -->
+    <AiPanel
+      v-if="aiEnabled && aiStore.openPage === 'report'"
+      page="report"
+      :context="aiContext"
+      :context-label="aiContextLabel"
+    />
 
   </div>
 </template>

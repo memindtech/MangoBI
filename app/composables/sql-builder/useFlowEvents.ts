@@ -4,7 +4,7 @@
  * Based on ChartDB: useFlowEvents.js
  */
 import { MarkerType, type Connection, type Node, type Edge } from '@vue-flow/core'
-import { getEdgeStyle } from '~/types/sql-builder'
+import { getEdgeStyle, getToolEdgeStyle } from '~/types/sql-builder'
 import type { JoinType, VisibleCol } from '~/types/sql-builder'
 import { useSqlBuilderStore } from '~/stores/sql-builder'
 
@@ -42,12 +42,13 @@ export function useFlowEvents() {
     // Table edge: sqlTable → sqlTable (needs JOIN modal)
     const isTableEdge = isSrcTable && isTgtTable
 
+    const toolId = targetNode?.data?._toolId as string | undefined
     const edgeStyle = isToolEdge
-      ? { animated: false, style: { stroke: 'hsl(var(--muted-foreground) / 0.4)', strokeWidth: 1.5, strokeDasharray: '5 4' } }
+      ? getToolEdgeStyle(toolId ?? '')
       : getEdgeStyle('LEFT JOIN')
 
     const edgeData = isToolEdge
-      ? { joinType: 'LEFT JOIN' as JoinType, mappings: [], isTool: true, unionSrc: true, srcCat: isSrcFrame ? 'cte' : isSrcTool ? 'other' : 'table' }
+      ? { joinType: 'LEFT JOIN' as JoinType, mappings: [], isTool: true, tgtToolId: toolId, srcCat: isSrcFrame ? 'cte' : isSrcTool ? 'other' : 'table' }
       : { joinType: 'LEFT JOIN' as JoinType, mappings: [] }
 
     const finalEdge = {
@@ -89,8 +90,10 @@ export function useFlowEvents() {
     const node = event.node ?? event
     if (!node?.id) return
 
-    // Track selected node (for tool auto-connect etc.)
-    store.selectedNodeId = node.id
+    // Track selected node. Also reset selectedNodeIds so it never drifts out of
+    // sync after stale multi-select events from VueFlow.
+    store.selectedNodeId  = node.id
+    store.selectedNodeIds = [node.id]
 
     // Tool nodes open their config modal on click
     if (node.type === 'toolNode') {

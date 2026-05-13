@@ -12,6 +12,10 @@ RUN npm run build
 FROM node:20-alpine AS runtime
 WORKDIR /app
 
+# tzdata required for TZ env to take effect on Alpine (default = UTC)
+# Keeps the container clock aligned with SQL Server (Bangkok +7); see Authorize.cs
+RUN apk add --no-cache tzdata
+
 COPY --from=build /app/.output ./.output
 
 ENV NITRO_HOST=0.0.0.0

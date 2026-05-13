@@ -4,8 +4,8 @@
  * Configuration dialog for CTE, Calc, Group, Sort, Union, Where nodes
  */
 import {
-  X, Plus, Layers, Calculator, Database, SortAsc, GitMerge, Filter,
-  ChevronDown, Key, Search, Sparkles, Calendar,
+  X, Plus, Layers, Calculator, Database, SortAsc, GitMerge, Filter, Braces,
+  ChevronDown, Key, Search, Sparkles, Calendar, Play,
 } from 'lucide-vue-next'
 import { MarkerType } from '@vue-flow/core'
 import { AGG_FUNCS, getColTypeBadge } from '~/types/sql-builder'
@@ -14,17 +14,19 @@ import { useSqlBuilderStore } from '~/stores/sql-builder'
 import { useToolNodes } from '~/composables/sql-builder/useToolNodes'
 import { useSqlGenerator } from '~/composables/sql-builder/useSqlGenerator'
 
+const { t } = useI18n()
 const store = useSqlBuilderStore()
 const tn = useToolNodes()
 const { generateSQL } = useSqlGenerator()
 
 const TOOL_META: Record<string, { label: string; color: string; bg: string; border: string; icon: any }> = {
-  cte:   { label: 'Named CTE', color: 'text-violet-500', bg: 'bg-violet-500/10', border: 'border-violet-500/30', icon: Layers     },
-  calc:  { label: 'Calculator', color: 'text-teal-500',   bg: 'bg-teal-500/10',   border: 'border-teal-500/30',   icon: Calculator },
-  group: { label: 'GROUP BY',  color: 'text-orange-500', bg: 'bg-orange-500/10', border: 'border-orange-500/30', icon: Database   },
-  sort:  { label: 'ORDER BY',  color: 'text-green-500',  bg: 'bg-green-500/10',  border: 'border-green-500/30',  icon: SortAsc    },
-  union: { label: 'UNION',     color: 'text-yellow-500', bg: 'bg-yellow-500/10', border: 'border-yellow-500/30', icon: GitMerge   },
-  where: { label: 'WHERE',     color: 'text-rose-500',   bg: 'bg-rose-500/10',   border: 'border-rose-500/30',   icon: Filter     },
+  cte:      { label: 'Named CTE', color: 'text-violet-500', bg: 'bg-violet-500/10', border: 'border-violet-500/30', icon: Layers     },
+  calc:     { label: 'Calculator', color: 'text-teal-500',   bg: 'bg-teal-500/10',   border: 'border-teal-500/30',   icon: Calculator },
+  group:    { label: 'GROUP BY',  color: 'text-orange-500', bg: 'bg-orange-500/10', border: 'border-orange-500/30', icon: Database   },
+  sort:     { label: 'ORDER BY',  color: 'text-green-500',  bg: 'bg-green-500/10',  border: 'border-green-500/30',  icon: SortAsc    },
+  union:    { label: 'UNION',     color: 'text-yellow-500', bg: 'bg-yellow-500/10', border: 'border-yellow-500/30', icon: GitMerge   },
+  where:    { label: 'WHERE',     color: 'text-rose-500',   bg: 'bg-rose-500/10',   border: 'border-rose-500/30',   icon: Filter     },
+  subquery: { label: 'Subquery',  color: 'text-indigo-500', bg: 'bg-indigo-500/10', border: 'border-indigo-500/30', icon: Braces     },
 }
 
 // WHERE operator groups with colors
@@ -79,6 +81,27 @@ function closeCteCondColDropdown() { openCteCondColIdx.value = null; cteCondColD
 function selectCteCondCol(i: number, col: VisibleCol) {
   tn.setCteCondition(i, { column: col.name, colType: col.type })
   closeCteCondColDropdown()
+}
+
+// Mapping pick dropdown (replaces <select> in source picks grid)
+const openPickKey  = ref<string | null>(null)
+const pickDropRow  = ref(-1)
+const pickDropSrc  = ref('')
+const pickDropPos  = ref<{ top: number; left: number; width: number } | null>(null)
+
+function openMappingPickDrop(ri: number, sourceId: string, e: MouseEvent) {
+  const key = `${ri}-${sourceId}`
+  if (openPickKey.value === key) { openPickKey.value = null; pickDropPos.value = null; return }
+  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  pickDropPos.value  = { top: rect.bottom + 4, left: rect.left, width: Math.max(rect.width, 200) }
+  openPickKey.value  = key
+  pickDropRow.value  = ri
+  pickDropSrc.value  = sourceId
+}
+function closeMappingPickDrop() { openPickKey.value = null; pickDropPos.value = null }
+function selectMappingPick(field: string) {
+  setUnionMappingPick(pickDropRow.value, pickDropSrc.value, field)
+  closeMappingPickDrop()
 }
 
 // Column dropdown for Union WHERE conditions
@@ -302,11 +325,24 @@ function collectNodeInfo(rootId: string): { tables: string[]; colNames: Set<stri
   return { tables, colNames }
 }
 
-// ── Union: ALL canvas nodes available as sources (except self) ───────────
+// ── IDs of sqlTable nodes that live inside a cteFrame (hidden from flat list)
+const cteChildTableIds = computed((): Set<string> => {
+  const ids = new Set<string>()
+  for (const node of store.nodes) {
+    if (node.type === 'cteFrame') {
+      for (const child of getCteFrameChildren(node)) {
+        ids.add(child.id as string)
+      }
+    }
+  }
+  return ids
+})
+
+// ── Union: ALL canvas nodes available as sources (except self & cte-children)
 const allUnionSources = computed(() => {
   if (!store.modalNodeId) return []
   return store.nodes
-    .filter((n: any) => n.id !== store.modalNodeId)
+    .filter((n: any) => n.id !== store.modalNodeId && !cteChildTableIds.value.has(n.id as string))
     .map((n: any) => {
       const nt  = n.data?.nodeType as string | undefined
       const tag = n.type === 'sqlTable' ? 'TABLE' : (nt ?? n.type ?? '').toUpperCase()
@@ -323,6 +359,13 @@ function toggleUnionSource(srcId: string) {
   const exists  = store.edges.some((e: any) => e.id === edgeId)
   if (exists) {
     store.edges = store.edges.filter((e: any) => e.id !== edgeId)
+    // Clean up columnMapping picks for the removed source
+    const current = unionColMapping.value.map(r => {
+      const picks = { ...r.picks }
+      delete picks[srcId]
+      return { ...r, picks }
+    })
+    tn.setModalData({ columnMapping: current })
     return
   }
 
@@ -458,6 +501,7 @@ function collectVisibleCols(rootId: string): VisibleCol[] {
   const visited = new Set<string>()
 
   function addTableCols(node: any) {
+    const tableLabel = String(node.data.tableName || node.data.label || node.id)
     const visible = node.data.visibleCols as VisibleCol[] | undefined
     const details = node.data.details as any[] | undefined
     const src: VisibleCol[] = visible?.length
@@ -470,7 +514,10 @@ function collectVisibleCols(rootId: string): VisibleCol[] {
           alias:  '',
         }))
     for (const col of src) {
-      if (!seen.has(col.name)) { seen.add(col.name); cols.push(col) }
+      if (!seen.has(col.name)) {
+        seen.add(col.name)
+        cols.push({ ...col, sourceTableLabel: col.sourceTableLabel || tableLabel })
+      }
     }
   }
 
@@ -501,6 +548,54 @@ function collectVisibleCols(rootId: string): VisibleCol[] {
   return cols
 }
 
+// ── Union: collect table-grouped VisibleCol[] for expanded display ────────
+interface TableColGroup { tableId: string; tableLabel: string; cols: VisibleCol[] }
+
+function collectTableGroups(rootId: string): TableColGroup[] {
+  const groups: TableColGroup[] = []
+  const visited = new Set<string>()
+
+  function addGroup(node: any) {
+    const tableLabel = String(node.data.tableName || node.data.label || node.id)
+    const visible = node.data.visibleCols as VisibleCol[] | undefined
+    const details = node.data.details as any[] | undefined
+    const cols: VisibleCol[] = visible?.length
+      ? visible
+      : (details ?? []).map((c: any) => ({
+          name:   c.column_name,
+          type:   c.column_type || c.data_type,
+          remark: c.remark ?? '',
+          isPk:   c.data_pk === 'Y',
+          alias:  '',
+        }))
+    groups.push({ tableId: node.id as string, tableLabel, cols })
+  }
+
+  function walk(id: string) {
+    if (visited.has(id)) return
+    visited.add(id)
+    const node = store.nodes.find((n: any) => n.id === id)
+    if (!node) return
+    if (node.type === 'sqlTable') {
+      addGroup(node)
+    } else if (node.type === 'cteFrame') {
+      for (const child of getCteFrameChildren(node)) {
+        if (!visited.has(child.id as string)) {
+          visited.add(child.id as string)
+          addGroup(child)
+        }
+      }
+    } else {
+      store.edges
+        .filter((e: any) => e.target === id)
+        .forEach((e: any) => walk(e.source as string))
+    }
+  }
+
+  walk(rootId)
+  return groups
+}
+
 // ── Union: grouped cols — one group per connected source node ─────────────
 interface UnionColGroup {
   sourceId:  string
@@ -527,8 +622,393 @@ const unionGroupedCols = computed((): UnionColGroup[] => {
     .filter(Boolean) as UnionColGroup[]
 })
 
+// ── Union: expandable group cards ──────────────────────────────────────
+const unionExpandedSources = ref(new Set<string>())
+
+function toggleUnionSourceExpanded(id: string) {
+  const s = new Set(unionExpandedSources.value)
+  s.has(id) ? s.delete(id) : s.add(id)
+  unionExpandedSources.value = s
+}
+
+// Rich source list (all available nodes) including their visible cols
+const allUnionSourcesRich = computed(() =>
+  allUnionSources.value.map(src => ({
+    ...src,
+    cols:        collectVisibleCols(src.id),
+    tableGroups: collectTableGroups(src.id),
+  }))
+)
+
+// Track which table sub-groups are expanded (key = sourceId:tableId)
+const expandedTableGroups = ref(new Set<string>())
+function toggleTableGroup(sourceId: string, tableId: string) {
+  const key = `${sourceId}:${tableId}`
+  const s   = new Set(expandedTableGroups.value)
+  s.has(key) ? s.delete(key) : s.add(key)
+  expandedTableGroups.value = s
+}
+
+// ── Union: column mapping model ───────────────────────────────────────
+interface UnionColMap {
+  outputName: string
+  picks: Record<string, string>  // sourceId → fieldName ('' = NULL)
+}
+
+const unionColMapping = computed((): UnionColMap[] =>
+  (store.modalNode?.data?.columnMapping ?? []) as UnionColMap[]
+)
+
+function addUnionMappingRow() {
+  const current = unionColMapping.value.map(r => ({ ...r, picks: { ...r.picks } }))
+  current.push({ outputName: `column_${current.length + 1}`, picks: {} })
+  tn.setModalData({ columnMapping: current })
+}
+
+function removeUnionMappingRow(i: number) {
+  const current = unionColMapping.value.map(r => ({ ...r, picks: { ...r.picks } }))
+  current.splice(i, 1)
+  tn.setModalData({ columnMapping: current })
+}
+
+function setUnionMappingRowName(i: number, name: string) {
+  const current = unionColMapping.value.map(r => ({ ...r, picks: { ...r.picks } }))
+  if (current[i]) current[i]!.outputName = name
+  tn.setModalData({ columnMapping: current })
+}
+
+function setUnionMappingPick(rowIdx: number, sourceId: string, field: string) {
+  const current = unionColMapping.value.map(r => ({ ...r, picks: { ...r.picks } }))
+  if (current[rowIdx]) current[rowIdx]!.picks[sourceId] = field
+  tn.setModalData({ columnMapping: current })
+}
+
+function autoDetectUnionMapping() {
+  const sources = unionGroupedCols.value
+  if (!sources.length) return
+  const allColNames = new Set<string>()
+  for (const src of sources) {
+    for (const col of src.cols) allColNames.add(col.name)
+  }
+  // Sort: full coverage (all sources have the column) first, then partial by coverage count desc
+  const colList = [...allColNames].sort((a, b) => {
+    const covA = sources.filter(s => s.cols.some(c => c.name === a)).length
+    const covB = sources.filter(s => s.cols.some(c => c.name === b)).length
+    return covB - covA
+  })
+  const mapping: UnionColMap[] = []
+  for (const colName of colList) {
+    const picks: Record<string, string> = {}
+    for (const src of sources) {
+      picks[src.sourceId] = src.cols.some(c => c.name === colName) ? colName : ''
+    }
+    mapping.push({ outputName: colName, picks })
+  }
+  tn.setModalData({ columnMapping: mapping })
+}
+
+function clearUnionMapping() {
+  tn.setModalData({ columnMapping: [] })
+}
+
+function selectAllUnionSources() {
+  for (const src of allUnionSourcesRich.value) {
+    if (!isUnionSourceConnected(src.id)) toggleUnionSource(src.id)
+  }
+}
+
+function clearAllUnionSources() {
+  store.edges = store.edges.filter((e: any) => e.target !== store.modalNodeId)
+  tn.setModalData({ columnMapping: [] })
+}
+
+// Rows where every source pick is empty string (all NULL) — invalid
+const unionMappingHasAllNullRows = computed((): string[] =>
+  unionColMapping.value
+    .filter(row => !Object.values(row.picks).some(v => v))
+    .map(row => row.outputName)
+)
+
+function moveUnionMappingRow(i: number, dir: -1 | 1) {
+  const current = unionColMapping.value.map(r => ({ ...r, picks: { ...r.picks } }))
+  const j = i + dir
+  if (j < 0 || j >= current.length) return
+  ;[current[i], current[j]] = [current[j]!, current[i]!]
+  tn.setModalData({ columnMapping: current })
+}
+
+// Auto-select only columns that exist in ALL connected sources (exact name match, full coverage)
+function autoSelectExactMatch() {
+  const sources = unionGroupedCols.value
+  if (!sources.length) return
+  const mapping: UnionColMap[] = []
+  for (const col of unionAllSourceCols.value) {
+    if (col.coveredCount < sources.length) continue
+    const picks: Record<string, string> = {}
+    for (const src of sources) picks[src.sourceId] = col.name
+    mapping.push({ outputName: col.name, picks })
+  }
+  tn.setModalData({ columnMapping: mapping })
+}
+
+// Check if two SQL types are compatible (same group = numeric/string/date)
+function isTypeCompatible(t1: string, t2: string): boolean {
+  const base = (t: string) => t.toLowerCase().split('(')[0]?.trim() ?? ''
+  const b1 = base(t1), b2 = base(t2)
+  if (!b1 || !b2 || b1 === b2) return true
+  const NUM  = ['int','integer','bigint','smallint','tinyint','decimal','numeric','float','double','real','money','smallmoney','number','bit']
+  const STR  = ['varchar','nvarchar','char','nchar','text','ntext','xml','uniqueidentifier']
+  const DATE = ['datetime','datetime2','smalldatetime','datetimeoffset','date','time','timestamp']
+  const grp  = (b: string) => NUM.some(t => b.startsWith(t)) ? 'num' : STR.some(t => b.startsWith(t)) ? 'str' : DATE.some(t => b.startsWith(t)) ? 'date' : 'other'
+  return grp(b1) === grp(b2)
+}
+
+// Determine reference type for a mapping row (first non-empty pick)
+function getRowReferenceType(row: UnionColMap): string {
+  for (const src of unionGroupedCols.value) {
+    const f = row.picks[src.sourceId]
+    if (f) return getUnionPickType(src.sourceId, f)
+  }
+  return ''
+}
+
+// Per-pick status: matched | mismatch | null
+function getPickStatus(row: UnionColMap, sourceId: string): 'matched' | 'mismatch' | 'null' {
+  const field = row.picks[sourceId] ?? ''
+  if (!field) return 'null'
+  const refType = getRowReferenceType(row)
+  if (!refType) return 'matched'
+  return isTypeCompatible(refType, getUnionPickType(sourceId, field)) ? 'matched' : 'mismatch'
+}
+
+const unionAllSourceCols = computed(() => {
+  const sources = unionGroupedCols.value
+  if (!sources.length) return []
+  const colMap = new Map<string, { name: string; type: string; coveredCount: number; hasMismatch: boolean }>()
+  for (const src of sources) {
+    for (const col of src.cols) {
+      if (!colMap.has(col.name)) colMap.set(col.name, { name: col.name, type: col.type, coveredCount: 0, hasMismatch: false })
+    }
+  }
+  for (const [name, entry] of colMap) {
+    entry.coveredCount = sources.filter(s => s.cols.some(c => c.name === name)).length
+    const types = sources
+      .map(s => s.cols.find(c => c.name === name)?.type ?? '')
+      .filter(Boolean)
+      .map(t => t.toLowerCase().split('(')[0] ?? '')
+    entry.hasMismatch = types.length >= 2 && !types.every(t => t === types[0])
+  }
+  return [...colMap.values()].sort((a, b) => b.coveredCount - a.coveredCount)
+})
+
+function isColumnMapped(colName: string): boolean {
+  return unionColMapping.value.some(r => r.outputName === colName)
+}
+
+// Check if a specific table's column is mapped (per-table, no cross-table sync)
+function isTableColMapped(tableId: string, colName: string): boolean {
+  return unionColMapping.value.some(r => r.picks[tableId] === colName)
+}
+
+// Toggle a column from a specific table — independent per table, no name collision
+function toggleTableColMapping(tableId: string, colName: string) {
+  const current = unionColMapping.value.map(r => ({ ...r, picks: { ...r.picks } }))
+  const idx     = current.findIndex(r => r.picks[tableId] === colName)
+  if (idx >= 0) {
+    current.splice(idx, 1)
+    // Auto-disconnect table if it has no more mapped columns
+    const stillHasCols = current.some(r => r.picks[tableId])
+    if (!stillHasCols && isUnionSourceConnected(tableId)) {
+      toggleUnionSource(tableId)
+    }
+  } else {
+    // Auto-connect the table source if not yet connected
+    if (!isUnionSourceConnected(tableId)) {
+      toggleUnionSource(tableId)
+    }
+    const picks: Record<string, string> = { [tableId]: colName }
+    current.push({ outputName: colName, picks })
+  }
+  tn.setModalData({ columnMapping: current })
+}
+
+function toggleColumnInMapping(colName: string) {
+  const current = unionColMapping.value.map(r => ({ ...r, picks: { ...r.picks } }))
+  const idx = current.findIndex(r => r.outputName === colName)
+  if (idx >= 0) {
+    current.splice(idx, 1)
+  } else {
+    const picks: Record<string, string> = {}
+    for (const src of unionGroupedCols.value) {
+      picks[src.sourceId] = src.cols.some(c => c.name === colName) ? colName : ''
+    }
+    current.push({ outputName: colName, picks })
+  }
+  tn.setModalData({ columnMapping: current })
+}
+
+function getUnionPickType(sourceId: string, fieldName: string): string {
+  const group = unionGroupedCols.value.find(g => g.sourceId === sourceId)
+  return group?.cols.find(c => c.name === fieldName)?.type ?? ''
+}
+
+function hasUnionTypeMismatch(row: UnionColMap): boolean {
+  const types = Object.entries(row.picks)
+    .filter(([, f]) => f)
+    .map(([srcId, field]) => {
+      const t = getUnionPickType(srcId, field).toLowerCase()
+      return t.split('(')[0] ?? ''
+    })
+    .filter(Boolean)
+  if (types.length < 2) return false
+  return !types.every(t => t === types[0])
+}
+
+function getUnionRowOutputType(row: UnionColMap): string {
+  for (const src of unionGroupedCols.value) {
+    const field = row.picks[src.sourceId]
+    if (field) return getUnionPickType(src.sourceId, field)
+  }
+  return ''
+}
+
+const unmappedSourceCols = computed(() =>
+  unionAllSourceCols.value.filter(col => !isColumnMapped(col.name))
+)
+
+const unionReadiness = computed(() => {
+  const srcCount  = unionGroupedCols.value.length
+  const colCount  = unionColMapping.value.length
+  const nullRows  = unionMappingHasAllNullRows.value.length
+  const mismatch  = unionAllSourceCols.value.some(c => c.hasMismatch && isColumnMapped(c.name))
+  if (srcCount === 0)
+    return { level: 'error', msg: t('sqlbuilder_tool_config_union_err_no_source') }
+  if (colCount === 0)
+    return { level: 'info',  msg: t('sqlbuilder_tool_config_union_info_connected', { n: srcCount }) }
+  if (nullRows > 0)
+    return { level: 'error', msg: t('sqlbuilder_tool_config_union_err_nullcols', { n: nullRows }) }
+  if (mismatch)
+    return { level: 'warn',  msg: t('sqlbuilder_tool_config_union_warn_mismatch', { n: unionColMapping.value.length }) }
+  return   { level: 'ok',   msg: t('sqlbuilder_tool_config_union_ok_ready', { n: colCount }) }
+})
+
+function groupColsByTable(cols: VisibleCol[]): { tableLabel: string; cols: VisibleCol[] }[] {
+  const order: string[] = []
+  const map = new Map<string, VisibleCol[]>()
+  for (const col of cols) {
+    const key = col.sourceTableLabel || col.sourceTable || ''
+    if (!map.has(key)) { map.set(key, []); order.push(key) }
+    map.get(key)!.push(col)
+  }
+  return order.map(k => ({ tableLabel: k, cols: map.get(k)! }))
+}
+
+const showAddSourceDropdown  = ref(false)
+const showStep2SrcDropdown   = ref(false)
+const showUnionSqlPreview    = ref(true)
+const unionViewMode          = ref<'output' | 'mapping'>('output')
+const unionStep             = ref(1)
+const UNION_STEPS = computed(() => [
+  { id: 1, label: t('sqlbuilder_tool_config_union_step1') },
+  { id: 2, label: t('sqlbuilder_tool_config_union_step2') },
+  { id: 3, label: t('sqlbuilder_tool_config_union_step3') },
+  { id: 4, label: t('sqlbuilder_tool_config_union_step4') },
+  { id: 5, label: t('sqlbuilder_tool_config_union_step5') },
+])
+
+const availableUnconnectedSources = computed(() =>
+  allUnionSourcesRich.value.filter(src => !isUnionSourceConnected(src.id))
+)
+
+// ── Union: source compatibility map ──────────────────────────────────────
+// Returns per-source-id: 'selected' | 'compatible' | 'incompatible' | undefined (nothing selected yet)
+const unionCompatibilityMap = computed((): Map<string, 'selected' | 'compatible' | 'incompatible'> => {
+  const map = new Map<string, 'selected' | 'compatible' | 'incompatible'>()
+  if (!unionSources.value.length) return map   // nothing selected — all neutral
+
+  // Build union of all column names from selected sources
+  const selectedCols = new Set<string>()
+  for (const src of unionSources.value) {
+    for (const col of src.colNames) selectedCols.add(col)
+  }
+
+  for (const src of allUnionSourcesRich.value) {
+    if (src.tag === 'CTE') {
+      for (const tg of src.tableGroups) {
+        if (isUnionSourceConnected(tg.tableId)) {
+          map.set(tg.tableId, 'selected')
+        } else {
+          const overlap = tg.cols.filter(c => selectedCols.has(c.name)).length
+          map.set(tg.tableId, overlap > 0 ? 'compatible' : 'incompatible')
+        }
+      }
+    } else {
+      if (isUnionSourceConnected(src.id)) {
+        map.set(src.id, 'selected')
+      } else {
+        const overlap = src.cols.filter(c => selectedCols.has(c.name)).length
+        map.set(src.id, overlap > 0 ? 'compatible' : 'incompatible')
+      }
+    }
+  }
+  return map
+})
+
+// Columns available for the Union WHERE filter = the UNION output column names.
+// The WHERE clause is applied to the subquery `SELECT * FROM (...) _u WHERE ...`
+// so column names must match outputName (the AS alias in the subquery), not source field names.
+// Falls back to unionAvailableCols when no mapping has been defined yet.
+const unionOutputCols = computed((): VisibleCol[] => {
+  if (!unionColMapping.value.length) return unionAvailableCols.value
+  return unionColMapping.value.map(row => ({
+    name:   row.outputName,
+    type:   getUnionRowOutputType(row),
+    remark: '',
+    isPk:   false,
+    alias:  '',
+  }))
+})
+
+function unionOverlapCount(srcId: string, cols: { name: string }[]): number {
+  if (!unionSources.value.length) return 0
+  const selectedCols = new Set<string>()
+  for (const src of unionSources.value) {
+    for (const col of src.colNames) selectedCols.add(col)
+  }
+  return cols.filter(c => selectedCols.has(c.name)).length
+}
+
 // ── Union: search + filtered groups ──────────────────────────────────────
 const unionColSearch = ref('')
+const unionColTab    = ref('__all__')
+
+// Filtered column list for Step 2 (tab + search)
+const unionColTabFiltered = computed(() => {
+  const q    = unionColSearch.value.toLowerCase().trim()
+  const all  = unionAllSourceCols.value
+  let list   = unionColTab.value === '__all__'
+    ? all
+    : all.filter(c => {
+        const grp = unionGroupedCols.value.find(g => g.sourceId === unionColTab.value)
+        return grp ? grp.cols.some(sc => sc.name === c.name) : true
+      })
+  if (q) list = list.filter(c => c.name.toLowerCase().includes(q))
+  return list
+})
+
+// Count of exact-match (all-source) columns not yet mapped
+const exactMatchCols = computed(() =>
+  unionAllSourceCols.value.filter(c => c.coveredCount === unionGroupedCols.value.length)
+)
+
+// Get remark for a column name (first source that has it)
+function getColRemark(colName: string): string {
+  for (const grp of unionGroupedCols.value) {
+    const col = grp.cols.find(c => c.name === colName)
+    if (col?.remark) return col.remark
+  }
+  return ''
+}
 
 const unionFilteredGroups = computed((): UnionColGroup[] => {
   const q = unionColSearch.value.toLowerCase().trim()
@@ -541,20 +1021,39 @@ const unionFilteredGroups = computed((): UnionColGroup[] => {
 // ── Union SQL preview (dynamic, per-source cols + WHERE) ─────────────────
 const unionSqlPreview = computed(() => {
   const uType   = store.modalNode?.data?.unionType ?? 'UNION ALL'
-  const colsMap = (store.modalNode?.data?.selectedColsMap ?? {}) as Record<string, string[]>
-  const global  = (store.modalNode?.data?.selectedCols ?? []) as string[]
   const conds   = ((store.modalNode?.data?.conditions ?? []) as any[]).filter(c => c.column && c.operator)
   const sources = unionSources.value.length
     ? unionSources.value
     : [{ id: '', label: 'source1' }, { id: '', label: 'source2' }]
 
-  const parts = sources.map(s => {
-    const srcCols = s.id ? (colsMap[s.id] ?? []).filter(Boolean) : []
-    const cols    = srcCols.length ? srcCols : global.filter(Boolean)
-    const sel     = cols.length ? `SELECT\n  ${cols.join(',\n  ')}` : 'SELECT *'
-    return `${sel}\nFROM ${s.label}`
-  })
-  const unionPart = parts.join(`\n${uType}\n`)
+  let unionPart: string
+  const mapping = unionColMapping.value
+
+  if (mapping.length > 0 && unionGroupedCols.value.length > 0) {
+    // Use columnMapping model
+    const parts = unionGroupedCols.value.map(group => {
+      const selects = mapping.map(row => {
+        const field = row.picks[group.sourceId] ?? ''
+        if (!field) return `  NULL AS ${row.outputName}`
+        const alias = field !== row.outputName ? ` AS ${row.outputName}` : ''
+        return `  ${field}${alias}`
+      })
+      return `SELECT\n${selects.join(',\n')}\nFROM ${group.label}`
+    })
+    unionPart = parts.join(`\n${uType}\n`)
+  } else {
+    // Fall back to selectedColsMap / selectedCols
+    const colsMap = (store.modalNode?.data?.selectedColsMap ?? {}) as Record<string, string[]>
+    const global  = (store.modalNode?.data?.selectedCols ?? []) as string[]
+    const parts = sources.map((s: any) => {
+      const srcCols = s.id ? (colsMap[s.id] ?? []).filter(Boolean) : []
+      const cols    = srcCols.length ? srcCols : global.filter(Boolean)
+      const sel     = cols.length ? `SELECT\n  ${cols.join(',\n  ')}` : 'SELECT *'
+      return `${sel}\nFROM ${s.label}`
+    })
+    unionPart = parts.join(`\n${uType}\n`)
+  }
+
   if (!conds.length) return unionPart
   const wherePart = conds.map((c: any) => condPreview(c)).join('\n  AND ')
   return `SELECT * FROM (\n  ${unionPart.replace(/\n/g, '\n  ')}\n) _u\nWHERE ${wherePart}`
@@ -642,6 +1141,92 @@ const whereSqlPreview = computed(() => {
 // ── Group By / Sort: field search ────────────────────────────────────────
 const colSearch     = ref('')
 const sortColSearch = ref('')
+const subqColSearch = ref('')
+
+const filteredSubqGroupedCols = computed(() => applyGroupSearch(subqColSearch.value.trim()))
+
+const subqSqlPreview = computed((): string => {
+  if (!store.modalNode || nodeType.value !== 'subquery') return ''
+  const data = store.modalNode.data
+  const custom      = (data.customSql as string | undefined)?.trim()
+  const selectItems: Array<{ col: string; alias: string }> = data.selectItems ?? []
+  const mathItems:   Array<{ expr: string; alias: string }> = data.mathItems ?? []
+  const caseWhens:   any[]  = data.caseWhens  ?? []
+  const conditions:  any[]  = data.conditions ?? []
+
+  if (custom && (data._importVerbatim === true || (!selectItems.length && !mathItems.length && !caseWhens.length)))
+    return custom
+
+  const parts: string[] = []
+  for (const item of selectItems) {
+    const a = item.alias?.trim()
+    parts.push(a ? `${item.col} AS ${a}` : item.col)
+  }
+  for (const m of mathItems) {
+    if (!m.expr?.trim()) continue
+    const a = m.alias?.trim()
+    parts.push(a ? `${m.expr} AS ${a}` : m.expr)
+  }
+  for (const cw of caseWhens) {
+    const branches = (cw.branches ?? []).filter((b: any) => b.condition?.trim())
+    if (!branches.length && !cw.elsePart?.trim()) continue
+    const alias = cw.alias?.trim()
+    const whenLines = branches.map((b: any) =>
+      `  WHEN ${b.condition} THEN ${b.result?.trim() || 'NULL'}`
+    ).join('\n')
+    const elseLine = cw.elsePart?.trim() ? `\n  ELSE ${cw.elsePart}` : ''
+    const expr = `CASE\n${whenLines}${elseLine}\nEND`
+    parts.push(alias ? `${expr} AS ${alias}` : expr)
+  }
+
+  const sel = parts.length ? parts.join(',\n       ') : '*'
+  const whereParts = conditions
+    .filter((c: any) => c.column && c.operator)
+    .map((c: any) => {
+      const op = c.operator as string
+      if (op === 'IS NULL' || op === 'IS NOT NULL') return `${c.column} ${op}`
+      if (op === 'IN') return `${c.column} IN (${c.value})`
+      return `${c.column} ${op} '${c.value}'`
+    })
+  const nodeAlias = ((data.alias as string | undefined)?.trim()) || '_sub'
+  const fromSrc   = custom ? `(\n  ...\n) ${nodeAlias}` : '<upstream>'
+  let sql = `SELECT ${sel}\nFROM   ${fromSrc}`
+  if (whereParts.length) sql += `\nWHERE  ${whereParts.join('\n   AND ')}`
+  return sql
+})
+
+function isSubqColSelected(colName: string): boolean {
+  return ((store.modalNode?.data?.selectItems ?? []) as Array<{ col: string }>).some(it => it.col === colName)
+}
+
+const MATH_PRESETS: Array<{ label: string; expr: string; alias: string }> = [
+  { label: 'a + b',          expr: 'col_a + col_b',                              alias: '' },
+  { label: 'a - b',          expr: 'col_a - col_b',                              alias: '' },
+  { label: 'a * b',          expr: 'col_a * col_b',                              alias: '' },
+  { label: 'a / b',          expr: 'col_a / NULLIF(col_b, 0)',                   alias: '' },
+  { label: 'COALESCE(…,0)',  expr: 'COALESCE(col, 0)',                           alias: '' },
+  { label: 'ISNULL(…,0)',    expr: 'ISNULL(col, 0)',                             alias: '' },
+  { label: 'COALESCE a+b',   expr: 'COALESCE(col_a, 0) + COALESCE(col_b, 0)',   alias: '' },
+  { label: 'COALESCE a-b',   expr: 'COALESCE(col_a, 0) - COALESCE(col_b, 0)',   alias: '' },
+  { label: 'ROUND(…,2)',     expr: 'ROUND(col, 2)',                              alias: '' },
+  { label: 'ABS(…)',         expr: 'ABS(col)',                                   alias: '' },
+  { label: 'CAST DECIMAL',   expr: 'CAST(col AS DECIMAL(18,2))',                 alias: '' },
+  { label: 'CASE > 0',       expr: 'CASE WHEN col > 0 THEN col ELSE 0 END',     alias: '' },
+]
+
+function addMathPreset(p: typeof MATH_PRESETS[number]) {
+  tn.setModalData({
+    mathItems: [
+      ...((store.modalNode?.data?.mathItems ?? []) as any[]),
+      { expr: p.expr, alias: p.alias },
+    ],
+  })
+}
+
+function selectAllSubqCols() {
+  const items = upstreamCols.value.map(c => ({ col: c.name, alias: '' }))
+  tn.setModalData({ selectItems: items })
+}
 
 // ── Grouped by source table ───────────────────────────────────────────────
 interface ColGroup { tableId: string; tableLabel: string; cols: VisibleCol[] }
@@ -690,18 +1275,9 @@ const sortItems = computed(() =>
   (store.modalNode?.data?.items ?? []) as Array<{ col: string; dir: 'ASC' | 'DESC' }>
 )
 
-// True after user explicitly presses "clear" — prevents empty-items from being read as "all selected"
-const sortExplicitlyCleared = ref(false)
-
-const sortItemCount = computed(() => {
-  if (sortItems.value.length) return sortItems.value.length
-  if (sortExplicitlyCleared.value) return 0
-  return upstreamCols.value.length  // all selected by default when not yet initialized
-})
+const sortItemCount = computed(() => sortItems.value.length)
 
 function isSortSelected(colName: string) {
-  // Empty items = "all selected" default, UNLESS user explicitly cleared
-  if (!sortItems.value.length && !sortExplicitlyCleared.value) return true
   return sortItems.value.some(s => s.col === colName)
 }
 
@@ -710,10 +1286,7 @@ function getSortDir(colName: string): 'ASC' | 'DESC' {
 }
 
 function toggleSortCol(colName: string, checked: boolean) {
-  // If items is empty (all-selected default), materialize all cols first
-  const current = sortItems.value.length > 0
-    ? sortItems.value.map(s => ({ ...s }))
-    : upstreamCols.value.map(c => ({ col: c.name, dir: 'ASC' as 'ASC' | 'DESC' }))
+  const current = sortItems.value.map(s => ({ ...s }))
   if (checked) {
     if (!current.some(s => s.col === colName)) current.push({ col: colName, dir: 'ASC' })
   } else {
@@ -724,16 +1297,11 @@ function toggleSortCol(colName: string, checked: boolean) {
 }
 
 function setSortDir(colName: string, dir: 'ASC' | 'DESC') {
-  // If items is empty (all-selected default), materialize all cols first
-  const base = sortItems.value.length > 0
-    ? sortItems.value.map(s => ({ ...s }))
-    : upstreamCols.value.map(c => ({ col: c.name, dir: 'ASC' as 'ASC' | 'DESC' }))
-  const current = base.map(s => s.col === colName ? { ...s, dir } : s)
+  const current = sortItems.value.map(s => s.col === colName ? { ...s, dir } : s)
   store.updateNodeData(store.modalNodeId!, { items: current })
 }
 
 function selectAllSortCols() {
-  sortExplicitlyCleared.value = false
   store.updateNodeData(store.modalNodeId!, {
     items: upstreamCols.value.map(c => ({
       col: c.name,
@@ -743,7 +1311,6 @@ function selectAllSortCols() {
 }
 
 function clearSortCols() {
-  sortExplicitlyCleared.value = true
   store.updateNodeData(store.modalNodeId!, { items: [] })
 }
 
@@ -753,13 +1320,13 @@ const calcItems = computed(() =>
 )
 const calcItemCount = computed(() => calcItems.value.filter(c => c.col && c.op).length)
 
-const CALC_OPS = [
-  { id: 'multiply', label: '×',        group: 'math',   needsValue: true,  ph: 'เช่น 1.07' },
-  { id: 'add',      label: '+',        group: 'math',   needsValue: true,  ph: 'เช่น 100'  },
-  { id: 'subtract', label: '−',        group: 'math',   needsValue: true,  ph: 'เช่น 50'   },
-  { id: 'divide',   label: '÷',        group: 'math',   needsValue: true,  ph: 'เช่น 100'  },
-  { id: 'isnull',   label: 'ISNULL',   group: 'null',   needsValue: true,  ph: 'ค่า default' },
-  { id: 'coalesce', label: 'COALESCE', group: 'null',   needsValue: true,  ph: 'ค่า fallback' },
+const CALC_OPS = computed(() => [
+  { id: 'multiply', label: '×',        group: 'math',   needsValue: true,  ph: t('sqlbuilder_tool_config_calc_ph_multiply') },
+  { id: 'add',      label: '+',        group: 'math',   needsValue: true,  ph: t('sqlbuilder_tool_config_calc_ph_add')  },
+  { id: 'subtract', label: '−',        group: 'math',   needsValue: true,  ph: t('sqlbuilder_tool_config_calc_ph_subtract')   },
+  { id: 'divide',   label: '÷',        group: 'math',   needsValue: true,  ph: t('sqlbuilder_tool_config_calc_ph_divide')  },
+  { id: 'isnull',   label: 'ISNULL',   group: 'null',   needsValue: true,  ph: t('sqlbuilder_tool_config_calc_ph_isnull') },
+  { id: 'coalesce', label: 'COALESCE', group: 'null',   needsValue: true,  ph: t('sqlbuilder_tool_config_calc_ph_coalesce') },
   { id: 'cast_int', label: 'AS INT',   group: 'cast',   needsValue: false, ph: '' },
   { id: 'cast_text',label: 'AS TEXT',  group: 'cast',   needsValue: false, ph: '' },
   { id: 'cast_dec', label: 'AS DEC',   group: 'cast',   needsValue: false, ph: '' },
@@ -769,7 +1336,7 @@ const CALC_OPS = [
   { id: 'year',     label: 'YEAR',     group: 'date',   needsValue: false, ph: '' },
   { id: 'month',    label: 'MONTH',    group: 'date',   needsValue: false, ph: '' },
   { id: 'day',      label: 'DAY',      group: 'date',   needsValue: false, ph: '' },
-] as const
+])
 
 // Colors per group — active (selected) vs hover
 const OP_ACTIVE: Record<string, string> = {
@@ -787,7 +1354,7 @@ const OP_HOVER: Record<string, string> = {
   date:   'border-border text-muted-foreground hover:border-cyan-400/60 hover:text-cyan-500 hover:bg-cyan-500/8',
 }
 
-function opClass(itemOp: string, op: typeof CALC_OPS[number]) {
+function opClass(itemOp: string, op: { id: string; group: string }) {
   const isActive = itemOp === op.id
   return isActive ? OP_ACTIVE[op.group] : OP_HOVER[op.group]
 }
@@ -815,11 +1382,11 @@ function calcExprPreview(op: string, col: string, val: string): string {
 }
 
 function calcNeedsValue(op: string): boolean {
-  return CALC_OPS.find(o => o.id === op)?.needsValue ?? false
+  return CALC_OPS.value.find(o => o.id === op)?.needsValue ?? false
 }
 
 function calcValuePlaceholder(op: string): string {
-  return CALC_OPS.find(o => o.id === op)?.ph ?? ''
+  return CALC_OPS.value.find(o => o.id === op)?.ph ?? ''
 }
 
 // Helper: format condition value for SQL preview (mirrors formatCondClause in useSqlGenerator)
@@ -983,25 +1550,32 @@ function selectCalcCol(i: number, colName: string) {
 
 // Auto-init on modal open
 // flush:'sync' ensures the init runs before first render so cols appear pre-checked
-watch(() => store.modalNode, (node) => {
-  if (!node) { colSearch.value = ''; sortColSearch.value = ''; return }
+watch(() => store.modalNode, (node, oldNode) => {
+  if (!node) { colSearch.value = ''; sortColSearch.value = ''; subqColSearch.value = ''; return }
   const type = node.data.nodeType
+  // True only when the modal just opened for a different node (not a data update on the same node)
+  const isNewOpen = node.id !== oldNode?.id
   if (type === 'group') {
-    colSearch.value = ''
-    if (!node.data.groupCols?.length && upstreamCols.value.length) {
-      store.updateNodeData(node.id, { groupCols: upstreamCols.value.map((c: VisibleCol) => c.name) })
+    if (isNewOpen) colSearch.value = ''
+    // Clear junk groupCols from old auto-populate behavior, but only if the user
+    // has never explicitly set them (_groupColsUserSet flag is absent)
+    if (!node.data._groupColsUserSet && upstreamCols.value.length > 0) {
+      const currentGroupCols = (node.data.groupCols ?? []) as string[]
+      if (currentGroupCols.length >= upstreamCols.value.length) {
+        store.updateNodeData(node.id, { groupCols: [], _groupColsUserSet: false })
+      }
     }
   } else if (type === 'sort') {
-    sortColSearch.value = ''
-    sortExplicitlyCleared.value = false
-    if (!node.data.items?.length && upstreamCols.value.length) {
-      store.updateNodeData(node.id, { items: upstreamCols.value.map((c: VisibleCol) => ({ col: c.name, dir: 'ASC' })) })
-    }
+    if (isNewOpen) sortColSearch.value = ''
   } else if (type === 'calc') {
     // Auto-add one empty item so user can start immediately
     if (!node.data.items?.length) {
       store.updateNodeData(node.id, { items: [{ col: '', op: '', value: '', alias: '' }] })
     }
+  } else if (type === 'union') {
+    if (isNewOpen) unionStep.value = 1
+  } else if (type === 'subquery') {
+    if (isNewOpen) subqColSearch.value = ''
   }
 }, { immediate: true, flush: 'sync' })
 
@@ -1009,10 +1583,14 @@ watch(() => store.modalNode, (node) => {
 watch(upstreamCols, (cols) => {
   const node = store.modalNode
   if (!node) return
-  if (node.data.nodeType === 'group' && !node.data.groupCols?.length && cols.length) {
-    store.updateNodeData(node.id, { groupCols: cols.map((c: VisibleCol) => c.name) })
-  } else if (node.data.nodeType === 'sort' && !node.data.items?.length && cols.length) {
-    store.updateNodeData(node.id, { items: cols.map((c: VisibleCol) => ({ col: c.name, dir: 'ASC' })) })
+  if (node.data.nodeType === 'group') {
+    // Clear junk only if user never explicitly set groupCols
+    if (!node.data._groupColsUserSet && cols.length > 0) {
+      const currentGroupCols = (node.data.groupCols ?? []) as string[]
+      if (currentGroupCols.length >= cols.length) {
+        store.updateNodeData(node.id, { groupCols: [], _groupColsUserSet: false })
+      }
+    }
   }
 })
 
@@ -1024,17 +1602,19 @@ function toggleGroupCol(colName: string, checked: boolean) {
     const idx = current.indexOf(colName)
     if (idx >= 0) current.splice(idx, 1)
   }
-  store.updateNodeData(store.modalNodeId!, { groupCols: current })
+  // Mark as user-set so auto-clear logic never touches it again
+  store.updateNodeData(store.modalNodeId!, { groupCols: current, _groupColsUserSet: true })
 }
 
 function selectAllGroupCols() {
   store.updateNodeData(store.modalNodeId!, {
     groupCols: upstreamCols.value.map((c: VisibleCol) => c.name),
+    _groupColsUserSet: true,
   })
 }
 
 function clearGroupCols() {
-  store.updateNodeData(store.modalNodeId!, { groupCols: [] })
+  store.updateNodeData(store.modalNodeId!, { groupCols: [], _groupColsUserSet: true })
 }
 
 const groupColCount = computed(() =>
@@ -1070,17 +1650,19 @@ function selectAggCol(i: number, colName: string) {
   closeAggDropdown()
 }
 
-// ── Finish = save config + generate SQL + close ───────────────────────────
+// ── Finish = apply sort defaults + generate SQL + close tool modal ────────
 function finish() {
-  if (nodeType.value === 'sort' && store.modalNodeId && !sortItems.value.length && !sortExplicitlyCleared.value && upstreamCols.value.length) {
-    store.updateNodeData(store.modalNodeId, {
-      items: upstreamCols.value.map((c: VisibleCol) => ({ col: c.name, dir: 'ASC' as 'ASC' | 'DESC' })),
-    })
-  }
   // Node is confirmed — clear the "new, unsaved" tracking
   store.newToolNodeId = null
   generateSQL()
   store.modalNodeId = null
+}
+
+// ── Finish & Save = close tool modal → open FinishModal ──────────────────
+async function finishAndSave() {
+  finish()                    // apply sort defaults + generateSQL + close tool modal
+  await nextTick()            // let Vue flush the modal-close DOM update first
+  store.openFinishModal()     // then trigger FinishModal via store action
 }
 
 function close() {
@@ -1108,14 +1690,15 @@ const AGG_COLORS: Record<string, string> = {
 // Finish button color per tool type
 const finishBtnStyle = computed(() => {
   const map: Record<string, string> = {
-    cte:   '#8b5cf6',
-    group: '#f97316',
-    sort:  '#22c55e',
-    where: '#f43f5e',
-    calc:  '#14b8a6',
-    union: '#eab308',
+    cte:      '#8b5cf6',
+    group:    '#f97316',
+    sort:     '#22c55e',
+    where:    '#f43f5e',
+    calc:     '#14b8a6',
+    union:    '#eab308',
+    subquery: '#6366f1',
   }
-  return { backgroundColor: map[nodeType.value ?? ''] ?? '#14b8a6' }
+  return { backgroundColor: map[nodeType.value ?? ''] ?? '#6366f1' }
 })
 </script>
 
@@ -1152,7 +1735,7 @@ const finishBtnStyle = computed(() => {
             </div>
           </button>
         </template>
-        <div v-if="!groupedUpstreamCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">ไม่พบ columns — เชื่อมต่อ table node ก่อน</div>
+        <div v-if="!groupedUpstreamCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">{{ t('sqlbuilder_tool_config_no_upstream_general') }}</div>
       </div>
     </div>
   </Teleport>
@@ -1170,7 +1753,7 @@ const finishBtnStyle = computed(() => {
     >
       <div class="overflow-y-auto max-h-[240px]">
         <button
-          v-for="c in unionAvailableCols" :key="c.name"
+          v-for="c in unionOutputCols" :key="c.name"
           @click="selectUnionCondCol(openUnionCondColIdx!, c)"
           :class="['w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-yellow-500/8 transition-colors',
             store.modalNode?.data?.conditions?.[openUnionCondColIdx!]?.column === c.name ? 'bg-yellow-500/10' : '']"
@@ -1182,7 +1765,48 @@ const finishBtnStyle = computed(() => {
             <span v-if="c.remark" class="text-[9px] text-muted-foreground/55 truncate">{{ c.remark }}</span>
           </div>
         </button>
-        <div v-if="!unionAvailableCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">ลาก table node ลง canvas ก่อน</div>
+        <div v-if="!unionOutputCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">{{ t('sqlbuilder_tool_config_define_output_first') }}</div>
+      </div>
+    </div>
+  </Teleport>
+
+  <!-- Union mapping pick dropdown -->
+  <Teleport to="body">
+    <div v-if="openPickKey !== null" class="fixed inset-0 z-[190]" @click="closeMappingPickDrop" />
+  </Teleport>
+  <Teleport to="body">
+    <div v-if="openPickKey !== null && pickDropPos !== null"
+      class="fixed z-[200] bg-background border border-border/50 rounded-xl shadow-2xl overflow-hidden"
+      :style="{ top: pickDropPos.top + 'px', left: pickDropPos.left + 'px', width: pickDropPos.width + 'px', maxHeight: '260px' }"
+      @click.stop>
+      <div class="overflow-y-auto max-h-[260px]">
+        <!-- NULL option -->
+        <button @click="selectMappingPick('')"
+          :class="['w-full flex items-center px-3 py-2 text-left hover:bg-muted/40 transition-colors',
+            !unionColMapping[pickDropRow]?.picks[pickDropSrc] ? 'bg-muted/20' : '']">
+          <span class="text-[10px] font-mono text-muted-foreground/50 italic">— NULL —</span>
+          <svg v-if="!unionColMapping[pickDropRow]?.picks[pickDropSrc]" class="size-3 text-muted-foreground/50 ml-auto shrink-0" fill="none" viewBox="0 0 10 10">
+            <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+          </svg>
+        </button>
+        <!-- Column options -->
+        <button v-for="col in (unionGroupedCols.find(g => g.sourceId === pickDropSrc)?.cols ?? [])"
+          :key="col.name"
+          @click="selectMappingPick(col.name)"
+          :disabled="!!getRowReferenceType(unionColMapping[pickDropRow]!) && !isTypeCompatible(getRowReferenceType(unionColMapping[pickDropRow]!), getUnionPickType(pickDropSrc, col.name))"
+          :class="['w-full flex items-center gap-2 px-3 py-2 text-left transition-colors disabled:opacity-30 disabled:cursor-not-allowed',
+            unionColMapping[pickDropRow]?.picks[pickDropSrc] === col.name ? 'bg-yellow-500/10 hover:bg-yellow-500/15' : 'hover:bg-muted/40']">
+          <span :class="['text-[7px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(col.type).cls]">
+            {{ getColTypeBadge(col.type).label }}
+          </span>
+          <span class="text-[10px] font-mono truncate flex-1">{{ col.name }}</span>
+          <svg v-if="unionColMapping[pickDropRow]?.picks[pickDropSrc] === col.name"
+            class="size-3 text-yellow-500 shrink-0" fill="none" viewBox="0 0 10 10">
+            <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+          </svg>
+          <span v-else-if="!!getRowReferenceType(unionColMapping[pickDropRow]!) && !isTypeCompatible(getRowReferenceType(unionColMapping[pickDropRow]!), getUnionPickType(pickDropSrc, col.name))"
+            class="text-[7px] text-rose-400/70 shrink-0 font-bold">✕ type</span>
+        </button>
       </div>
     </div>
   </Teleport>
@@ -1214,7 +1838,7 @@ const finishBtnStyle = computed(() => {
             <span v-if="c.remark" class="text-[9px] text-muted-foreground/55 truncate">{{ c.remark }}</span>
           </div>
         </button>
-        <div v-if="!upstreamCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">เชื่อมต่อ table node เข้ากับ CTE node ก่อน</div>
+        <div v-if="!upstreamCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">{{ t('sqlbuilder_tool_config_no_upstream_cte') }}</div>
       </div>
     </div>
   </Teleport>
@@ -1251,7 +1875,7 @@ const finishBtnStyle = computed(() => {
             </div>
           </button>
         </template>
-        <div v-if="!groupedUpstreamCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">ไม่พบ columns — เชื่อมต่อ table node ก่อน</div>
+        <div v-if="!groupedUpstreamCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">{{ t('sqlbuilder_tool_config_no_upstream_general') }}</div>
       </div>
     </div>
   </Teleport>
@@ -1288,7 +1912,7 @@ const finishBtnStyle = computed(() => {
             </div>
           </button>
         </template>
-        <div v-if="!groupedUpstreamCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">ไม่พบ columns — เชื่อมต่อ table node ก่อน</div>
+        <div v-if="!groupedUpstreamCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">{{ t('sqlbuilder_tool_config_no_upstream_general') }}</div>
       </div>
     </div>
   </Teleport>
@@ -1325,7 +1949,7 @@ const finishBtnStyle = computed(() => {
             </div>
           </button>
         </template>
-        <div v-if="!groupedUpstreamCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">ไม่พบ columns — เชื่อมต่อ table node ก่อน</div>
+        <div v-if="!groupedUpstreamCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">{{ t('sqlbuilder_tool_config_no_upstream_general') }}</div>
       </div>
     </div>
   </Teleport>
@@ -1356,7 +1980,7 @@ const finishBtnStyle = computed(() => {
             <span v-if="c.remark && c.remark !== c.name" class="text-[9px] text-muted-foreground/55 truncate">{{ c.remark }}</span>
           </div>
         </button>
-        <div v-if="!havingCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">เพิ่ม Aggregation ก่อน</div>
+        <div v-if="!havingCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">{{ t('sqlbuilder_tool_config_need_aggregation') }}</div>
       </div>
     </div>
   </Teleport>
@@ -1371,8 +1995,9 @@ const finishBtnStyle = computed(() => {
       <div
         :class="[
           'bg-background rounded-2xl border shadow-2xl flex flex-col overflow-hidden',
-          nodeType === 'union' ? 'w-full max-w-[1000px]' :
-          nodeType === 'cte'   ? 'w-full max-w-[900px]' :
+          nodeType === 'union'    ? 'w-full max-w-[860px]' :
+          nodeType === 'cte'      ? 'w-full max-w-[900px]' :
+          nodeType === 'subquery' ? 'w-full max-w-[960px]' :
           (nodeType === 'group' || nodeType === 'sort' || nodeType === 'calc' || nodeType === 'where') ? 'w-full max-w-[960px]' : 'w-[440px]',
         ]"
         style="height: 85vh"
@@ -1384,22 +2009,56 @@ const finishBtnStyle = computed(() => {
             <component :is="meta.icon" :class="['size-4', meta.color]" />
           </div>
           <div class="flex-1 min-w-0">
-            <span :class="['font-bold text-sm', meta.color]">{{ meta.label }}</span>
-            <p v-if="nodeType === 'cte'" class="text-[10px] text-muted-foreground mt-0.5">
-              ตั้งชื่อ CTE และเลือก columns + WHERE filter
-            </p>
-            <p v-else-if="nodeType === 'group'" class="text-[10px] text-muted-foreground mt-0.5">
-              เลือก fields สำหรับ GROUP BY และกำหนด Aggregate Functions
-            </p>
-            <p v-else-if="nodeType === 'sort'" class="text-[10px] text-muted-foreground mt-0.5">
-              เลือก columns และกำหนดทิศทางการเรียงลำดับ (ASC / DESC)
-            </p>
-            <p v-else-if="nodeType === 'calc'" class="text-[10px] text-muted-foreground mt-0.5">
-              สร้าง calculated columns ด้วย SQL expressions
-            </p>
-            <p v-else-if="nodeType === 'where'" class="text-[10px] text-muted-foreground mt-0.5">
-              เพิ่ม conditions เพื่อกรองข้อมูลใน WHERE clause
-            </p>
+            <!-- Union: show editable CTE name inline -->
+            <template v-if="nodeType === 'union'">
+              <div class="flex items-center gap-2">
+                <span :class="['font-bold text-sm shrink-0', meta.color]">{{ meta.label }}</span>
+                <span class="text-muted-foreground/30 text-sm shrink-0">/</span>
+                <input
+                  :value="store.modalNode?.data?.name ?? ''"
+                  @input="tn.setModalData({ name: ($event.target as HTMLInputElement).value })"
+                  :placeholder="store.modalNode?.data?.name ? '' : t('sqlbuilder_tool_config_cte_name_ph')"
+                  spellcheck="false"
+                  class="flex-1 min-w-0 bg-transparent text-sm font-semibold text-yellow-400/90 placeholder:text-muted-foreground/30 placeholder:font-normal focus:outline-none border-b border-transparent focus:border-yellow-500/40 transition-colors pb-px"
+                />
+              </div>
+              <p class="text-[9px] text-muted-foreground/40 mt-0.5">{{ t('sqlbuilder_tool_config_union_cte_name_desc') }}</p>
+            </template>
+            <template v-else>
+              <!-- CTE: show editable name inline -->
+              <template v-if="nodeType === 'cte'">
+                <div class="flex items-center gap-2">
+                  <span :class="['font-bold text-sm shrink-0', meta.color]">{{ meta.label }}</span>
+                  <span class="text-muted-foreground/30 text-sm shrink-0">/</span>
+                  <input
+                    :value="store.modalNode?.data?.name ?? ''"
+                    @input="tn.setModalData({ name: ($event.target as HTMLInputElement).value })"
+                    :placeholder="t('sqlbuilder_tool_config_cte_name_ph')"
+                    spellcheck="false"
+                    class="flex-1 min-w-0 bg-transparent text-sm font-semibold text-violet-400/90 placeholder:text-muted-foreground/30 placeholder:font-normal focus:outline-none border-b border-transparent focus:border-violet-500/40 transition-colors pb-px"
+                  />
+                </div>
+                <p class="text-[9px] text-muted-foreground/40 mt-0.5">{{ t('sqlbuilder_tool_config_cte_name_desc') }}</p>
+              </template>
+              <template v-else>
+                <span :class="['font-bold text-sm', meta.color]">{{ meta.label }}</span>
+              <p v-if="nodeType === 'group'" class="text-[10px] text-muted-foreground mt-0.5">
+                {{ t('sqlbuilder_tool_config_group_subtitle') }}
+              </p>
+              <p v-else-if="nodeType === 'sort'" class="text-[10px] text-muted-foreground mt-0.5">
+                {{ t('sqlbuilder_tool_config_sort_subtitle') }}
+              </p>
+              <p v-else-if="nodeType === 'calc'" class="text-[10px] text-muted-foreground mt-0.5">
+                {{ t('sqlbuilder_tool_config_calc_subtitle') }}
+              </p>
+              <p v-else-if="nodeType === 'where'" class="text-[10px] text-muted-foreground mt-0.5">
+                {{ t('sqlbuilder_tool_config_where_subtitle') }}
+              </p>
+              <p v-else-if="nodeType === 'subquery'" class="text-[10px] text-muted-foreground mt-0.5">
+                {{ t('sqlbuilder_tool_config_subquery_subtitle') }}
+              </p>
+              </template><!-- /else nodeType -->
+            </template><!-- /else not union -->
           </div>
           <button @click="close"
             class="size-7 flex items-center justify-center rounded-lg hover:bg-accent text-muted-foreground transition-colors">
@@ -1425,7 +2084,7 @@ const finishBtnStyle = computed(() => {
               <div class="flex items-center justify-between">
                 <div>
                   <p class="text-xs font-bold text-violet-500">SELECT Columns</p>
-                  <p class="text-[10px] text-muted-foreground mt-0.5">ไม่เลือก = SELECT * (ทุก columns)</p>
+                  <p class="text-[10px] text-muted-foreground mt-0.5">{{ t('sqlbuilder_tool_config_select_all_hint') }}</p>
                 </div>
                 <div class="flex items-center gap-2">
                   <span class="text-[10px] font-semibold text-violet-500 bg-violet-500/10 px-2 py-0.5 rounded-full">
@@ -1434,7 +2093,7 @@ const finishBtnStyle = computed(() => {
                 </div>
                 <div class="flex gap-1">
                   <button @click="cteGroupedCols.forEach(g => selectAllFromCteGroup(g))"
-                    class="text-[10px] px-2.5 py-1 rounded-lg border border-violet-500/30 text-violet-400 hover:bg-violet-500/10 transition-colors font-medium">ทั้งหมด</button>
+                    class="text-[10px] px-2.5 py-1 rounded-lg border border-violet-500/30 text-violet-400 hover:bg-violet-500/10 transition-colors font-medium">{{ t('sqlbuilder_common_all') }}</button>
                   <button @click="tn.clearCteCols()"
                     class="text-[10px] text-muted-foreground hover:underline">SELECT *</button>
                 </div>
@@ -1443,7 +2102,7 @@ const finishBtnStyle = computed(() => {
               <!-- Search -->
               <div class="relative">
                 <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground/50" />
-                <input v-model="cteColSearch" placeholder="ค้นหา column..."
+                <input v-model="cteColSearch" :placeholder="t('sqlbuilder_common_search_column')"
                   class="w-full text-xs border rounded-lg pl-7 pr-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-violet-400/50 font-mono" />
               </div>
 
@@ -1491,9 +2150,9 @@ const finishBtnStyle = computed(() => {
                     <span v-else class="text-[8px] font-bold px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-400 font-mono">TABLE</span>
                     <span class="font-mono text-[11px] font-semibold text-foreground/90 flex-1 truncate">{{ activeCteGroup.sourceLabel }}</span>
                     <button @click="selectAllFromCteGroup(activeCteGroup)"
-                      class="text-[9px] text-violet-400 hover:underline shrink-0 font-medium">ทั้งหมด</button>
+                      class="text-[9px] text-violet-400 hover:underline shrink-0 font-medium">{{ t('sqlbuilder_common_all') }}</button>
                     <button @click="clearAllFromCteGroup(activeCteGroup)"
-                      class="text-[9px] text-muted-foreground hover:underline shrink-0">ล้าง</button>
+                      class="text-[9px] text-muted-foreground hover:underline shrink-0">{{ t('sqlbuilder_common_clear') }}</button>
                   </div>
 
                   <!-- Search -->
@@ -1502,19 +2161,19 @@ const finishBtnStyle = computed(() => {
                     <input
                       v-model="cteColSearch"
                       class="w-full h-8 pl-7 pr-3 bg-transparent text-[11px] focus:outline-none"
-                      placeholder="ค้นหา column…"
+                      :placeholder="t('sqlbuilder_common_search_column')"
                     />
                   </div>
 
                   <!-- No columns -->
                   <div v-if="!activeCteGroup?.cols.length" class="flex-1 flex items-center justify-center text-[10px] text-muted-foreground/50 italic">
-                    ไม่มีข้อมูล column
+                    {{ t('sqlbuilder_tool_config_no_col_data') }}
                   </div>
 
                   <!-- Column list -->
                   <div v-else class="flex-1 overflow-y-auto">
                     <p v-if="!filteredActiveCols.length && cteColSearch" class="text-[10px] text-muted-foreground/60 italic px-3 py-3">
-                      ไม่พบ "{{ cteColSearch }}"
+                      {{ t('sqlbuilder_tool_config_search_not_found', { q: cteColSearch }) }}
                     </p>
                     <button
                       v-for="c in filteredActiveCols" :key="c.name"
@@ -1562,7 +2221,7 @@ const finishBtnStyle = computed(() => {
 
               <!-- Footer hint -->
               <p v-if="!(store.modalNode?.data?.selectedCols ?? []).length" class="text-[10px] text-muted-foreground/50 italic shrink-0">
-                ไม่เลือก = SELECT * (ทุก columns)
+                {{ t('sqlbuilder_tool_config_select_all_hint') }}
               </p>
             </div>
 
@@ -1581,7 +2240,7 @@ const finishBtnStyle = computed(() => {
                   </label>
                   <button @click="tn.addCteCondition()"
                     class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-rose-500/30 text-rose-400 hover:bg-rose-500/10 transition-colors">
-                    <Plus class="size-2.5" /> เพิ่ม
+                    <Plus class="size-2.5" /> {{ t('sqlbuilder_common_add') }}
                   </button>
                 </div>
 
@@ -1611,7 +2270,7 @@ const finishBtnStyle = computed(() => {
                           <p v-if="upstreamCols.find(c => c.name === cond.column)?.remark" class="font-mono text-[9px] text-muted-foreground/60 truncate">{{ cond.column }}</p>
                         </div>
                       </template>
-                      <span v-else class="text-muted-foreground text-[11px] flex-1">— เลือก Column —</span>
+                      <span v-else class="text-muted-foreground text-[11px] flex-1">{{ t('sqlbuilder_common_select_column') }}</span>
                       <ChevronDown :class="['size-3 shrink-0 text-muted-foreground transition-transform', openCteCondColIdx === +i ? 'rotate-180' : '']" />
                     </button>
                     <div class="flex flex-col gap-1.5">
@@ -1622,7 +2281,7 @@ const finishBtnStyle = computed(() => {
                       </div>
                     </div>
                     <div v-if="cond.operator && !['IS NULL', 'IS NOT NULL'].includes(cond.operator)" class="flex items-center gap-2">
-                      <label class="text-[10px] font-semibold text-muted-foreground w-8 shrink-0">ค่า</label>
+                      <label class="text-[10px] font-semibold text-muted-foreground w-8 shrink-0">{{ t('sqlbuilder_common_value') }}</label>
                       <div v-if="isDateCol(cond.column)" class="flex-1 relative flex items-center">
                         <input :ref="(el) => setCteDateRef(Number(i), el)" type="date" :value="cond.value"
                           @input="tn.setCteCondition(+i, { value: ($event.target as HTMLInputElement).value })"
@@ -1635,7 +2294,7 @@ const finishBtnStyle = computed(() => {
                       </div>
                       <input v-else :value="cond.value"
                         @input="tn.setCteCondition(+i, { value: ($event.target as HTMLInputElement).value })"
-                        :placeholder="cond.operator === 'LIKE' ? 'เช่น %keyword%' : cond.operator === 'IN' ? 'เช่น 1,2,3' : 'ค่าที่ต้องการ'"
+                        :placeholder="cond.operator === 'LIKE' ? t('sqlbuilder_tool_config_ph_like') : cond.operator === 'IN' ? t('sqlbuilder_tool_config_ph_in') : t('sqlbuilder_tool_config_ph_value')"
                         class="flex-1 text-xs border rounded-lg px-2.5 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-rose-400/50 font-mono"
                         :class="cond.value ? 'border-rose-400/40' : ''" />
                     </div>
@@ -1646,7 +2305,7 @@ const finishBtnStyle = computed(() => {
                     </div>
                   </div>
                 </div>
-                <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">ไม่มี filter = ดึงข้อมูลทั้งหมด</p>
+                <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">{{ t('sqlbuilder_tool_config_no_filter_all') }}</p>
               </div>
 
               <!-- SQL Preview -->
@@ -1672,7 +2331,7 @@ const finishBtnStyle = computed(() => {
               <div class="flex items-center justify-between">
                 <div>
                   <p class="text-xs font-bold text-teal-500">Calculated Columns</p>
-                  <p class="text-[10px] text-muted-foreground mt-0.5">สร้าง calculated columns ด้วย SQL expressions</p>
+                  <p class="text-[10px] text-muted-foreground mt-0.5">{{ t('sqlbuilder_tool_config_calc_subtitle') }}</p>
                 </div>
                 <span class="text-[10px] font-semibold text-teal-500 bg-teal-500/10 px-2 py-0.5 rounded-full">
                   {{ calcItemCount }}
@@ -1716,13 +2375,13 @@ const finishBtnStyle = computed(() => {
                           <p v-if="upstreamCols.find(c => c.name === item.col)?.remark" class="font-mono text-[9px] text-muted-foreground/60 truncate">{{ item.col }}</p>
                         </div>
                       </template>
-                      <span v-else class="text-muted-foreground text-[11px] flex-1">— เลือก Column —</span>
+                      <span v-else class="text-muted-foreground text-[11px] flex-1">{{ t('sqlbuilder_common_select_column') }}</span>
                       <ChevronDown :class="['size-3 shrink-0 text-muted-foreground transition-transform', openCalcColIdx === Number(i) ? 'rotate-180' : '']" />
                     </button>
                     <input
                       :value="item.alias"
                       @input="tn.setCalcItem(Number(i), { alias: ($event.target as HTMLInputElement).value })"
-                      placeholder="ชื่อ output"
+                      :placeholder="t('sqlbuilder_tool_config_alias_ph')"
                       class="w-28 text-xs border rounded-lg px-2.5 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-teal-400/50 font-mono"
                       :class="item.alias ? 'border-teal-400/40' : ''"
                     />
@@ -1730,7 +2389,7 @@ const finishBtnStyle = computed(() => {
 
                   <!-- Operation pills grouped by category -->
                   <div class="flex flex-col gap-1.5">
-                    <p class="text-[10px] font-semibold text-muted-foreground">การคำนวณ</p>
+                    <p class="text-[10px] font-semibold text-muted-foreground">{{ t('sqlbuilder_tool_config_calc_label') }}</p>
                     <div class="flex flex-wrap gap-1">
                       <span class="text-[9px] text-muted-foreground/50 self-center w-12 shrink-0">Math</span>
                       <button v-for="op in CALC_OPS.filter(o => o.group === 'math')" :key="op.id"
@@ -1765,7 +2424,7 @@ const finishBtnStyle = computed(() => {
 
                   <!-- Value input -->
                   <div v-if="item.op && calcNeedsValue(item.op)" class="flex items-center gap-2">
-                    <label class="text-[10px] font-semibold text-muted-foreground w-12 shrink-0">ค่า</label>
+                    <label class="text-[10px] font-semibold text-muted-foreground w-12 shrink-0">{{ t('sqlbuilder_common_value') }}</label>
                     <input
                       :value="item.value"
                       @input="tn.setCalcItem(Number(i), { value: ($event.target as HTMLInputElement).value })"
@@ -1788,7 +2447,7 @@ const finishBtnStyle = computed(() => {
 
               <button @click="tn.addCalcItem"
                 class="text-xs w-full py-2 rounded-xl border border-dashed border-teal-500/40 text-teal-600 hover:bg-teal-500/10 font-semibold transition-colors flex items-center justify-center gap-1.5">
-                <Plus class="size-3.5" /> เพิ่ม Calculated Column
+                <Plus class="size-3.5" /> {{ t('sqlbuilder_tool_config_add_calc_column') }}
               </button>
             </div><!-- /LEFT -->
 
@@ -1806,7 +2465,7 @@ const finishBtnStyle = computed(() => {
                   </label>
                   <button @click="tn.addCalcFilter()"
                     class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-rose-500/30 text-rose-400 hover:bg-rose-500/10 transition-colors">
-                    <Plus class="size-2.5" /> เพิ่ม
+                    <Plus class="size-2.5" /> {{ t('sqlbuilder_common_add') }}
                   </button>
                 </div>
 
@@ -1846,7 +2505,7 @@ const finishBtnStyle = computed(() => {
                           <p v-if="upstreamCols.find(c => c.name === f.column)?.remark" class="font-mono text-[9px] text-muted-foreground/60 truncate">{{ f.column }}</p>
                         </div>
                       </template>
-                      <span v-else class="text-muted-foreground text-[11px] flex-1">— เลือก Column —</span>
+                      <span v-else class="text-muted-foreground text-[11px] flex-1">{{ t('sqlbuilder_common_select_column') }}</span>
                       <ChevronDown :class="['size-3 shrink-0 text-muted-foreground transition-transform', openCalcFilterColIdx === Number(i) ? 'rotate-180' : '']" />
                     </button>
 
@@ -1861,7 +2520,7 @@ const finishBtnStyle = computed(() => {
 
                     <!-- Value input -->
                     <div v-if="f.operator && !['IS NULL', 'IS NOT NULL'].includes(f.operator)" class="flex items-center gap-2">
-                      <label class="text-[10px] font-semibold text-muted-foreground w-8 shrink-0">ค่า</label>
+                      <label class="text-[10px] font-semibold text-muted-foreground w-8 shrink-0">{{ t('sqlbuilder_common_value') }}</label>
                       <div v-if="isDateCol(f.column)" class="flex-1 relative flex items-center">
                         <input
                           :ref="(el) => setCalcFilterDateRef(Number(i), el)"
@@ -1877,7 +2536,7 @@ const finishBtnStyle = computed(() => {
                       </div>
                       <input v-else :value="f.value"
                         @input="tn.setCalcFilter(Number(i), { value: ($event.target as HTMLInputElement).value })"
-                        :placeholder="f.operator === 'LIKE' ? 'เช่น %keyword%' : f.operator === 'IN' ? 'เช่น 1,2,3' : 'ค่าที่ต้องการ'"
+                        :placeholder="f.operator === 'LIKE' ? t('sqlbuilder_tool_config_ph_like') : f.operator === 'IN' ? t('sqlbuilder_tool_config_ph_in') : t('sqlbuilder_tool_config_ph_value')"
                         class="flex-1 text-xs border rounded-lg px-2.5 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-rose-400/50 font-mono"
                         :class="f.value ? 'border-rose-400/40' : ''"
                       />
@@ -1891,7 +2550,7 @@ const finishBtnStyle = computed(() => {
                     </div>
                   </div>
                 </div>
-                <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">ไม่มี filter = นำข้อมูลทั้งหมดมาคำนวณ</p>
+                <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">{{ t('sqlbuilder_tool_config_no_filter_calc') }}</p>
               </div>
 
               <!-- SQL Preview -->
@@ -1918,29 +2577,38 @@ const finishBtnStyle = computed(() => {
                 <div class="flex items-center justify-between">
                   <div>
                     <p class="text-xs font-bold text-orange-500">GROUP BY Fields</p>
-                    <p class="text-[10px] text-muted-foreground mt-0.5">เลือก columns ที่จะใช้ใน GROUP BY clause</p>
+                    <p class="text-[10px] text-muted-foreground mt-0.5">{{ t('sqlbuilder_tool_config_group_fields_desc') }}</p>
                   </div>
                   <div class="flex items-center gap-2">
                     <span class="text-[10px] font-semibold text-orange-500 bg-orange-500/10 px-2 py-0.5 rounded-full">
                       {{ groupColCount }}/{{ upstreamCols.length }}
                     </span>
                     <button @click="selectAllGroupCols"
-                      class="text-[10px] text-orange-500 hover:underline font-semibold">ทั้งหมด</button>
+                      class="text-[10px] text-orange-500 hover:underline font-semibold">{{ t('sqlbuilder_common_all') }}</button>
                     <span class="text-muted-foreground text-[10px]">/</span>
                     <button @click="clearGroupCols"
-                      class="text-[10px] text-muted-foreground hover:underline">ล้าง</button>
+                      class="text-[10px] text-muted-foreground hover:underline">{{ t('sqlbuilder_common_clear') }}</button>
                   </div>
+                </div>
+
+                <!-- Warning: too many columns selected for GROUP BY -->
+                <div v-if="upstreamCols.length > 0 && groupColCount >= upstreamCols.length"
+                  class="flex items-start gap-2 px-3 py-2 rounded-lg bg-rose-500/10 border border-rose-400/30 text-[10px] text-rose-400">
+                  <span class="shrink-0 font-bold mt-0.5">⚠</span>
+                  <i18n-t keypath="sqlbuilder_tool_config_group_warn_all" tag="span">
+                    <template #clear><button @click="clearGroupCols" class="font-bold underline">{{ t('sqlbuilder_common_clear') }}</button></template>
+                  </i18n-t>
                 </div>
 
                 <div class="relative">
                   <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground/50" />
-                  <input v-model="colSearch" placeholder="ค้นหา column..."
+                  <input v-model="colSearch" :placeholder="t('sqlbuilder_common_search_column')"
                     class="w-full text-xs border rounded-lg pl-7 pr-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-orange-400/50 font-mono" />
                 </div>
 
                 <div v-if="!upstreamCols.length"
                   class="flex items-center gap-2 px-3 py-3 rounded-lg bg-muted/30 text-[10px] text-muted-foreground italic">
-                  ยังไม่มี columns — เชื่อมต่อ table node เข้ากับ GROUP BY node ก่อน
+                  {{ t('sqlbuilder_tool_config_no_upstream_group') }}
                 </div>
 
                 <div v-else class="border rounded-lg overflow-hidden max-h-[300px] overflow-y-auto">
@@ -1974,7 +2642,7 @@ const finishBtnStyle = computed(() => {
                   </template>
                   <div v-if="filteredGroupedCols.length === 0"
                     class="px-3 py-3 text-[10px] text-muted-foreground/60 italic text-center">
-                    {{ colSearch ? `ไม่พบ column ที่ตรงกับ "${colSearch}"` : 'กำลังโหลด columns...' }}
+                    {{ colSearch ? t('sqlbuilder_tool_config_loading_match', { q: colSearch }) : t('sqlbuilder_tool_config_loading_cols') }}
                   </div>
                 </div>
               </div>
@@ -2020,7 +2688,7 @@ const finishBtnStyle = computed(() => {
                             <p v-if="upstreamCols.find(c => c.name === agg.col)?.remark" class="font-mono text-[9px] text-muted-foreground/60 truncate">{{ agg.col }}</p>
                           </div>
                         </template>
-                        <span v-else class="text-muted-foreground text-[11px] flex-1">— เลือก Column —</span>
+                        <span v-else class="text-muted-foreground text-[11px] flex-1">{{ t('sqlbuilder_common_select_column') }}</span>
                         <ChevronDown :class="['size-3 shrink-0 text-muted-foreground transition-transform', openAggColIdx === Number(i) ? 'rotate-180' : '']" />
                       </button>
                       <input :value="agg.alias" @input="tn.setAgg(Number(i), { alias: ($event.target as HTMLInputElement).value })"
@@ -2033,7 +2701,7 @@ const finishBtnStyle = computed(() => {
 
                 <button @click="tn.addAgg"
                   class="text-xs w-full py-2 rounded-xl border border-dashed border-orange-500/40 text-orange-600 hover:bg-orange-500/8 font-semibold transition-colors flex items-center justify-center gap-1.5">
-                  <Plus class="size-3.5" /> เพิ่ม Aggregation
+                  <Plus class="size-3.5" /> {{ t('sqlbuilder_tool_config_add_aggregation') }}
                 </button>
               </div>
 
@@ -2051,7 +2719,7 @@ const finishBtnStyle = computed(() => {
                   </label>
                   <button @click="tn.addGroupFilter()"
                     class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-amber-500/30 text-amber-500 hover:bg-amber-500/10 transition-colors">
-                    <Plus class="size-2.5" /> เพิ่ม
+                    <Plus class="size-2.5" /> {{ t('sqlbuilder_common_add') }}
                   </button>
                 </div>
 
@@ -2079,7 +2747,7 @@ const finishBtnStyle = computed(() => {
                         </span>
                         <span class="font-mono text-[11px] flex-1 truncate">{{ f.column }}</span>
                       </template>
-                      <span v-else class="text-muted-foreground text-[11px] flex-1">— เลือก Aggregate / Column —</span>
+                      <span v-else class="text-muted-foreground text-[11px] flex-1">{{ t('sqlbuilder_tool_config_select_agg_or_col') }}</span>
                       <ChevronDown :class="['size-3 shrink-0 text-muted-foreground transition-transform', openGroupFilterColIdx === Number(i) ? 'rotate-180' : '']" />
                     </button>
                     <div class="flex flex-col gap-1.5">
@@ -2089,7 +2757,7 @@ const finishBtnStyle = computed(() => {
                       </div>
                     </div>
                     <div v-if="f.operator && !['IS NULL', 'IS NOT NULL'].includes(f.operator)" class="flex items-center gap-2">
-                      <label class="text-[10px] font-semibold text-muted-foreground w-8 shrink-0">ค่า</label>
+                      <label class="text-[10px] font-semibold text-muted-foreground w-8 shrink-0">{{ t('sqlbuilder_common_value') }}</label>
                       <div v-if="isDateCol(f.column)" class="flex-1 relative flex items-center">
                         <input :ref="(el) => setGroupFilterDateRef(Number(i), el)" type="date" :value="f.value"
                           @input="tn.setGroupFilter(Number(i), { value: ($event.target as HTMLInputElement).value })"
@@ -2101,7 +2769,7 @@ const finishBtnStyle = computed(() => {
                         </button>
                       </div>
                       <input v-else :value="f.value" @input="tn.setGroupFilter(Number(i), { value: ($event.target as HTMLInputElement).value })"
-                        :placeholder="f.operator === 'LIKE' ? 'เช่น %keyword%' : f.operator === 'IN' ? 'เช่น 1,2,3' : 'ค่าที่ต้องการ'"
+                        :placeholder="f.operator === 'LIKE' ? t('sqlbuilder_tool_config_ph_like') : f.operator === 'IN' ? t('sqlbuilder_tool_config_ph_in') : t('sqlbuilder_tool_config_ph_value')"
                         class="flex-1 text-xs border rounded-lg px-2.5 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-amber-400/50 font-mono"
                         :class="f.value ? 'border-amber-400/40' : ''" />
                     </div>
@@ -2112,7 +2780,7 @@ const finishBtnStyle = computed(() => {
                     </div>
                   </div>
                 </div>
-                <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">ไม่มี HAVING</p>
+                <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">{{ t('sqlbuilder_tool_config_no_having') }}</p>
               </div>
 
               <!-- WHERE Pre-filter -->
@@ -2124,7 +2792,7 @@ const finishBtnStyle = computed(() => {
                   </label>
                   <button @click="tn.addWhereCondition()"
                     class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-rose-500/30 text-rose-400 hover:bg-rose-500/10 transition-colors">
-                    <Plus class="size-2.5" /> เพิ่ม
+                    <Plus class="size-2.5" /> {{ t('sqlbuilder_common_add') }}
                   </button>
                 </div>
 
@@ -2155,7 +2823,7 @@ const finishBtnStyle = computed(() => {
                           <p v-if="upstreamCols.find(c => c.name === cond.column)?.remark" class="font-mono text-[9px] text-muted-foreground/60 truncate">{{ cond.column }}</p>
                         </div>
                       </template>
-                      <span v-else class="text-muted-foreground text-[11px] flex-1">— เลือก Column —</span>
+                      <span v-else class="text-muted-foreground text-[11px] flex-1">{{ t('sqlbuilder_common_select_column') }}</span>
                       <ChevronDown :class="['size-3 shrink-0 text-muted-foreground transition-transform', openWhereColIdx === Number(i) ? 'rotate-180' : '']" />
                     </button>
                     <div class="flex flex-col gap-1.5">
@@ -2165,7 +2833,7 @@ const finishBtnStyle = computed(() => {
                       </div>
                     </div>
                     <div v-if="cond.operator && !['IS NULL', 'IS NOT NULL'].includes(cond.operator)" class="flex items-center gap-2">
-                      <label class="text-[10px] font-semibold text-muted-foreground w-8 shrink-0">ค่า</label>
+                      <label class="text-[10px] font-semibold text-muted-foreground w-8 shrink-0">{{ t('sqlbuilder_common_value') }}</label>
                       <div v-if="isDateCol(cond.column)" class="flex-1 relative flex items-center">
                         <input :ref="(el) => setWhereDateRef(Number(i), el)" type="date" :value="cond.value"
                           @input="tn.setWhereCondition(Number(i), { value: ($event.target as HTMLInputElement).value })"
@@ -2177,7 +2845,7 @@ const finishBtnStyle = computed(() => {
                         </button>
                       </div>
                       <input v-else :value="cond.value" @input="tn.setWhereCondition(Number(i), { value: ($event.target as HTMLInputElement).value })"
-                        :placeholder="cond.operator === 'LIKE' ? 'เช่น %keyword%' : cond.operator === 'IN' ? 'เช่น 1,2,3' : 'ค่าที่ต้องการ'"
+                        :placeholder="cond.operator === 'LIKE' ? t('sqlbuilder_tool_config_ph_like') : cond.operator === 'IN' ? t('sqlbuilder_tool_config_ph_in') : t('sqlbuilder_tool_config_ph_value')"
                         class="flex-1 text-xs border rounded-lg px-2.5 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-rose-400/50 font-mono"
                         :class="cond.value ? 'border-rose-400/40' : ''" />
                     </div>
@@ -2188,16 +2856,26 @@ const finishBtnStyle = computed(() => {
                     </div>
                   </div>
                 </div>
-                <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">ไม่มี pre-filter</p>
+                <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">{{ t('sqlbuilder_tool_config_no_pre_filter') }}</p>
               </div>
 
-              <!-- SQL Preview -->
-              <div class="px-3 py-2 rounded-lg bg-orange-500/5 border border-orange-400/20 max-h-[120px] overflow-y-auto overflow-x-auto">
-                <div class="flex items-start gap-1.5">
-                  <span class="text-[9px] font-bold text-orange-500 shrink-0 mt-0.5">SQL</span>
-                  <code class="text-[9px] font-mono text-orange-300/80 leading-relaxed whitespace-pre">{{ groupSqlPreview }}</code>
+              <!-- SQL Preview (editable) -->
+              <div class="rounded-lg bg-orange-500/5 border border-orange-400/20 overflow-hidden">
+                <div class="flex items-center justify-between px-3 py-1.5 border-b border-orange-400/20">
+                  <span class="text-[9px] font-bold text-orange-500">SQL PREVIEW</span>
+                  <button
+                    v-if="store.modalNode.data.customGroupSql"
+                    @click="store.updateNodeData(store.modalNode.id, { customGroupSql: '' })"
+                    class="text-[9px] text-muted-foreground hover:text-rose-400 transition-colors"
+                  >reset</button>
                 </div>
-              </div>
+                <textarea
+                  :value="store.modalNode.data.customGroupSql || groupSqlPreview"
+                  @input="store.updateNodeData(store.modalNode.id, { customGroupSql: ($event.target as HTMLTextAreaElement).value })"
+                  class="w-full bg-transparent text-[9px] font-mono text-orange-300/80 leading-relaxed resize-y p-2.5 outline-none min-h-[120px]"
+                  rows="10"
+                  spellcheck="false"
+                /></div>
 
             </div><!-- /RIGHT -->
             </div><!-- /grid -->
@@ -2212,27 +2890,27 @@ const finishBtnStyle = computed(() => {
               <div class="flex items-center justify-between">
                 <div>
                   <p class="text-xs font-bold text-green-600">ORDER BY Columns</p>
-                  <p class="text-[10px] text-muted-foreground mt-0.5">เลือก columns และกำหนด ASC / DESC ต่อ column</p>
+                  <p class="text-[10px] text-muted-foreground mt-0.5">{{ t('sqlbuilder_tool_config_sort_subtitle') }}</p>
                 </div>
                 <div class="flex items-center gap-2">
                   <span class="text-[10px] font-semibold text-green-600 bg-green-500/10 px-2 py-0.5 rounded-full">
                     {{ sortItemCount }}/{{ upstreamCols.length }}
                   </span>
-                  <button @click="selectAllSortCols" class="text-[10px] text-green-600 hover:underline font-semibold">ทั้งหมด</button>
+                  <button @click="selectAllSortCols" class="text-[10px] text-green-600 hover:underline font-semibold">{{ t('sqlbuilder_common_all') }}</button>
                   <span class="text-muted-foreground text-[10px]">/</span>
-                  <button @click="clearSortCols" class="text-[10px] text-muted-foreground hover:underline">ล้าง</button>
+                  <button @click="clearSortCols" class="text-[10px] text-muted-foreground hover:underline">{{ t('sqlbuilder_common_clear') }}</button>
                 </div>
               </div>
 
               <div class="relative">
                 <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground/50" />
-                <input v-model="sortColSearch" placeholder="ค้นหา column..."
+                <input v-model="sortColSearch" :placeholder="t('sqlbuilder_common_search_column')"
                   class="w-full text-xs border rounded-lg pl-7 pr-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-green-400/50 font-mono" />
               </div>
 
               <div v-if="!upstreamCols.length"
                 class="flex items-center gap-2 px-3 py-3 rounded-lg bg-muted/30 text-[10px] text-muted-foreground italic">
-                ยังไม่มี columns — เชื่อมต่อ table node เข้ากับ ORDER BY node ก่อน
+                {{ t('sqlbuilder_tool_config_no_upstream_sort') }}
               </div>
 
               <div v-else class="border rounded-lg overflow-hidden max-h-[420px] overflow-y-auto">
@@ -2272,7 +2950,7 @@ const finishBtnStyle = computed(() => {
                 </template>
                 <div v-if="filteredGroupedSortCols.length === 0"
                   class="px-3 py-3 text-[10px] text-muted-foreground/60 italic text-center">
-                  {{ sortColSearch ? `ไม่พบ column ที่ตรงกับ "${sortColSearch}"` : 'กำลังโหลด columns...' }}
+                  {{ sortColSearch ? t('sqlbuilder_tool_config_loading_match', { q: sortColSearch }) : t('sqlbuilder_tool_config_loading_cols') }}
                 </div>
               </div>
             </div><!-- /LEFT -->
@@ -2289,7 +2967,7 @@ const finishBtnStyle = computed(() => {
                   </label>
                   <button @click="tn.addWhereCondition()"
                     class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-rose-500/30 text-rose-400 hover:bg-rose-500/10 transition-colors">
-                    <Plus class="size-2.5" /> เพิ่ม
+                    <Plus class="size-2.5" /> {{ t('sqlbuilder_common_add') }}
                   </button>
                 </div>
 
@@ -2320,7 +2998,7 @@ const finishBtnStyle = computed(() => {
                           <p v-if="upstreamCols.find(c => c.name === cond.column)?.remark" class="font-mono text-[9px] text-muted-foreground/60 truncate">{{ cond.column }}</p>
                         </div>
                       </template>
-                      <span v-else class="text-muted-foreground text-[11px] flex-1">— เลือก Column —</span>
+                      <span v-else class="text-muted-foreground text-[11px] flex-1">{{ t('sqlbuilder_common_select_column') }}</span>
                       <ChevronDown :class="['size-3 shrink-0 text-muted-foreground transition-transform', openWhereColIdx === Number(i) ? 'rotate-180' : '']" />
                     </button>
                     <div class="flex flex-col gap-1.5">
@@ -2330,7 +3008,7 @@ const finishBtnStyle = computed(() => {
                       </div>
                     </div>
                     <div v-if="cond.operator && !['IS NULL', 'IS NOT NULL'].includes(cond.operator)" class="flex items-center gap-2">
-                      <label class="text-[10px] font-semibold text-muted-foreground w-8 shrink-0">ค่า</label>
+                      <label class="text-[10px] font-semibold text-muted-foreground w-8 shrink-0">{{ t('sqlbuilder_common_value') }}</label>
                       <div v-if="isDateCol(cond.column)" class="flex-1 relative flex items-center">
                         <input :ref="(el) => setWhereDateRef(Number(i), el)" type="date" :value="cond.value"
                           @input="tn.setWhereCondition(Number(i), { value: ($event.target as HTMLInputElement).value })"
@@ -2342,7 +3020,7 @@ const finishBtnStyle = computed(() => {
                         </button>
                       </div>
                       <input v-else :value="cond.value" @input="tn.setWhereCondition(Number(i), { value: ($event.target as HTMLInputElement).value })"
-                        :placeholder="cond.operator === 'LIKE' ? 'เช่น %keyword%' : cond.operator === 'IN' ? 'เช่น 1,2,3' : 'ค่าที่ต้องการ'"
+                        :placeholder="cond.operator === 'LIKE' ? t('sqlbuilder_tool_config_ph_like') : cond.operator === 'IN' ? t('sqlbuilder_tool_config_ph_in') : t('sqlbuilder_tool_config_ph_value')"
                         class="flex-1 text-xs border rounded-lg px-2.5 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-rose-400/50 font-mono"
                         :class="cond.value ? 'border-rose-400/40' : ''" />
                     </div>
@@ -2353,7 +3031,7 @@ const finishBtnStyle = computed(() => {
                     </div>
                   </div>
                 </div>
-                <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">ไม่มี pre-filter</p>
+                <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">{{ t('sqlbuilder_tool_config_no_pre_filter') }}</p>
               </div>
 
               <!-- SQL Preview -->
@@ -2368,258 +3046,1098 @@ const finishBtnStyle = computed(() => {
             </div><!-- /grid -->
           </template>
 
-          <!-- ── Union ───────────────────────────────────────────────── -->
+          <!-- ── Union (step wizard) ────────────────────────────────── -->
           <template v-else-if="nodeType === 'union'">
+            <div class="flex flex-col flex-1 min-h-0 -mx-5 -mb-5 overflow-hidden">
 
-            <!-- ── Row 1: UNION type + CTE name ────────────────────── -->
-            <div class="flex items-stretch gap-4">
-              <div class="flex gap-2 shrink-0">
-                <button @click="tn.setModalData({ unionType: 'UNION ALL' })"
-                  :class="[
-                    'flex flex-col items-center px-5 py-2.5 rounded-xl border text-xs font-bold transition-colors',
-                    store.modalNode.data.unionType === 'UNION ALL'
-                      ? 'border-yellow-500 bg-yellow-500/15 text-yellow-600'
-                      : 'border-border text-muted-foreground hover:bg-accent',
-                  ]">
-                  UNION ALL
-                  <span class="text-[9px] font-normal opacity-60 mt-0.5">รวมทุก rows</span>
-                </button>
-                <button @click="tn.setModalData({ unionType: 'UNION' })"
-                  :class="[
-                    'flex flex-col items-center px-5 py-2.5 rounded-xl border text-xs font-bold transition-colors',
-                    store.modalNode.data.unionType === 'UNION'
-                      ? 'border-yellow-500 bg-yellow-500/15 text-yellow-600'
-                      : 'border-border text-muted-foreground hover:bg-accent',
-                  ]">
-                  UNION
-                  <span class="text-[9px] font-normal opacity-60 mt-0.5">ตัด duplicates</span>
-                </button>
-              </div>
-              <div class="flex-1 flex flex-col justify-center gap-1">
-                <label class="text-[10px] font-semibold text-yellow-500 uppercase tracking-wide">
-                  CTE Name <span class="normal-case font-normal text-muted-foreground ml-1">(ไม่บังคับ — ใช้ซ้อน Union ได้)</span>
-                </label>
-                <input
-                  :value="store.modalNode?.data?.name ?? ''"
-                  @input="tn.setModalData({ name: ($event.target as HTMLInputElement).value })"
-                  class="h-9 px-3 rounded-lg border bg-background text-sm font-mono focus:outline-none focus:ring-2 focus:ring-yellow-500/40"
-                  placeholder="เช่น union_ap  (ว่าง = auto)"
-                  spellcheck="false"
-                />
-              </div>
-            </div>
-
-            <!-- ── Row 2: Sources | Column picker ───────────────────── -->
-            <div class="grid grid-cols-[minmax(0,260px)_minmax(0,1fr)] gap-4">
-
-            <!-- ── LEFT: Sources ──────────────────────────────────── -->
-            <div class="flex flex-col gap-2 min-w-0">
-              <div class="flex items-center gap-2">
-                <p class="text-[11px] font-semibold text-yellow-500 uppercase tracking-wide flex-1">Sources</p>
-                <span class="text-[10px] text-muted-foreground">{{ unionSources.length ? unionSources.length + ' selected' : 'none' }}</span>
-              </div>
-              <div v-if="!allUnionSources.length"
-                class="flex items-center gap-2 px-3 py-3 rounded-xl bg-yellow-500/5 border border-yellow-500/20 text-[10px] text-muted-foreground">
-                <GitMerge class="size-3.5 text-yellow-500 shrink-0" />
-                วาง Table / CTE node ลง canvas ก่อน
-              </div>
-              <div v-else class="border border-yellow-500/20 rounded-xl divide-y divide-yellow-500/10 overflow-hidden overflow-y-auto max-h-[340px]">
-                <label v-for="(src, si) in allUnionSources" :key="src.id"
-                  class="flex items-center gap-2 px-3 py-2.5 cursor-pointer select-none transition-colors hover:bg-yellow-500/5"
-                  :class="isUnionSourceConnected(src.id) ? 'bg-yellow-500/8' : ''">
+            <!-- ── Step indicator ─────────────────────────────────────── -->
+            <div class="flex items-center px-6 py-3 border-b border-border/40 bg-muted/10 shrink-0 gap-0">
+              <template v-for="(s, i) in UNION_STEPS" :key="s.id">
+                <div class="flex items-center gap-2 shrink-0">
                   <div :class="[
-                    'size-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors',
-                    isUnionSourceConnected(src.id) ? 'bg-yellow-500 border-yellow-500' : 'border-border/60 bg-background',
-                  ]" @click.prevent="toggleUnionSource(src.id)">
-                    <svg v-if="isUnionSourceConnected(src.id)" class="size-2.5 text-white" fill="none" viewBox="0 0 10 10">
-                      <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                    'size-6 rounded-full flex items-center justify-center text-[10px] font-bold transition-all',
+                    unionStep > s.id  ? 'bg-yellow-500/80 text-white' :
+                    unionStep === s.id ? 'bg-yellow-500 text-white ring-2 ring-yellow-500/30' :
+                                         'bg-muted/40 text-muted-foreground/50',
+                  ]">
+                    <svg v-if="unionStep > s.id" class="size-3" fill="none" viewBox="0 0 10 10">
+                      <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
                     </svg>
-                    <input type="checkbox" class="sr-only" :checked="isUnionSourceConnected(src.id)" @change="toggleUnionSource(src.id)" />
+                    <span v-else>{{ s.id }}</span>
                   </div>
                   <span :class="[
-                    'text-[8px] font-bold px-1.5 py-0.5 rounded font-mono uppercase shrink-0',
-                    src.tag === 'TABLE'  ? 'bg-sky-500/20 text-sky-400' :
-                    src.tag === 'CTE'    ? 'bg-violet-500/20 text-violet-400' :
-                    src.tag === 'UNION'  ? 'bg-yellow-500/20 text-yellow-500' :
-                    src.tag === 'GROUP'  ? 'bg-orange-500/20 text-orange-400' :
-                    src.tag === 'CALC'   ? 'bg-teal-500/20 text-teal-400' :
-                                           'bg-muted text-muted-foreground'
-                  ]">{{ src.tag }}</span>
-                  <div class="flex-1 min-w-0">
-                    <p class="font-mono text-[11px] truncate"
-                      :class="isUnionSourceConnected(src.id) ? 'text-yellow-500 font-semibold' : 'text-foreground/80'">
-                      {{ src.label }}
-                    </p>
-                    <p v-if="src.tables.length" class="text-[9px] text-muted-foreground/50 font-mono truncate">
-                      {{ src.tables.slice(0,2).join(', ') }}{{ src.tables.length > 2 ? ' +' + (src.tables.length-2) : '' }}
-                    </p>
-                  </div>
-                  <span v-if="isUnionSourceConnected(src.id) && si < allUnionSources.length-1 && allUnionSources.slice(si+1).some(s => isUnionSourceConnected(s.id))"
-                    class="text-[8px] font-bold text-yellow-500/50 shrink-0">▼</span>
-                </label>
-              </div>
-              <div v-if="unionSources.length >= 2" class="text-center text-[9px] text-yellow-600/60 font-mono">
-                ▲ {{ store.modalNode.data.unionType ?? 'UNION ALL' }} ▲
-              </div>
-            </div><!-- /LEFT -->
-
-            <!-- ── RIGHT: Column picker ────────────────────────────── -->
-            <div class="flex flex-col gap-2 min-w-0">
-              <div class="flex items-center gap-2 flex-wrap">
-                <p class="text-[11px] font-semibold text-yellow-500 uppercase tracking-wide">Columns</p>
-                <span class="text-[10px] font-semibold text-yellow-600 bg-yellow-500/10 px-2 py-0.5 rounded-full shrink-0">{{ unionSelectedCount || '*' }}</span>
-                <button @click="selectUnionCommonCols()" :disabled="!unionCommonCols.length"
-                  :title="unionCommonCols.length ? 'เลือก ' + unionCommonCols.length + ' cols ที่มีในทุก source' : 'ยังไม่มี cols ร่วมกัน'"
-                  :class="[
-                    'text-[10px] font-bold px-2 py-0.5 rounded-md border transition-colors shrink-0',
-                    unionCommonCols.length ? 'border-emerald-500/50 text-emerald-600 bg-emerald-500/10 hover:bg-emerald-500/20' : 'border-border/30 text-muted-foreground/40 cursor-not-allowed',
-                  ]">Auto Match</button>
-                <div class="flex items-center gap-1.5 ml-auto">
-                  <button @click="tn.selectAllUnionSourcesWithCols(unionGroupedCols.map(g => g.sourceId), unionAvailableCols.map((c: any) => c.name))"
-                    class="text-[10px] text-yellow-600 hover:underline font-semibold">ทั้งหมด</button>
-                  <span class="text-muted-foreground text-[10px]">/</span>
-                  <button @click="unionGroupedCols.forEach(g => tn.clearUnionSourceCols(g.sourceId))"
-                    class="text-[10px] text-muted-foreground hover:underline">ล้าง</button>
+                    'text-[10px] font-semibold transition-colors whitespace-nowrap',
+                    unionStep === s.id ? 'text-yellow-500' :
+                    unionStep > s.id  ? 'text-foreground/50' : 'text-muted-foreground/40',
+                  ]">{{ s.label }}</span>
                 </div>
+                <div v-if="i < UNION_STEPS.length - 1" class="flex-1 h-px mx-3 transition-colors"
+                  :class="unionStep > s.id ? 'bg-yellow-500/40' : 'bg-border/30'" />
+              </template>
+            </div>
+
+            <!-- ── Step content ────────────────────────────────────────── -->
+            <div class="flex-1 overflow-y-auto min-h-0">
+
+            <!-- ════ STEP 1: Pick Sources ═══════════════════════════ -->
+            <div v-if="unionStep === 1" class="flex flex-col overflow-hidden">
+
+              <!-- C3: plain-Thai hint explaining UNION in one line so users who
+                   don't know SQL understand what they're about to do. -->
+              <div class="mx-5 mt-3 px-3 py-2 rounded-lg bg-yellow-500/10 border border-yellow-500/25 text-[10px] text-yellow-700 dark:text-yellow-400 flex items-start gap-2 shrink-0">
+                <GitMerge class="size-3.5 mt-0.5 shrink-0" />
+                <i18n-t keypath="sqlbuilder_tool_config_union_explain" tag="span">
+                  <template #label><span class="font-bold">UNION</span></template>
+                </i18n-t>
               </div>
-              <div v-if="unionColWarnings.size"
-                class="flex items-start gap-2 px-3 py-2 rounded-lg bg-rose-500/8 border border-rose-500/30 text-[10px] text-rose-400">
-                <span class="shrink-0 font-bold">⚠</span>
-                <span>column <span class="font-mono font-semibold">{{ [...unionColWarnings].join(', ') }}</span> ไม่มีในบาง source</span>
+
+              <!-- Step 1 header -->
+              <div class="flex items-center gap-2 px-5 py-3 border-b border-border/40 bg-muted/10 shrink-0">
+                <GitMerge class="size-4 text-yellow-500 shrink-0" />
+                <div class="flex-1 min-w-0">
+                  <p class="text-[11px] font-bold text-yellow-500">{{ t('sqlbuilder_tool_config_union_select_sources') }}</p>
+                  <p class="text-[9px] text-muted-foreground/50">{{ t('sqlbuilder_tool_config_union_at_least_2') }}</p>
+                </div>
+                <button @click="selectAllUnionSources()"
+                  :disabled="!allUnionSourcesRich.length"
+                  class="flex items-center gap-1 h-7 px-2.5 rounded-lg border text-[10px] font-bold transition-colors shrink-0 border-yellow-500/40 text-yellow-600 bg-yellow-500/8 hover:bg-yellow-500/15 disabled:opacity-30 disabled:cursor-not-allowed">
+                  {{ t('sqlbuilder_tool_config_union_select_all') }}
+                </button>
+                <button @click="clearAllUnionSources()"
+                  :disabled="!unionSources.length"
+                  class="flex items-center gap-1 h-7 px-2.5 rounded-lg border text-[10px] font-bold transition-colors shrink-0 border-rose-500/40 text-rose-500 bg-rose-500/8 hover:bg-rose-500/15 disabled:opacity-30 disabled:cursor-not-allowed">
+                  {{ t('sqlbuilder_tool_config_union_clear') }}
+                </button>
+                <span :class="[
+                  'text-[11px] font-bold px-3 py-1 rounded-full transition-colors shrink-0',
+                  unionSources.length >= 2 ? 'bg-yellow-500/20 text-yellow-500' : 'bg-muted/40 text-muted-foreground/50',
+                ]">{{ t('sqlbuilder_tool_config_union_selected', { n: unionSources.length }) }}</span>
               </div>
-              <div class="relative">
-                <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground/50" />
-                <input v-model="unionColSearch" placeholder="ค้นหา column..."
-                  class="w-full text-xs border rounded-lg pl-7 pr-3 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-yellow-400/50 font-mono" />
-              </div>
-              <div v-if="!unionGroupedCols.length"
-                class="flex items-center gap-2 px-3 py-3 rounded-lg bg-muted/30 text-[10px] text-muted-foreground italic">
-                เลือก Source ก่อนเพื่อดู columns
-              </div>
-              <div v-else class="flex flex-col gap-2 max-h-[340px] overflow-y-auto pr-0.5">
-                <div v-for="group in unionFilteredGroups" :key="group.sourceId"
-                  class="border border-yellow-500/20 rounded-xl overflow-hidden">
-                  <div class="flex items-center gap-2 px-3 py-2 bg-yellow-500/8 border-b border-yellow-500/15 sticky top-0 z-10">
-                    <span :class="[
-                      'text-[8px] font-bold px-1.5 py-0.5 rounded font-mono uppercase shrink-0',
-                      group.tag === 'TABLE'  ? 'bg-sky-500/20 text-sky-400' :
-                      group.tag === 'CTE'    ? 'bg-violet-500/20 text-violet-400' :
-                      group.tag === 'UNION'  ? 'bg-yellow-500/20 text-yellow-500' :
-                      group.tag === 'GROUP'  ? 'bg-orange-500/20 text-orange-400' :
-                      group.tag === 'CALC'   ? 'bg-teal-500/20 text-teal-400' :
-                                               'bg-muted text-muted-foreground'
-                    ]">{{ group.tag }}</span>
-                    <span class="font-mono text-[11px] font-semibold flex-1 truncate">{{ group.label }}</span>
-                    <span class="text-[9px] text-muted-foreground/50 font-mono shrink-0">
-                      {{ group.cols.filter(c => tn.isUnionSourceColSelected(group.sourceId, c.name)).length }}/{{ group.cols.length }}
-                    </span>
-                    <button @click="tn.selectAllUnionSourceCols(group.sourceId, group.cols.map(c => c.name))"
-                      class="text-[9px] font-semibold text-yellow-600 hover:underline ml-1">ทั้งหมด</button>
-                    <span class="text-muted-foreground text-[9px]">/</span>
-                    <button @click="tn.clearUnionSourceCols(group.sourceId)"
-                      class="text-[9px] text-muted-foreground hover:underline">ล้าง</button>
-                  </div>
-                  <div class="divide-y divide-border/20">
-                    <label v-for="col in group.cols" :key="col.name"
-                      class="flex items-center gap-2 px-3 py-1.5 cursor-pointer select-none transition-colors hover:bg-yellow-500/5"
-                      :class="[
-                        tn.isUnionSourceColSelected(group.sourceId, col.name) ? 'bg-yellow-500/5' : '',
-                        unionColWarnings.has(col.name) ? 'border-l-2 border-rose-500/50' : '',
-                      ]">
-                      <div :class="[
-                        'size-3.5 rounded border-2 flex items-center justify-center shrink-0 transition-colors',
-                        tn.isUnionSourceColSelected(group.sourceId, col.name) ? 'bg-yellow-500 border-yellow-500' : 'border-border/60 bg-background',
-                      ]">
-                        <svg v-if="tn.isUnionSourceColSelected(group.sourceId, col.name)" class="size-2 text-white" fill="none" viewBox="0 0 10 10">
-                          <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-                        </svg>
-                        <input type="checkbox" class="sr-only"
-                          :checked="tn.isUnionSourceColSelected(group.sourceId, col.name)"
-                          @change="tn.toggleUnionSourceCol(group.sourceId, col.name)" />
+
+              <!-- Source card grid -->
+              <div class="flex-1 overflow-y-auto p-4">
+                <div v-if="!allUnionSourcesRich.length"
+                  class="flex flex-col items-center justify-center gap-3 py-16 text-center text-[11px] text-muted-foreground/40">
+                  <GitMerge class="size-8 text-yellow-500/20" />
+                  {{ t('sqlbuilder_tool_config_union_place_nodes') }}
+                </div>
+
+                <div v-else class="grid grid-cols-2 gap-3">
+                  <template v-for="src in allUnionSourcesRich" :key="src.id">
+
+                    <!-- ── CTE card (full width) ── -->
+                    <div v-if="src.tag === 'CTE' && src.tableGroups.length"
+                      class="col-span-2 rounded-xl border overflow-hidden transition-all"
+                      :class="isUnionSourceConnected(src.id)
+                        ? 'border-violet-500/40 bg-violet-500/5'
+                        : 'border-border/40 bg-muted/5'">
+
+                      <!-- CTE card header -->
+                      <div class="flex items-center gap-3 px-4 py-3 bg-muted/20 border-b border-border/20 cursor-pointer"
+                        @click="toggleUnionSource(src.id)">
+                        <!-- Checkbox -->
+                        <div :class="[
+                          'size-5 rounded border-2 flex items-center justify-center shrink-0 transition-all',
+                          isUnionSourceConnected(src.id) ? 'bg-violet-500 border-violet-500' : 'border-violet-500/40 bg-background hover:border-violet-500/80',
+                        ]">
+                          <svg v-if="isUnionSourceConnected(src.id)" class="size-3 text-white" fill="none" viewBox="0 0 10 10">
+                            <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                          </svg>
+                        </div>
+                        <span class="text-[9px] font-bold px-2 py-1 rounded font-mono uppercase bg-violet-500/20 text-violet-400 shrink-0">CTE</span>
+                        <div class="flex-1 min-w-0">
+                          <p class="font-mono text-[12px] font-semibold text-violet-300 truncate">{{ src.label }}</p>
+                          <p class="text-[9px] text-muted-foreground/50 mt-0.5">{{ src.tableGroups.length }} tables · {{ src.cols.length }} columns</p>
+                        </div>
+                        <span :class="[
+                          'text-[10px] font-semibold px-2 py-0.5 rounded-full shrink-0 transition-colors',
+                          isUnionSourceConnected(src.id) ? 'bg-violet-500/20 text-violet-400' : 'bg-muted/20 text-muted-foreground/40',
+                        ]">
+                          {{ isUnionSourceConnected(src.id) ? t('sqlbuilder_tool_config_union_connected') : t('sqlbuilder_tool_config_union_not_connected') }}
+                        </span>
                       </div>
-                      <Key v-if="col.isPk" class="size-2.5 text-amber-400 shrink-0" />
-                      <span :class="['text-[9px] px-1 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(col.type).cls]">
-                        {{ getColTypeBadge(col.type).label }}
-                      </span>
-                      <span class="font-mono text-[11px] flex-1 truncate" :class="col.isPk ? 'text-amber-500 font-semibold' : ''">{{ col.name }}</span>
-                      <span v-if="col.remark" class="text-[9px] text-muted-foreground/40 truncate max-w-[100px]">{{ col.remark }}</span>
-                      <span v-if="unionColWarnings.has(col.name)" class="text-[9px] text-rose-400 font-bold shrink-0">⚠</span>
-                    </label>
-                    <div v-if="group.cols.length === 0 && unionColSearch"
-                      class="px-3 py-2 text-[10px] text-muted-foreground/60 italic">ไม่พบ "{{ unionColSearch }}"</div>
-                  </div>
+
+                      <!-- CTE table sub-cards grid (informational only) -->
+                      <div class="grid grid-cols-2 gap-2 p-3">
+                        <div v-for="tg in src.tableGroups" :key="tg.tableId"
+                          class="rounded-lg border overflow-hidden border-border/25 bg-background/30">
+                          <!-- Table sub-card header -->
+                          <div class="flex items-center gap-2 px-3 py-2.5">
+                            <span class="text-[8px] font-bold px-1 py-0.5 rounded font-mono uppercase bg-sky-500/20 text-sky-400 shrink-0">TABLE</span>
+                            <div class="flex-1 min-w-0">
+                              <p class="font-mono text-[11px] font-semibold truncate text-foreground/80">{{ tg.tableLabel }}</p>
+                              <p class="text-[8px] font-mono mt-0.5 text-muted-foreground/40">{{ tg.cols.length }} cols</p>
+                            </div>
+                            <button @click.stop="toggleUnionSourceExpanded(tg.tableId)"
+                              class="size-5 flex items-center justify-center rounded hover:bg-muted/40 transition-colors shrink-0">
+                              <ChevronDown :class="['size-3 text-muted-foreground/50 transition-transform', unionExpandedSources.has(tg.tableId) ? 'rotate-180' : '']" />
+                            </button>
+                          </div>
+                          <!-- Dropdown: columns -->
+                          <div v-if="unionExpandedSources.has(tg.tableId)"
+                            class="border-t border-border/15 max-h-[160px] overflow-y-auto bg-muted/5">
+                            <div v-for="col in tg.cols" :key="col.name"
+                              class="flex items-center gap-1.5 px-3 py-1 hover:bg-muted/20 transition-colors">
+                              <span :class="['text-[7px] px-1 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(col.type).cls]">
+                                {{ getColTypeBadge(col.type).label }}
+                              </span>
+                              <Key v-if="col.isPk" class="size-2.5 text-amber-400 shrink-0" />
+                              <span class="font-mono text-[10px] truncate"
+                                :class="col.isPk ? 'text-amber-400' : 'text-foreground/65'">{{ col.name }}</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- ── Non-CTE card ── -->
+                    <div v-else
+                      class="rounded-xl border overflow-hidden transition-all"
+                      :class="[
+                        isUnionSourceConnected(src.id)
+                          ? 'border-yellow-500/50 bg-yellow-500/8'
+                          : unionCompatibilityMap.get(src.id) === 'incompatible'
+                            ? 'border-border/20 bg-muted/3 opacity-45'
+                            : 'border-border/40 bg-muted/5 hover:border-border/70',
+                      ]">
+
+                      <!-- Card header -->
+                      <div class="flex items-center gap-2.5 px-3 py-3">
+                        <!-- Checkbox -->
+                        <div @click="unionCompatibilityMap.get(src.id) !== 'incompatible' && toggleUnionSource(src.id)"
+                          :class="[
+                            'size-5 rounded border-2 flex items-center justify-center shrink-0 transition-all',
+                            isUnionSourceConnected(src.id)
+                              ? 'bg-yellow-500 border-yellow-500 cursor-pointer'
+                              : unionCompatibilityMap.get(src.id) === 'incompatible'
+                                ? 'border-border/30 bg-muted/20 cursor-not-allowed'
+                                : 'border-yellow-500/40 bg-background hover:border-yellow-500/80 cursor-pointer',
+                          ]">
+                          <svg v-if="isUnionSourceConnected(src.id)" class="size-3 text-white" fill="none" viewBox="0 0 10 10">
+                            <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                          </svg>
+                        </div>
+                        <!-- Tag -->
+                        <span :class="[
+                          'text-[8px] font-bold px-1.5 py-0.5 rounded font-mono uppercase shrink-0',
+                          unionCompatibilityMap.get(src.id) === 'incompatible'
+                            ? 'bg-muted/30 text-muted-foreground/40'
+                            : src.tag === 'TABLE' ? 'bg-sky-500/20 text-sky-400' :
+                              src.tag === 'UNION' ? 'bg-yellow-500/20 text-yellow-500' :
+                              src.tag === 'GROUP' ? 'bg-orange-500/20 text-orange-400' :
+                              src.tag === 'CALC'  ? 'bg-teal-500/20 text-teal-400' :
+                                                    'bg-muted text-muted-foreground'
+                        ]">{{ src.tag }}</span>
+                        <!-- Name -->
+                        <div class="flex-1 min-w-0">
+                          <p class="font-mono text-[11px] font-semibold truncate"
+                            :class="isUnionSourceConnected(src.id) ? 'text-yellow-500' : unionCompatibilityMap.get(src.id) === 'incompatible' ? 'text-muted-foreground/35' : 'text-foreground/85'">
+                            {{ src.label }}
+                          </p>
+                          <p class="text-[8px] font-mono truncate mt-0.5"
+                            :class="unionCompatibilityMap.get(src.id) === 'incompatible' ? 'text-rose-500/50' : 'text-muted-foreground/40'">
+                            <template v-if="unionSources.length && !isUnionSourceConnected(src.id)">
+                              {{ unionCompatibilityMap.get(src.id) === 'incompatible'
+                                  ? t('sqlbuilder_tool_config_union_no_common')
+                                  : t('sqlbuilder_tool_config_union_common_count', { n: unionOverlapCount(src.id, src.cols) }) }}
+                            </template>
+                            <template v-else-if="src.tables.length">
+                              {{ src.tables.slice(0, 2).join(', ') }}{{ src.tables.length > 2 ? ` +${src.tables.length - 2}` : '' }}
+                            </template>
+                          </p>
+                        </div>
+                        <!-- Col count + dropdown -->
+                        <div class="flex items-center gap-1 shrink-0">
+                          <span class="text-[9px] font-mono"
+                            :class="unionCompatibilityMap.get(src.id) === 'incompatible' ? 'text-muted-foreground/30' : 'text-muted-foreground/40'">
+                            {{ src.cols.length }}c
+                          </span>
+                          <button @click="toggleUnionSourceExpanded(src.id)"
+                            class="size-5 flex items-center justify-center rounded hover:bg-muted/40 transition-colors">
+                            <ChevronDown :class="['size-3 text-muted-foreground/50 transition-transform', unionExpandedSources.has(src.id) ? 'rotate-180' : '']" />
+                          </button>
+                        </div>
+                      </div>
+
+                      <!-- Dropdown: columns -->
+                      <div v-if="unionExpandedSources.has(src.id)"
+                        class="border-t border-border/15 max-h-[180px] overflow-y-auto bg-muted/5">
+                        <div v-if="!src.cols.length" class="px-3 py-2 text-[9px] text-muted-foreground/40 italic">{{ t('sqlbuilder_tool_config_union_no_cols') }}</div>
+                        <div v-for="col in src.cols" :key="col.name"
+                          class="flex items-center gap-1.5 px-3 py-1.5 hover:bg-muted/20 transition-colors border-b border-border/10 last:border-0">
+                          <span :class="['text-[7px] px-1 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(col.type).cls]">
+                            {{ getColTypeBadge(col.type).label }}
+                          </span>
+                          <Key v-if="col.isPk" class="size-2.5 text-amber-400 shrink-0" />
+                          <span class="font-mono text-[10px] truncate flex-1"
+                            :class="col.isPk ? 'text-amber-400' : 'text-foreground/65'">{{ col.name }}</span>
+                          <span v-if="col.remark" class="text-[9px] text-muted-foreground/35 truncate max-w-[60px]">{{ col.remark }}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                  </template>
                 </div>
               </div>
-            </div><!-- /RIGHT -->
-            </div><!-- /grid row2 -->
+            </div><!-- /STEP 1 -->
 
-            <!-- ── Row 3: WHERE + SQL preview ────────────────────────── -->
-            <div class="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-4 border-t pt-4">
-              <!-- WHERE filter -->
-              <div class="flex flex-col gap-2">
-                <div class="flex items-center justify-between">
-                  <label class="text-[11px] font-semibold text-yellow-500 uppercase tracking-wide">
-                    WHERE Filter
-                    <span v-if="(store.modalNode?.data?.conditions ?? []).filter((c: any) => c.column).length"
-                      class="ml-1 text-[10px] font-normal text-muted-foreground normal-case">
-                      {{ (store.modalNode?.data?.conditions ?? []).filter((c: any) => c.column).length }} conditions
-                    </span>
-                  </label>
-                  <button @click="tn.addUnionCondition()"
-                    class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-yellow-500/30 text-yellow-500 hover:bg-yellow-500/10 transition-colors">
-                    <Plus class="size-2.5" /> เพิ่ม
+            <!-- ════ STEP 2: Pick Columns ══════════════════════════════ -->
+            <div v-else-if="unionStep === 2" class="flex flex-col overflow-hidden min-w-0">
+
+              <!-- Step 2 top bar -->
+              <div class="flex items-center gap-3 px-4 py-3 border-b border-border/40 bg-muted/10 shrink-0">
+                <span class="text-[10px] font-semibold text-muted-foreground/60 shrink-0 flex-1">{{ t('sqlbuilder_tool_config_union_pick_cols_hint') }}</span>
+                <button @click="autoDetectUnionMapping()"
+                  :disabled="!unionGroupedCols.length"
+                  :class="[
+                    'flex items-center gap-1 h-7 px-2.5 rounded-lg border text-[10px] font-bold transition-colors shrink-0',
+                    unionGroupedCols.length
+                      ? 'border-emerald-500/50 text-emerald-600 bg-emerald-500/10 hover:bg-emerald-500/20'
+                      : 'border-border/20 text-muted-foreground/30 cursor-not-allowed',
+                  ]">
+                  <Sparkles class="size-3" /> Auto Group
+                </button>
+                <button @click="clearUnionMapping()"
+                  :disabled="!unionColMapping.length"
+                  :class="[
+                    'flex items-center gap-1 h-7 px-2.5 rounded-lg border text-[10px] font-bold transition-colors shrink-0',
+                    unionColMapping.length
+                      ? 'border-rose-500/40 text-rose-500 bg-rose-500/8 hover:bg-rose-500/15'
+                      : 'border-border/20 text-muted-foreground/30 cursor-not-allowed',
+                  ]">
+                  {{ t('sqlbuilder_common_clear') }}
+                </button>
+              </div>
+
+              <!-- Union readiness status strip -->
+              <div class="flex items-center gap-2 px-4 py-2 border-b border-border/30 shrink-0 text-[10px]"
+                :class="unionReadiness.level === 'ok'    ? 'bg-emerald-500/5  text-emerald-600' :
+                        unionReadiness.level === 'warn'  ? 'bg-amber-500/5   text-amber-500'  :
+                        unionReadiness.level === 'error' ? 'bg-rose-500/5    text-rose-400'   :
+                                                           'bg-muted/5       text-muted-foreground/60'">
+                <span class="font-bold text-[11px] shrink-0">
+                  {{ unionReadiness.level === 'ok' ? '✓' : unionReadiness.level === 'warn' ? '⚠' : unionReadiness.level === 'error' ? '✕' : 'ℹ' }}
+                </span>
+                <span class="flex-1 font-medium">{{ unionReadiness.msg }}</span>
+                <span v-if="unionGroupedCols.length" class="font-mono text-[9px] opacity-60 shrink-0">
+                  {{ unionGroupedCols.length }} src · {{ unionColMapping.length }} cols
+                </span>
+              </div>
+
+              <!-- ── Full-width column selector ── -->
+              <div class="flex flex-col overflow-hidden min-h-0 flex-1">
+
+                <!-- ── Source tabs ── -->
+                <div class="flex items-center gap-0 border-b border-border/30 px-3 pt-2 shrink-0 overflow-x-auto">
+                  <button @click="unionColTab = '__all__'; unionColSearch = ''"
+                    :class="[
+                      'flex items-center gap-1 text-[11px] font-semibold px-3 py-1.5 rounded-t-lg border-b-2 transition-colors shrink-0',
+                      unionColTab === '__all__'
+                        ? 'border-yellow-500 text-yellow-500 bg-yellow-500/5'
+                        : 'border-transparent text-muted-foreground/50 hover:text-foreground/70 hover:bg-muted/20',
+                    ]">
+                    {{ t('sqlbuilder_tool_config_union_all_tab') }}
+                    <span class="text-[9px] font-mono opacity-60">({{ unionAllSourceCols.length }})</span>
+                  </button>
+                  <button v-for="grp in unionGroupedCols" :key="grp.sourceId"
+                    @click="unionColTab = grp.sourceId; unionColSearch = ''"
+                    :class="[
+                      'flex items-center gap-1.5 text-[11px] font-mono font-semibold px-3 py-1.5 rounded-t-lg border-b-2 transition-colors shrink-0',
+                      unionColTab === grp.sourceId
+                        ? 'border-yellow-500 text-yellow-500 bg-yellow-500/5'
+                        : 'border-transparent text-muted-foreground/50 hover:text-foreground/70 hover:bg-muted/20',
+                    ]">
+                    <span :class="[
+                      'text-[7px] font-bold px-1 py-px rounded uppercase shrink-0',
+                      grp.tag === 'TABLE' ? 'bg-sky-500/20 text-sky-400' :
+                      grp.tag === 'CTE'   ? 'bg-violet-500/20 text-violet-400' :
+                      grp.tag === 'UNION' ? 'bg-yellow-500/20 text-yellow-500' :
+                      grp.tag === 'GROUP' ? 'bg-orange-500/20 text-orange-400' :
+                      grp.tag === 'CALC'  ? 'bg-teal-500/20 text-teal-400' :
+                                            'bg-muted text-muted-foreground'
+                    ]">{{ grp.tag }}</span>
+                    <span class="truncate max-w-[80px]">{{ grp.label }}</span>
                   </button>
                 </div>
-                <div v-if="(store.modalNode?.data?.conditions ?? []).length" class="flex flex-col gap-2 max-h-[140px] overflow-y-auto">
-                  <div v-for="(cond, i) in (store.modalNode?.data?.conditions ?? [])" :key="i"
-                    class="flex items-center gap-2 px-2.5 py-2 rounded-xl border bg-yellow-500/3">
-                    <button @click="toggleUnionCondColDropdown(+i, $event)"
+
+                <!-- ── Quick actions + search ── -->
+                <div class="flex items-center gap-2 px-3 py-2 border-b border-border/20 shrink-0 flex-wrap">
+                  <button @click="autoSelectExactMatch()"
+                    :disabled="!unionGroupedCols.length"
+                    class="flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-lg border font-semibold transition-colors shrink-0 disabled:opacity-30 disabled:cursor-not-allowed border-emerald-500/30 bg-emerald-500/8 text-emerald-500 hover:bg-emerald-500/15">
+                    <Sparkles class="size-3" /> {{ t('sqlbuilder_tool_config_union_pick_exact', { n: exactMatchCols.length }) }}
+                  </button>
+                  <button v-if="unionColMapping.length" @click="clearUnionMapping()"
+                    class="text-[11px] px-2.5 py-1 rounded-lg border border-border/30 text-muted-foreground/60 hover:text-rose-400 hover:border-rose-400/30 transition-colors shrink-0">
+                    {{ t('sqlbuilder_common_clear') }}
+                  </button>
+                  <div class="flex-1 min-w-[120px]">
+                    <input v-model="unionColSearch" :placeholder="t('sqlbuilder_common_search_column')"
+                      class="w-full text-[11px] px-2.5 py-1 rounded-lg border border-border/30 bg-background/60 text-foreground/80 placeholder:text-muted-foreground/40 outline-none focus:border-yellow-500/50 transition-colors" />
+                  </div>
+                </div>
+
+                <!-- ── Column row list ── -->
+                <div class="flex-1 overflow-y-auto min-h-0 flex flex-col">
+
+                  <div v-if="!unionGroupedCols.length"
+                    class="flex flex-col items-center gap-2 py-16 text-center shrink-0">
+                    <GitMerge class="size-6 text-yellow-500/20" />
+                    <p class="text-[10px] text-muted-foreground/50 italic">{{ t('sqlbuilder_tool_config_union_pick_source_first') }}</p>
+                  </div>
+
+                  <template v-else>
+                    <div v-for="col in unionColTabFiltered" :key="col.name"
+                      @click="toggleColumnInMapping(col.name)"
                       :class="[
-                        'flex-1 h-7 px-2 rounded-lg border text-left text-[11px] font-mono flex items-center gap-1.5 min-w-0 transition-colors',
-                        openUnionCondColIdx === +i ? 'border-yellow-500/60 bg-yellow-500/5' : 'border-border bg-background hover:border-yellow-400/40',
+                        'flex items-center gap-2.5 px-3 py-2 border-b border-border/10 cursor-pointer transition-all shrink-0 group',
+                        isColumnMapped(col.name)
+                          ? unionMappingHasAllNullRows.includes(col.name)
+                            ? 'bg-rose-500/4 hover:bg-rose-500/6'
+                            : hasUnionTypeMismatch(unionColMapping.find(r => r.outputName === col.name)!)
+                              ? 'bg-amber-500/4 hover:bg-amber-500/6'
+                              : 'bg-yellow-500/4 hover:bg-yellow-500/6'
+                          : 'hover:bg-muted/20',
                       ]">
-                      <template v-if="cond.column">
-                        <span :class="['text-[9px] px-1 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(unionAvailableCols.find(c => c.name === cond.column)?.type ?? '').cls]">
-                          {{ getColTypeBadge(unionAvailableCols.find(c => c.name === cond.column)?.type ?? '').label }}
-                        </span>
-                        <span class="truncate">{{ cond.column }}</span>
-                      </template>
-                      <span v-else class="text-muted-foreground/50 truncate">column</span>
-                      <ChevronDown class="size-3 text-muted-foreground/50 ml-auto shrink-0" />
+
+                      <!-- Checkbox -->
+                      <div :class="[
+                        'size-4 rounded border-2 flex items-center justify-center shrink-0 transition-all',
+                        isColumnMapped(col.name)
+                          ? 'bg-yellow-500 border-yellow-500 group-hover:bg-rose-500 group-hover:border-rose-500'
+                          : 'border-border/40 bg-background group-hover:border-yellow-500/60',
+                      ]">
+                        <svg v-if="isColumnMapped(col.name)" class="size-2.5 text-white" fill="none" viewBox="0 0 10 8">
+                          <path d="M1 4L3.5 6.5L9 1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                      </div>
+
+                      <!-- Type badge -->
+                      <span :class="[
+                        'text-[8px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0',
+                        isColumnMapped(col.name) ? getColTypeBadge(col.type).cls : getColTypeBadge(col.type).cls + ' opacity-50',
+                      ]">{{ getColTypeBadge(col.type).label }}</span>
+
+                      <!-- Column name + remark -->
+                      <div class="flex-1 min-w-0 flex items-baseline gap-2">
+                        <span :class="[
+                          'font-mono text-[12px] font-semibold truncate transition-colors',
+                          isColumnMapped(col.name) ? 'text-yellow-400' : 'text-foreground/65 group-hover:text-foreground/85',
+                        ]">{{ col.name }}</span>
+                        <span v-if="getColRemark(col.name)"
+                          class="text-[10px] text-muted-foreground/40 truncate shrink-0 max-w-[120px]">{{ getColRemark(col.name) }}</span>
+                      </div>
+
+                      <!-- Status badges -->
+                      <span v-if="isColumnMapped(col.name) && unionMappingHasAllNullRows.includes(col.name)"
+                        class="text-[8px] font-bold text-rose-400 bg-rose-500/10 px-1.5 py-px rounded shrink-0">✕ NULL</span>
+                      <span v-else-if="isColumnMapped(col.name) && hasUnionTypeMismatch(unionColMapping.find(r => r.outputName === col.name)!)"
+                        class="text-[8px] font-bold text-amber-400 bg-amber-500/10 px-1.5 py-px rounded shrink-0">⚠</span>
+
+                      <!-- Coverage squares -->
+                      <div class="flex items-center gap-1 shrink-0">
+                        <div v-for="grp in unionGroupedCols" :key="grp.sourceId"
+                          :class="['size-2 rounded-sm transition-colors', grp.cols.some(c => c.name === col.name) ? 'bg-emerald-500/70' : 'bg-border/30']"
+                          :title="`${grp.label}: ${grp.cols.some(c => c.name === col.name) ? t('sqlbuilder_tool_config_union_has') : t('sqlbuilder_tool_config_union_missing')}`" />
+                      </div>
+
+                      <span v-if="col.coveredCount < unionGroupedCols.length"
+                        class="text-[8px] text-amber-400/60 shrink-0" :title="t('sqlbuilder_tool_config_union_partial')">⚠</span>
+                    </div>
+
+                    <div v-if="!unionColTabFiltered.length"
+                      class="flex flex-col items-center gap-1 py-10 text-center shrink-0">
+                      <p class="text-[10px] text-muted-foreground/40 italic">{{ t('sqlbuilder_tool_config_union_no_match') }}</p>
+                    </div>
+                  </template>
+
+                  <div class="flex-1" />
+                </div>
+
+                <!-- Bottom status bar -->
+                <div class="flex items-center justify-between px-3 py-2 border-t border-border/20 bg-muted/5 shrink-0">
+                  <span class="text-[10px] text-muted-foreground/60">
+                    {{ t('sqlbuilder_tool_config_union_picked_count') }} <span class="font-semibold text-yellow-500">{{ unionColMapping.length }}</span> columns
+                  </span>
+                  <span v-if="unionColMapping.some(r => !unionGroupedCols.every(g => r.picks[g.sourceId]))"
+                    class="text-[10px] text-amber-400">
+                    {{ t('sqlbuilder_tool_config_union_picked_warn') }}
+                  </span>
+                </div>
+              </div>
+            </div><!-- /STEP 2 -->
+
+            <!-- ════ STEP 3: Configure ═══════════════════════════════════ -->
+            <div v-else-if="unionStep === 3" class="flex flex-col gap-5 px-6 py-5 overflow-y-auto">
+
+              <!-- Header -->
+              <div>
+                <p class="text-[15px] font-bold text-foreground mb-1">{{ t('sqlbuilder_tool_config_union_setup_title') }}</p>
+                <p class="text-[12px] text-muted-foreground/60">{{ t('sqlbuilder_tool_config_union_setup_desc') }}</p>
+              </div>
+
+              <!-- Union type cards -->
+              <div class="flex flex-col gap-3">
+                <p class="text-[11px] font-semibold text-muted-foreground/60 uppercase tracking-wide">{{ t('sqlbuilder_tool_config_union_setup_method') }}</p>
+                <div class="grid grid-cols-2 gap-3">
+
+                  <!-- UNION ALL -->
+                  <div @click="tn.setModalData({ unionType: 'UNION ALL' })"
+                    :class="['p-4 rounded-xl border-2 cursor-pointer transition-all select-none',
+                      (store.modalNode?.data?.unionType ?? 'UNION ALL') !== 'UNION'
+                        ? 'border-yellow-500 bg-yellow-500/8'
+                        : 'border-border/40 bg-muted/5 hover:border-border/70']">
+                    <div class="flex items-start gap-3 mb-3">
+                      <svg width="38" height="34" viewBox="0 0 38 34" fill="none" class="shrink-0 mt-0.5">
+                        <rect x="1" y="1" width="15" height="8" rx="2" fill="rgba(234,179,8,.2)" stroke="#eab308" stroke-width="1.2"/>
+                        <rect x="1" y="11" width="15" height="8" rx="2" fill="rgba(234,179,8,.2)" stroke="#eab308" stroke-width="1.2"/>
+                        <rect x="22" y="1" width="15" height="8" rx="2" fill="rgba(56,189,248,.2)" stroke="#38bdf8" stroke-width="1.2"/>
+                        <rect x="22" y="11" width="15" height="8" rx="2" fill="rgba(56,189,248,.2)" stroke="#38bdf8" stroke-width="1.2"/>
+                        <path d="M16 5h6M16 15h6" stroke="#52525b" stroke-width="1" stroke-dasharray="2 2"/>
+                        <rect x="10" y="24" width="18" height="9" rx="2" fill="rgba(52,211,153,.15)" stroke="#34d399" stroke-width="1.2"/>
+                      </svg>
+                      <div class="flex-1 min-w-0">
+                        <div class="flex items-center gap-2 mb-1">
+                          <span class="font-mono text-[13px] font-bold"
+                            :class="(store.modalNode?.data?.unionType ?? 'UNION ALL') !== 'UNION' ? 'text-yellow-500' : 'text-foreground/60'">
+                            UNION ALL
+                          </span>
+                          <span v-if="(store.modalNode?.data?.unionType ?? 'UNION ALL') !== 'UNION'"
+                            class="text-[8px] px-1.5 py-0.5 rounded font-bold bg-yellow-500 text-black">{{ t('sqlbuilder_tool_config_union_picked_badge') }}</span>
+                        </div>
+                        <p class="text-[11px] text-muted-foreground/70 leading-relaxed">{{ t('sqlbuilder_tool_config_union_all_desc') }}</p>
+                        <p class="text-[10px] text-muted-foreground/40 mt-0.5">{{ t('sqlbuilder_tool_config_union_all_hint') }}</p>
+                      </div>
+                    </div>
+                    <div :class="['px-3 py-1.5 rounded-lg text-[10px] font-mono',
+                      (store.modalNode?.data?.unionType ?? 'UNION ALL') !== 'UNION' ? 'bg-yellow-500/10 text-yellow-400' : 'bg-muted/40 text-muted-foreground/40']">
+                      {{ t('sqlbuilder_tool_config_union_all_rows') }}
+                    </div>
+                  </div>
+
+                  <!-- UNION -->
+                  <div @click="tn.setModalData({ unionType: 'UNION' })"
+                    :class="['p-4 rounded-xl border-2 cursor-pointer transition-all select-none',
+                      store.modalNode?.data?.unionType === 'UNION'
+                        ? 'border-yellow-500 bg-yellow-500/8'
+                        : 'border-border/40 bg-muted/5 hover:border-border/70']">
+                    <div class="flex items-start gap-3 mb-3">
+                      <svg width="38" height="34" viewBox="0 0 38 34" fill="none" class="shrink-0 mt-0.5">
+                        <rect x="1" y="1" width="15" height="8" rx="2" fill="rgba(234,179,8,.2)" stroke="#eab308" stroke-width="1.2"/>
+                        <rect x="1" y="11" width="15" height="8" rx="2" fill="rgba(234,179,8,.12)" stroke="#eab308" stroke-width="1.2" stroke-dasharray="3 2"/>
+                        <rect x="22" y="1" width="15" height="8" rx="2" fill="rgba(56,189,248,.2)" stroke="#38bdf8" stroke-width="1.2"/>
+                        <rect x="22" y="11" width="15" height="8" rx="2" fill="rgba(56,189,248,.12)" stroke="#38bdf8" stroke-width="1.2" stroke-dasharray="3 2"/>
+                        <path d="M16 5h6M16 15h6" stroke="#52525b" stroke-width="1" stroke-dasharray="2 2"/>
+                        <rect x="10" y="24" width="18" height="9" rx="2" fill="rgba(52,211,153,.15)" stroke="#34d399" stroke-width="1.2"/>
+                        <line x1="25" y1="24" x2="30" y2="17" stroke="#f87171" stroke-width="1" stroke-dasharray="2 1"/>
+                      </svg>
+                      <div class="flex-1 min-w-0">
+                        <div class="flex items-center gap-2 mb-1">
+                          <span class="font-mono text-[13px] font-bold"
+                            :class="store.modalNode?.data?.unionType === 'UNION' ? 'text-yellow-500' : 'text-foreground/60'">
+                            UNION
+                          </span>
+                          <span v-if="store.modalNode?.data?.unionType === 'UNION'"
+                            class="text-[8px] px-1.5 py-0.5 rounded font-bold bg-yellow-500 text-black">{{ t('sqlbuilder_tool_config_union_picked_badge') }}</span>
+                        </div>
+                        <p class="text-[11px] text-muted-foreground/70 leading-relaxed">{{ t('sqlbuilder_tool_config_union_distinct_desc') }}</p>
+                        <p class="text-[10px] text-muted-foreground/40 mt-0.5">{{ t('sqlbuilder_tool_config_union_distinct_hint') }}</p>
+                      </div>
+                    </div>
+                    <div :class="['px-3 py-1.5 rounded-lg text-[10px] font-mono',
+                      store.modalNode?.data?.unionType === 'UNION' ? 'bg-yellow-500/10 text-yellow-400' : 'bg-muted/40 text-muted-foreground/40']">
+                      {{ t('sqlbuilder_tool_config_union_distinct_rows') }}
+                    </div>
+                  </div>
+
+                </div>
+              </div>
+
+              <!-- CTE Name -->
+              <div class="flex flex-col gap-2">
+                <div class="flex items-center justify-between">
+                  <p class="text-[11px] font-semibold text-muted-foreground/60 uppercase tracking-wide">{{ t('sqlbuilder_tool_config_union_name_title') }}</p>
+                  <span class="text-[10px] text-muted-foreground/40">{{ t('sqlbuilder_tool_config_union_name_hint') }}</span>
+                </div>
+                <div class="relative flex items-center">
+                  <span class="font-mono text-[12px] text-muted-foreground/40 absolute left-3 pointer-events-none select-none">WITH </span>
+                  <input
+                    :value="store.modalNode?.data?.name ?? ''"
+                    @input="tn.setModalData({ name: ($event.target as HTMLInputElement).value })"
+                    class="w-full h-10 pl-14 pr-4 rounded-xl border border-border/50 bg-background text-[12px] font-mono text-yellow-400 focus:outline-none focus:border-yellow-500/60 focus:ring-1 focus:ring-yellow-500/20 transition-all"
+                    :placeholder="t('sqlbuilder_tool_config_union_name_ph')"
+                    spellcheck="false"
+                  />
+                </div>
+                <p v-if="store.modalNode?.data?.name" class="text-[10px] text-muted-foreground/40 font-mono">
+                  {{ t('sqlbuilder_tool_config_union_name_preview') }}<span class="text-yellow-500/70">WITH {{ store.modalNode.data.name }} AS ( ... )</span>
+                </p>
+              </div>
+
+            </div><!-- /STEP 3 -->
+
+            <!-- ════ STEP 4: Conditions ════════════════════════════════════ -->
+            <div v-else-if="unionStep === 4" class="flex flex-col overflow-hidden min-h-0">
+
+              <!-- Header -->
+              <div class="flex items-center gap-2 px-5 py-3 border-b border-border/40 bg-muted/10 shrink-0">
+                <Filter class="size-4 text-yellow-500 shrink-0" />
+                <div class="flex-1 min-w-0">
+                  <p class="text-[11px] font-bold text-yellow-500">{{ t('sqlbuilder_tool_config_union_add_condition') }}</p>
+                  <p class="text-[9px] text-muted-foreground/50">{{ t('sqlbuilder_tool_config_union_condition_hint') }}</p>
+                </div>
+                <span v-if="(store.modalNode?.data?.conditions ?? []).filter((c: any) => c.column).length"
+                  class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-yellow-500/20 text-yellow-500 shrink-0">
+                  {{ t('sqlbuilder_tool_config_union_condition_count', { n: (store.modalNode?.data?.conditions ?? []).filter((c: any) => c.column).length }) }}
+                </span>
+                <button @click="tn.addUnionCondition()"
+                  class="flex items-center gap-1 h-7 px-2.5 rounded-lg border border-yellow-500/40 text-yellow-500 bg-yellow-500/8 hover:bg-yellow-500/15 text-[10px] font-bold transition-colors shrink-0">
+                  <Plus class="size-2.5" /> {{ t('sqlbuilder_common_add') }}
+                </button>
+              </div>
+
+              <!-- SQL preview strip -->
+              <div v-if="(store.modalNode?.data?.conditions ?? []).filter((c: any) => c.column && c.operator).length"
+                class="flex items-start gap-2 px-4 py-2 bg-muted/20 border-b border-border/20 shrink-0">
+                <span class="text-[9px] font-bold text-yellow-500/60 shrink-0 mt-0.5">SQL</span>
+                <code class="text-[9px] font-mono text-foreground/50 leading-relaxed whitespace-pre-wrap break-all">{{ unionSqlPreview }}</code>
+              </div>
+
+              <!-- Conditions list -->
+              <div class="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-3 min-h-0">
+
+                <!-- Empty state -->
+                <div v-if="!(store.modalNode?.data?.conditions ?? []).length"
+                  class="flex flex-col items-center gap-3 py-16 text-center">
+                  <Filter class="size-8 text-yellow-500/20" />
+                  <p class="text-[12px] text-foreground/50 font-medium">{{ t('sqlbuilder_tool_config_union_no_cond') }}</p>
+                  <p class="text-[10px] text-muted-foreground/40">{{ t('sqlbuilder_tool_config_union_cond_take_all') }}</p>
+                  <button @click="tn.addUnionCondition()"
+                    class="mt-2 flex items-center gap-1.5 text-[11px] px-4 py-2 rounded-lg border border-yellow-500/30 text-yellow-500 hover:bg-yellow-500/10 transition-colors">
+                    <Plus class="size-3.5" /> {{ t('sqlbuilder_tool_config_union_add_first_cond') }}
+                  </button>
+                </div>
+
+                <!-- Condition rows -->
+                <div v-for="(cond, i) in (store.modalNode?.data?.conditions ?? [])" :key="i"
+                  class="flex flex-col gap-2.5 p-3.5 rounded-xl border border-border/30 bg-yellow-500/3 shrink-0">
+
+                  <!-- Row header -->
+                  <div class="flex items-center gap-2">
+                    <span v-if="Number(i) > 0"
+                      class="text-[9px] font-bold px-1.5 py-0.5 rounded bg-blue-500/15 border border-blue-500/30 text-blue-400 shrink-0">AND</span>
+                    <span class="text-[9px] font-bold text-yellow-500/70 uppercase tracking-wide flex-1">{{ t('sqlbuilder_tool_config_union_cond_n', { n: Number(i) + 1 }) }}</span>
+                    <button @click="tn.removeUnionCondition(Number(i))"
+                      class="size-5 flex items-center justify-center rounded text-muted-foreground/40 hover:text-destructive hover:bg-destructive/10 transition-colors shrink-0">
+                      <X class="size-3" />
                     </button>
+                  </div>
+
+                  <!-- Column picker -->
+                  <button @click="toggleUnionCondColDropdown(Number(i), $event)"
+                    :class="['w-full h-8 px-2.5 rounded-lg border text-left text-[11px] font-mono flex items-center gap-2 min-w-0 transition-colors',
+                      openUnionCondColIdx === Number(i) ? 'border-yellow-500/60 bg-yellow-500/5' : 'border-border/40 bg-background hover:border-yellow-400/40']">
+                    <template v-if="cond.column">
+                      <span :class="['text-[8px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0',
+                        getColTypeBadge(unionOutputCols.find(c => c.name === cond.column)?.type ?? cond.colType ?? '').cls]">
+                        {{ getColTypeBadge(unionOutputCols.find(c => c.name === cond.column)?.type ?? cond.colType ?? '').label }}
+                      </span>
+                      <span class="truncate flex-1">{{ cond.column }}</span>
+                    </template>
+                    <span v-else class="text-muted-foreground/40 truncate flex-1">{{ t('sqlbuilder_common_select_column') }}</span>
+                    <ChevronDown class="size-3 text-muted-foreground/40 shrink-0" />
+                  </button>
+
+                  <!-- Operator + value -->
+                  <div class="flex items-center gap-2">
                     <select :value="cond.operator"
-                      @change="tn.setUnionCondition(+i, { operator: ($event.target as HTMLSelectElement).value })"
-                      class="h-7 px-1.5 rounded-lg border bg-background text-[11px] focus:outline-none focus:ring-1 focus:ring-yellow-500/40 shrink-0">
+                      @change="tn.setUnionCondition(Number(i), { operator: ($event.target as HTMLSelectElement).value })"
+                      class="h-8 px-2 rounded-lg border border-border/40 bg-background text-[11px] font-mono focus:outline-none focus:border-yellow-500/40 shrink-0"
+                      style="color-scheme: dark;">
                       <option v-for="op in ['=','!=','>','<','>=','<=','LIKE','IN','IS NULL','IS NOT NULL']" :key="op" :value="op">{{ op }}</option>
                     </select>
                     <input v-if="!['IS NULL','IS NOT NULL'].includes(cond.operator)"
                       :value="cond.value"
-                      @input="tn.setUnionCondition(+i, { value: ($event.target as HTMLInputElement).value })"
-                      class="w-24 h-7 px-2 rounded-lg border bg-background text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-yellow-500/40 shrink-0"
-                      placeholder="value" />
-                    <button @click="tn.removeUnionCondition(+i)"
-                      class="size-6 flex items-center justify-center rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors shrink-0">
-                      <X class="size-3" />
+                      @input="tn.setUnionCondition(Number(i), { value: ($event.target as HTMLInputElement).value })"
+                      class="flex-1 h-8 px-2.5 rounded-lg border border-border/40 bg-background text-[11px] font-mono focus:outline-none focus:border-yellow-500/40 min-w-0"
+                      :placeholder="t('sqlbuilder_tool_config_union_value_ph')" />
+                    <span v-else class="flex-1 text-[10px] text-muted-foreground/35 italic">{{ t('sqlbuilder_tool_config_union_no_value_needed') }}</span>
+                  </div>
+
+                  <!-- SQL preview for this condition -->
+                  <div v-if="cond.column && cond.operator"
+                    class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-yellow-500/5 border border-yellow-500/15">
+                    <span class="text-[8px] font-bold text-yellow-500/60 shrink-0">SQL</span>
+                    <code class="text-[9px] font-mono text-yellow-300/70 truncate">{{ condPreview(cond) }}</code>
+                  </div>
+                </div>
+
+              </div><!-- /conditions list -->
+            </div><!-- /STEP 4 -->
+
+            <!-- ════ STEP 5: Review SQL ═══════════════════════════════ -->
+            <div v-else-if="unionStep === 5" class="flex flex-col gap-4 px-6 py-5">
+
+              <!-- Summary cards -->
+              <div class="grid grid-cols-3 gap-3">
+                <div class="flex flex-col gap-1 px-4 py-3 rounded-xl border border-border/40 bg-muted/10">
+                  <span class="text-[9px] text-muted-foreground/60 uppercase tracking-wide font-semibold">Sources</span>
+                  <span class="text-[22px] font-bold text-yellow-500 leading-none">{{ unionSources.length }}</span>
+                  <span class="text-[9px] text-muted-foreground/50">tables / CTEs</span>
+                </div>
+                <div class="flex flex-col gap-1 px-4 py-3 rounded-xl border border-border/40 bg-muted/10">
+                  <span class="text-[9px] text-muted-foreground/60 uppercase tracking-wide font-semibold">Output Columns</span>
+                  <span class="text-[22px] font-bold text-yellow-500 leading-none">{{ unionColMapping.length || '*' }}</span>
+                  <span class="text-[9px] text-muted-foreground/50">{{ unionColMapping.length ? t('sqlbuilder_tool_config_union_cols_defined') : t('sqlbuilder_tool_config_union_take_all_cols') }}</span>
+                </div>
+                <div class="flex flex-col gap-1 px-4 py-3 rounded-xl border border-border/40 bg-muted/10">
+                  <span class="text-[9px] text-muted-foreground/60 uppercase tracking-wide font-semibold">Union Type</span>
+                  <span class="text-[18px] font-bold text-yellow-500 leading-none">{{ store.modalNode?.data?.unionType ?? 'UNION ALL' }}</span>
+                  <span class="text-[9px] text-muted-foreground/50">{{ (store.modalNode?.data?.unionType ?? 'UNION ALL') === 'UNION ALL' ? t('sqlbuilder_tool_config_union_all_data') : t('sqlbuilder_tool_config_union_remove_dup') }}</span>
+                </div>
+              </div>
+
+              <!-- Type mismatch warning -->
+              <div v-if="unionColMapping.some(r => hasUnionTypeMismatch(r))"
+                class="flex items-center gap-2 px-3 py-2 rounded-lg border border-amber-500/30 bg-amber-500/5 text-[10px] text-amber-400">
+                <span class="font-bold shrink-0">⚠</span>
+                {{ t('sqlbuilder_tool_config_union_review_warn') }}
+              </div>
+
+              <!-- Column coverage matrix -->
+              <div v-if="unionColMapping.length && unionGroupedCols.length" class="flex flex-col gap-2">
+                <p class="text-[10px] font-semibold text-yellow-500 uppercase tracking-wide">Column Coverage</p>
+                <div class="rounded-xl border border-border/40 overflow-auto max-h-[220px]">
+                  <table class="w-full text-[9px] font-mono border-collapse min-w-max">
+                    <thead>
+                      <tr class="bg-muted/30 border-b border-border/30">
+                        <th class="text-left px-3 py-2 font-semibold text-muted-foreground/70 min-w-[100px] sticky left-0 bg-muted/30">Output Column</th>
+                        <th v-for="grp in unionGroupedCols" :key="grp.sourceId"
+                          class="px-2 py-2 font-semibold text-center whitespace-nowrap max-w-[90px]">
+                          <span :class="[
+                            'text-[7px] px-1 py-0.5 rounded font-bold uppercase',
+                            grp.tag === 'TABLE' ? 'bg-sky-500/20 text-sky-400' :
+                            grp.tag === 'CTE'   ? 'bg-violet-500/20 text-violet-400' :
+                            grp.tag === 'UNION' ? 'bg-yellow-500/20 text-yellow-500' :
+                            grp.tag === 'GROUP' ? 'bg-orange-500/20 text-orange-400' :
+                                                  'bg-muted text-muted-foreground',
+                          ]">{{ grp.tag }}</span>
+                          <span class="block text-[8px] text-muted-foreground/60 truncate max-w-[80px] mx-auto mt-0.5">{{ grp.label }}</span>
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="row in unionColMapping" :key="row.outputName"
+                        class="border-b border-border/15 last:border-0 hover:bg-muted/10 transition-colors"
+                        :class="unionMappingHasAllNullRows.includes(row.outputName) ? 'bg-rose-500/5' : hasUnionTypeMismatch(row) ? 'bg-amber-500/5' : ''">
+                        <td class="px-3 py-1.5 font-semibold sticky left-0 bg-background/80"
+                          :class="unionMappingHasAllNullRows.includes(row.outputName) ? 'text-rose-400' : hasUnionTypeMismatch(row) ? 'text-amber-400' : 'text-foreground/80'">
+                          {{ row.outputName }}
+                          <span v-if="hasUnionTypeMismatch(row)" class="ml-1 text-amber-400">⚠</span>
+                          <span v-if="unionMappingHasAllNullRows.includes(row.outputName)" class="ml-1 text-rose-400 font-bold">✕</span>
+                        </td>
+                        <td v-for="grp in unionGroupedCols" :key="grp.sourceId" class="px-2 py-1.5 text-center">
+                          <template v-if="row.picks[grp.sourceId]">
+                            <span :class="['text-[7px] px-1 py-0.5 rounded font-bold mr-0.5', getColTypeBadge(getUnionPickType(grp.sourceId, row.picks[grp.sourceId]!)).cls]">
+                              {{ getColTypeBadge(getUnionPickType(grp.sourceId, row.picks[grp.sourceId]!)).label }}
+                            </span>
+                            <span class="text-[9px] text-yellow-500/90">{{ row.picks[grp.sourceId] }}</span>
+                          </template>
+                          <span v-else class="text-[9px] text-muted-foreground/30 italic">NULL</span>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <!-- SQL Preview (full) -->
+              <div class="flex flex-col gap-2">
+                <p class="text-[10px] font-semibold text-yellow-500 uppercase tracking-wide">SQL Preview</p>
+                <div v-if="unionSources.length"
+                  class="px-4 py-3 rounded-xl bg-muted/20 border border-border/30 overflow-y-auto overflow-x-auto max-h-[280px]">
+                  <code class="text-[10px] font-mono text-foreground/70 leading-relaxed whitespace-pre">{{ unionSqlPreview }}</code>
+                </div>
+                <div v-else class="px-4 py-3 rounded-xl bg-muted/10 border border-border/20 text-[10px] text-muted-foreground/40 italic">
+                  {{ t('sqlbuilder_tool_config_union_add_sources_first') }}
+                </div>
+              </div>
+
+            </div><!-- /STEP 5 -->
+
+            </div><!-- /step content -->
+            </div><!-- /wizard container -->
+          </template>
+
+          <!-- ── Subquery ────────────────────────────────────────────── -->
+          <template v-else-if="nodeType === 'subquery'">
+
+            <!-- Verbatim mode: customSql set AND no structured columns -->
+            <template v-if="store.modalNode.data.customSql?.trim() && !(store.modalNode.data.selectItems as any[])?.length && !(store.modalNode.data.mathItems as any[])?.length && !(store.modalNode.data.caseWhens as any[])?.length">
+              <div class="flex flex-col gap-3 flex-1 min-h-0">
+                <!-- Header row: badge + alias + clear button -->
+                <div class="flex items-center gap-3 shrink-0">
+                  <span class="text-[9px] px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-400 font-mono border border-indigo-500/30 font-bold shrink-0">verbatim</span>
+                  <div class="flex items-center gap-1.5 flex-1 min-w-0">
+                    <span class="text-[10px] text-muted-foreground shrink-0">CTE alias:</span>
+                    <input
+                      :value="store.modalNode.data.alias ?? ''"
+                      @input="tn.setModalData({ alias: ($event.target as HTMLInputElement).value })"
+                      placeholder="cte_name"
+                      class="w-36 text-[10px] font-mono border border-indigo-500/30 rounded px-2 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-indigo-400/50"
+                    />
+                  </div>
+                  <button @click="tn.setModalData({ customSql: '' })"
+                    class="text-[10px] px-2.5 py-1 rounded-lg border border-indigo-500/30 text-indigo-500 hover:bg-indigo-500/10 transition-colors font-semibold shrink-0">
+                    {{ t('sqlbuilder_tool_config_subq_clear_to_builder') }}
+                  </button>
+                </div>
+                <SqlAutoInput
+                  tag="textarea"
+                  col-source="all"
+                  :model-value="store.modalNode.data.customSql ?? ''"
+                  @update:model-value="tn.setModalData({ customSql: $event })"
+                  :rows="22"
+                  input-class="w-full flex-1 min-h-0 text-[11px] font-mono border border-indigo-500/20 rounded-lg px-3 py-2.5 bg-background focus:outline-none focus:ring-2 focus:ring-indigo-400/40 resize-none leading-relaxed text-foreground/80"
+                />
+              </div>
+            </template>
+
+            <!-- Builder mode: 2-column layout (includes hybrid when customSql = inner query) -->
+            <template v-else>
+
+              <!-- Hybrid / Imported-Verbatim banner: inner SQL textarea + mode-aware copy -->
+              <div v-if="store.modalNode.data.customSql?.trim()"
+                class="flex flex-col gap-2 mb-4 border rounded-xl p-3 bg-indigo-500/5 border-indigo-500/20">
+                <div class="flex items-center justify-between gap-2 flex-wrap">
+                  <div class="flex items-center gap-2 min-w-0">
+                    <span v-if="store.modalNode.data._importVerbatim"
+                      class="text-[9px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-400 font-mono border border-amber-500/30 font-bold shrink-0">imported</span>
+                    <span v-else
+                      class="text-[9px] px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-400 font-mono border border-indigo-500/30 font-bold shrink-0">hybrid</span>
+                    <span class="text-[10px] text-muted-foreground truncate">
+                      <template v-if="store.modalNode.data._importVerbatim">
+                        {{ t('sqlbuilder_tool_config_subq_imported_hint') }}
+                      </template>
+                      <template v-else>{{ t('sqlbuilder_tool_config_subq_hybrid_hint') }}</template>
+                    </span>
+                  </div>
+                  <div class="flex items-center gap-1.5 shrink-0">
+                    <button v-if="store.modalNode.data._importVerbatim"
+                      @click="tn.setModalData({ customSql: '', _importVerbatim: false })"
+                      :title="t('sqlbuilder_tool_config_subq_to_builder_tip')"
+                      class="text-[9px] px-2 py-0.5 rounded border border-amber-500/30 text-amber-500/80 hover:bg-amber-500/10 transition-colors">
+                      {{ t('sqlbuilder_tool_config_subq_to_builder_mode') }}
+                    </button>
+                    <button v-else
+                      @click="tn.setModalData({ customSql: '', _importVerbatim: false })"
+                      class="text-[9px] px-2 py-0.5 rounded border border-indigo-500/30 text-indigo-500/70 hover:bg-indigo-500/10 transition-colors">
+                      {{ t('sqlbuilder_tool_config_subq_clear_raw') }}
                     </button>
                   </div>
                 </div>
-                <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">ไม่มี filter = ดึงข้อมูลทั้งหมดจาก union</p>
+                <SqlAutoInput
+                  tag="textarea"
+                  col-source="all"
+                  :model-value="store.modalNode.data.customSql ?? ''"
+                  @update:model-value="tn.setModalData({ customSql: $event })"
+                  :rows="store.modalNode.data._importVerbatim ? 12 : 5"
+                  input-class="w-full text-[10px] font-mono border border-indigo-500/20 rounded-lg px-3 py-2 bg-background/60 focus:outline-none focus:ring-1 focus:ring-indigo-400/40 resize-none leading-relaxed text-foreground/70"
+                />
               </div>
-              <!-- SQL Preview -->
-              <div class="flex flex-col gap-2">
-                <p class="text-[11px] font-semibold text-yellow-500 uppercase tracking-wide">SQL Preview</p>
-                <div v-if="unionSources.length"
-                  class="px-3 py-2 rounded-xl bg-yellow-500/5 border border-yellow-400/20 max-h-[140px] overflow-y-auto overflow-x-auto">
-                  <div class="flex items-start gap-1.5">
-                    <span class="text-[9px] font-bold text-yellow-600 shrink-0 mt-0.5">SQL</span>
-                    <code class="text-[9px] font-mono text-yellow-400/80 leading-relaxed whitespace-pre">{{ unionSqlPreview }}</code>
+
+              <div class="grid grid-cols-[1fr_1fr] gap-5 items-start">
+
+              <!-- ── LEFT: Column Browser ─────────────────────────────── -->
+              <div class="flex flex-col gap-4 min-w-0">
+                <div class="flex flex-col gap-3 border rounded-xl p-4 bg-indigo-500/3">
+                  <div class="flex items-center justify-between">
+                    <div>
+                      <p class="text-xs font-bold text-indigo-500">SELECT Columns</p>
+                      <p class="text-[10px] text-muted-foreground mt-0.5">{{ t('sqlbuilder_tool_config_subq_select_desc') }}</p>
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <span class="text-[10px] font-semibold text-indigo-500 bg-indigo-500/10 px-2 py-0.5 rounded-full">
+                        {{ (store.modalNode.data.selectItems ?? []).length }}/{{ upstreamCols.length }}
+                      </span>
+                      <button @click="selectAllSubqCols" class="text-[10px] text-indigo-500 hover:underline font-semibold">{{ t('sqlbuilder_common_all') }}</button>
+                      <span class="text-muted-foreground text-[10px]">/</span>
+                      <button @click="tn.setModalData({ selectItems: [] })" class="text-[10px] text-muted-foreground hover:underline">{{ t('sqlbuilder_common_clear') }}</button>
+                    </div>
                   </div>
-                </div>
-                <div v-else class="px-3 py-3 rounded-xl bg-muted/20 border text-[10px] text-muted-foreground/60 italic">
-                  เลือก Sources เพื่อดู SQL
-                </div>
-              </div>
-            </div><!-- /row3 -->
+
+                  <div class="relative">
+                    <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground/50" />
+                    <input v-model="subqColSearch" :placeholder="t('sqlbuilder_common_search_column')"
+                      class="w-full text-xs border rounded-lg pl-7 pr-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-indigo-400/50 font-mono" />
+                  </div>
+
+                  <div v-if="!upstreamCols.length"
+                    class="flex items-center gap-2 px-3 py-3 rounded-lg bg-muted/30 text-[10px] text-muted-foreground italic">
+                    {{ t('sqlbuilder_tool_config_no_upstream_subq') }}
+                  </div>
+
+                  <div v-else class="border rounded-lg overflow-hidden max-h-[380px] overflow-y-auto">
+                    <template v-for="group in filteredSubqGroupedCols" :key="group.tableId">
+                      <div class="sticky top-0 z-10 flex items-center gap-2 px-3 py-1.5 bg-muted border-b border-border/50">
+                        <Database class="size-3 text-indigo-400 shrink-0" />
+                        <span class="text-[10px] font-semibold text-foreground truncate flex-1">{{ group.tableLabel }}</span>
+                        <span class="text-[9px] text-muted-foreground shrink-0">{{ group.cols.length }}</span>
+                      </div>
+                      <label v-for="col in group.cols" :key="col.name"
+                        class="flex items-center gap-2.5 px-3 py-2 pl-5 cursor-pointer select-none transition-colors border-b border-border/30 last:border-0 hover:bg-indigo-500/5"
+                        :class="isSubqColSelected(col.name) ? 'bg-indigo-500/5' : ''">
+                        <div :class="['size-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors',
+                          isSubqColSelected(col.name) ? 'bg-indigo-500 border-indigo-500' : 'border-border/60 bg-background']">
+                          <svg v-if="isSubqColSelected(col.name)" class="size-2.5 text-white" fill="none" viewBox="0 0 10 10">
+                            <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                          </svg>
+                          <input type="checkbox" class="sr-only"
+                            :checked="isSubqColSelected(col.name)"
+                            @change="tn.toggleSubqCol(col.name, ($event.target as HTMLInputElement).checked)" />
+                        </div>
+                        <Key v-if="col.isPk" class="size-3 text-amber-400 shrink-0" />
+                        <span :class="['text-[9px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(col.type).cls]">
+                          {{ getColTypeBadge(col.type).label }}
+                        </span>
+                        <div class="flex-1 min-w-0">
+                          <p class="text-[11px] truncate" :class="col.isPk ? 'text-amber-500 font-semibold' : 'text-foreground'">{{ col.remark || col.name }}</p>
+                          <p v-if="col.remark" class="font-mono text-[9px] text-muted-foreground/60 truncate">{{ col.name }}</p>
+                        </div>
+                      </label>
+                    </template>
+                    <div v-if="!filteredSubqGroupedCols.length"
+                      class="px-3 py-3 text-[10px] text-muted-foreground/60 italic text-center">
+                      {{ subqColSearch ? t('sqlbuilder_tool_config_loading_match', { q: subqColSearch }) : t('sqlbuilder_tool_config_loading_cols') }}
+                    </div>
+                  </div>
+                </div><!-- /SELECT Columns -->
+
+                <!-- Selected columns + alias -->
+                <div v-if="(store.modalNode.data.selectItems ?? []).length"
+                  class="flex flex-col gap-2 border rounded-xl p-3 bg-indigo-500/3">
+                  <p class="text-[11px] font-semibold text-indigo-500">{{ t('sqlbuilder_tool_config_subq_alias_title') }}
+                    <span class="text-[10px] font-normal text-muted-foreground ml-1">{{ t('sqlbuilder_tool_config_subq_alias_hint') }}</span>
+                  </p>
+                  <div class="flex flex-col gap-1.5 max-h-[160px] overflow-y-auto">
+                    <div v-for="(item, i) in store.modalNode.data.selectItems" :key="'si-' + i"
+                      class="flex items-center gap-2">
+                      <span class="text-[10px] font-mono text-foreground/70 flex-1 truncate min-w-0">{{ item.col }}</span>
+                      <span class="text-[9px] text-muted-foreground/40 shrink-0">AS</span>
+                      <input :value="item.alias"
+                        @input="tn.setSubqColAlias(Number(i), ($event.target as HTMLInputElement).value)"
+                        placeholder="alias"
+                        class="w-24 text-[10px] font-mono border rounded px-2 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-indigo-400/50"
+                        :class="item.alias ? 'border-indigo-400/40' : ''" />
+                      <button @click="tn.removeSubqCol(Number(i))"
+                        class="size-4 flex items-center justify-center rounded hover:bg-destructive/10 hover:text-destructive text-muted-foreground/40 transition-colors shrink-0">
+                        <X class="size-3" />
+                      </button>
+                    </div>
+                  </div>
+                </div><!-- /alias -->
+
+                <!-- MATH Expressions -->
+                <div class="flex flex-col gap-3 border rounded-xl p-4 bg-indigo-500/3">
+                  <div class="flex items-center justify-between">
+                    <div>
+                      <p class="text-xs font-bold text-indigo-500">MATH / Expression</p>
+                      <p class="text-[10px] text-muted-foreground mt-0.5">{{ t('sqlbuilder_tool_config_subq_math_desc') }}</p>
+                    </div>
+                    <button @click="tn.addMathItem()"
+                      class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-indigo-500/30 text-indigo-500 hover:bg-indigo-500/10 transition-colors">
+                      <Plus class="size-2.5" /> {{ t('sqlbuilder_common_add') }}
+                    </button>
+                  </div>
+
+                  <!-- Quick-insert presets -->
+                  <div class="flex flex-wrap gap-1">
+                    <button v-for="p in MATH_PRESETS" :key="p.label"
+                      @click="addMathPreset(p)"
+                      class="text-[9px] px-2 py-0.5 rounded-full border border-indigo-500/25 text-indigo-400/80 hover:bg-indigo-500/10 hover:border-indigo-500/50 hover:text-indigo-400 transition-colors font-mono">
+                      {{ p.label }}
+                    </button>
+                  </div>
+
+                  <p v-if="!(store.modalNode.data.mathItems ?? []).length"
+                    class="text-[10px] text-muted-foreground/50 italic px-1">{{ t('sqlbuilder_tool_config_subq_math_empty') }}</p>
+
+                  <div class="flex flex-col gap-2 max-h-[260px] overflow-y-auto">
+                    <div v-for="(m, mi) in (store.modalNode.data.mathItems ?? [])" :key="'mi-' + mi"
+                      class="flex flex-col gap-1.5 border rounded-xl p-2.5 bg-background/60 shrink-0">
+                      <div class="flex items-center gap-1.5">
+                        <span class="text-[9px] text-indigo-400/60 font-mono shrink-0">expr</span>
+                        <SqlAutoInput
+                          :model-value="m.expr"
+                          @update:model-value="tn.setMathItem(Number(mi), { expr: $event })"
+                          placeholder="( COALESCE(a,0) + COALESCE(b,0) )"
+                          :input-class="'flex-1 text-[10px] font-mono border rounded px-2 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-indigo-400/50 w-full' + (m.expr ? ' border-indigo-400/40' : '')"
+                        />
+                        <button @click="tn.removeMathItem(Number(mi))"
+                          class="size-5 flex items-center justify-center rounded hover:bg-destructive/10 hover:text-destructive text-muted-foreground/40 transition-colors shrink-0">
+                          <X class="size-3" />
+                        </button>
+                      </div>
+                      <div class="flex items-center gap-1.5">
+                        <span class="text-[9px] text-indigo-400/60 font-mono shrink-0">AS</span>
+                        <input :value="m.alias"
+                          @input="tn.setMathItem(Number(mi), { alias: ($event.target as HTMLInputElement).value })"
+                          placeholder="alias_name"
+                          class="flex-1 text-[10px] font-mono border rounded px-2 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-indigo-400/50"
+                          :class="m.alias ? 'border-indigo-400/40 text-indigo-300' : ''" />
+                      </div>
+                    </div>
+                  </div>
+                </div><!-- /MATH -->
+
+              </div><!-- /LEFT -->
+
+              <!-- ── RIGHT: CASE WHEN + WHERE + Preview ──────────────── -->
+              <div class="flex flex-col gap-4 min-w-0">
+
+                <!-- CASE WHEN -->
+                <div class="flex flex-col gap-3 border rounded-xl p-4 bg-indigo-500/3">
+                  <div class="flex items-center justify-between">
+                    <div>
+                      <p class="text-xs font-bold text-indigo-500">CASE WHEN</p>
+                      <p class="text-[10px] text-muted-foreground mt-0.5">{{ t('sqlbuilder_tool_config_subq_case_desc') }}</p>
+                    </div>
+                    <button @click="tn.addSubqCaseWhen()"
+                      class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-indigo-500/30 text-indigo-500 hover:bg-indigo-500/10 transition-colors">
+                      <Plus class="size-2.5" /> {{ t('sqlbuilder_common_add') }}
+                    </button>
+                  </div>
+
+                  <p v-if="!(store.modalNode.data.caseWhens ?? []).length"
+                    class="text-[10px] text-muted-foreground/50 italic px-1">{{ t('sqlbuilder_tool_config_subq_case_empty') }}</p>
+
+                  <div class="flex flex-col gap-3 max-h-[320px] overflow-y-auto">
+                    <div v-for="(cw, ci) in (store.modalNode.data.caseWhens ?? [])" :key="'cw-' + ci"
+                      class="flex flex-col gap-2 border rounded-xl p-3 bg-background/60 shrink-0">
+                      <!-- Header row: CASE label + alias + remove -->
+                      <div class="flex items-center gap-2">
+                        <span class="text-[10px] font-semibold text-indigo-400 uppercase tracking-wide shrink-0">CASE {{ Number(ci) + 1 }}</span>
+                        <input :value="cw.alias"
+                          @input="tn.setSubqCaseWhen(Number(ci), { alias: ($event.target as HTMLInputElement).value })"
+                          placeholder="AS alias_name"
+                          class="flex-1 text-[10px] font-mono border rounded px-2 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-indigo-400/50"
+                          :class="cw.alias ? 'border-indigo-400/40' : ''" />
+                        <button @click="tn.removeSubqCaseWhen(Number(ci))"
+                          class="size-5 flex items-center justify-center rounded hover:bg-destructive/10 hover:text-destructive text-muted-foreground/60 transition-colors shrink-0">
+                          <X class="size-3.5" />
+                        </button>
+                      </div>
+
+                      <!-- WHEN branches -->
+                      <div class="flex flex-col gap-1">
+                        <div v-for="(branch, bi) in cw.branches" :key="'b-' + bi"
+                          class="grid grid-cols-[auto_1fr_1fr_auto] gap-1.5 items-center">
+                          <span class="text-[9px] font-mono text-indigo-400/70 shrink-0">WHEN</span>
+                          <SqlAutoInput
+                            :model-value="branch.condition"
+                            @update:model-value="tn.setSubqCaseWhenBranch(Number(ci), Number(bi), { condition: $event })"
+                            :placeholder="`condition ${Number(bi)+1}`"
+                            input-class="text-[10px] font-mono border rounded px-2 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-indigo-400/50 w-full"
+                          />
+                          <SqlAutoInput
+                            :model-value="branch.result"
+                            @update:model-value="tn.setSubqCaseWhenBranch(Number(ci), Number(bi), { result: $event })"
+                            placeholder="THEN result"
+                            input-class="text-[10px] font-mono border rounded px-2 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-indigo-400/50 w-full"
+                          />
+                          <button v-if="cw.branches.length > 1"
+                            @click="tn.removeSubqCaseWhenBranch(Number(ci), Number(bi))"
+                            class="size-5 flex items-center justify-center rounded hover:bg-destructive/10 hover:text-destructive text-muted-foreground/40 transition-colors shrink-0">
+                            <X class="size-3" />
+                          </button>
+                          <div v-else class="size-5 shrink-0" />
+                        </div>
+                      </div>
+
+                      <!-- ELSE row -->
+                      <div class="grid grid-cols-[auto_1fr] gap-1.5 items-center">
+                        <span class="text-[9px] font-mono text-indigo-400/70 shrink-0">ELSE</span>
+                        <input :value="cw.elsePart"
+                          @input="tn.setSubqCaseWhen(Number(ci), { elsePart: ($event.target as HTMLInputElement).value })"
+                          placeholder="NULL"
+                          class="text-[10px] font-mono border rounded px-2 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-indigo-400/50" />
+                      </div>
+
+                      <button @click="tn.addSubqCaseWhenBranch(Number(ci))"
+                        class="text-[9px] w-full py-1 rounded border border-dashed border-indigo-500/30 text-indigo-500/70 hover:bg-indigo-500/8 transition-colors flex items-center justify-center gap-1">
+                        <Plus class="size-3" /> {{ t('sqlbuilder_tool_config_subq_add_when') }}
+                      </button>
+                    </div>
+                  </div>
+                </div><!-- /CASE WHEN -->
+
+                <!-- WHERE Conditions -->
+                <div class="flex flex-col gap-2 border rounded-xl p-4 bg-rose-500/3">
+                  <div class="flex items-center justify-between">
+                    <label class="text-[11px] font-semibold text-rose-500 uppercase tracking-wide">
+                      WHERE
+                      <span v-if="(store.modalNode.data.conditions ?? []).filter((c: any) => c.column).length"
+                        class="ml-1 text-[10px] font-normal text-muted-foreground normal-case">
+                        {{ (store.modalNode.data.conditions ?? []).filter((c: any) => c.column).length }} conditions
+                      </span>
+                    </label>
+                    <button @click="tn.addWhereCondition()"
+                      class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-rose-500/30 text-rose-500 hover:bg-rose-500/10 transition-colors">
+                      <Plus class="size-2.5" /> {{ t('sqlbuilder_common_add') }}
+                    </button>
+                  </div>
+
+                  <div class="flex flex-col gap-2 max-h-[220px] overflow-y-auto">
+                    <div v-for="(cond, i) in (store.modalNode.data.conditions ?? [])" :key="'wc-' + i"
+                      class="flex flex-col gap-1.5 border rounded-xl p-2.5 bg-background/60 shrink-0">
+                      <div class="flex items-center gap-1.5">
+                        <input :value="cond.column"
+                          @input="tn.setWhereCondition(Number(i), { column: ($event.target as HTMLInputElement).value })"
+                          placeholder="column name"
+                          list="modal-col-list"
+                          class="flex-1 text-[10px] font-mono border rounded px-2 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-rose-400/50" />
+                        <button @click="tn.removeWhereCondition(Number(i))"
+                          class="size-5 flex items-center justify-center rounded hover:bg-destructive/10 hover:text-destructive text-muted-foreground/40 transition-colors shrink-0">
+                          <X class="size-3" />
+                        </button>
+                      </div>
+                      <div class="flex flex-wrap gap-1">
+                        <button v-for="op in ['=','!=','>','<','>=','<=','LIKE','IN','IS NULL','IS NOT NULL']" :key="op"
+                          @click="tn.setWhereCondition(Number(i), { operator: op })"
+                          :class="['text-[8px] px-1.5 py-0.5 rounded border font-mono transition-colors', whereOpClass(cond.operator, op)]">
+                          {{ op }}
+                        </button>
+                      </div>
+                      <input v-if="cond.operator !== 'IS NULL' && cond.operator !== 'IS NOT NULL'"
+                        :value="cond.value"
+                        @input="tn.setWhereCondition(Number(i), { value: ($event.target as HTMLInputElement).value })"
+                        placeholder="value"
+                        class="text-[10px] font-mono border rounded px-2 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-rose-400/50" />
+                    </div>
+                  </div>
+                  <p v-if="!(store.modalNode.data.conditions ?? []).length"
+                    class="text-[10px] text-muted-foreground/50 italic px-1">{{ t('sqlbuilder_tool_config_no_condition_all') }}</p>
+                </div><!-- /WHERE -->
+
+                <!-- SQL Preview -->
+                <div class="flex flex-col gap-1.5">
+                  <div class="flex items-center gap-2">
+                    <span class="text-[10px] font-semibold text-indigo-500 uppercase tracking-wide">SQL Preview</span>
+                    <button @click="tn.setModalData({ customSql: subqSqlPreview })"
+                      v-if="subqSqlPreview && subqSqlPreview !== 'SELECT *\nFROM   <upstream>'"
+                      class="text-[9px] px-2 py-0.5 rounded border border-indigo-500/30 text-indigo-500/70 hover:bg-indigo-500/10 transition-colors">
+                      {{ t('sqlbuilder_tool_config_subq_save_verbatim') }}
+                    </button>
+                  </div>
+                  <div class="px-3 py-2 rounded-lg bg-indigo-500/5 border border-indigo-400/20 max-h-[160px] overflow-y-auto overflow-x-auto">
+                    <code class="text-[9px] font-mono text-indigo-300/80 leading-relaxed whitespace-pre">{{ subqSqlPreview || 'SELECT *\nFROM   <upstream>' }}</code>
+                  </div>
+                </div><!-- /preview -->
+
+              </div><!-- /RIGHT -->
+
+              </div><!-- /grid -->
+            </template><!-- /builder mode -->
 
           </template>
 
@@ -2632,11 +4150,11 @@ const finishBtnStyle = computed(() => {
               <div class="flex items-center justify-between">
                 <div>
                   <p class="text-xs font-bold text-rose-500">WHERE Conditions</p>
-                  <p class="text-[10px] text-muted-foreground mt-0.5">กรองข้อมูลใน WHERE clause</p>
+                  <p class="text-[10px] text-muted-foreground mt-0.5">{{ t('sqlbuilder_tool_config_where_desc') }}</p>
                 </div>
                 <button @click="tn.addWhereCondition()"
                   class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-rose-500/30 text-rose-400 hover:bg-rose-500/10 transition-colors">
-                  <Plus class="size-2.5" /> เพิ่ม
+                  <Plus class="size-2.5" /> {{ t('sqlbuilder_common_add') }}
                 </button>
               </div>
 
@@ -2670,7 +4188,7 @@ const finishBtnStyle = computed(() => {
                         <p v-if="upstreamCols.find(c => c.name === cond.column)?.remark" class="font-mono text-[9px] text-muted-foreground/60 truncate">{{ cond.column }}</p>
                       </div>
                     </template>
-                    <span v-else class="text-muted-foreground text-[11px] flex-1">— เลือก Column —</span>
+                    <span v-else class="text-muted-foreground text-[11px] flex-1">{{ t('sqlbuilder_common_select_column') }}</span>
                     <ChevronDown :class="['size-3 shrink-0 text-muted-foreground transition-transform', openWhereColIdx === Number(i) ? 'rotate-180' : '']" />
                   </button>
 
@@ -2685,7 +4203,7 @@ const finishBtnStyle = computed(() => {
 
                   <!-- Value input -->
                   <div v-if="cond.operator && !['IS NULL', 'IS NOT NULL'].includes(cond.operator)" class="flex items-center gap-2">
-                    <label class="text-[10px] font-semibold text-muted-foreground w-8 shrink-0">ค่า</label>
+                    <label class="text-[10px] font-semibold text-muted-foreground w-8 shrink-0">{{ t('sqlbuilder_common_value') }}</label>
                     <div v-if="isDateCol(cond.column)" class="flex-1 relative flex items-center">
                       <input :ref="(el) => setWhereDateRef(Number(i), el)" type="date" :value="cond.value"
                         @input="tn.setWhereCondition(Number(i), { value: ($event.target as HTMLInputElement).value })"
@@ -2697,7 +4215,7 @@ const finishBtnStyle = computed(() => {
                       </button>
                     </div>
                     <input v-else :value="cond.value" @input="tn.setWhereCondition(Number(i), { value: ($event.target as HTMLInputElement).value })"
-                      :placeholder="cond.operator === 'LIKE' ? 'เช่น %keyword%' : cond.operator === 'IN' ? 'เช่น 1,2,3' : 'ค่าที่ต้องการ'"
+                      :placeholder="cond.operator === 'LIKE' ? t('sqlbuilder_tool_config_ph_like') : cond.operator === 'IN' ? t('sqlbuilder_tool_config_ph_in') : t('sqlbuilder_tool_config_ph_value')"
                       class="flex-1 text-xs border rounded-lg px-2.5 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-rose-400/50 font-mono"
                       :class="cond.value ? 'border-rose-400/40' : ''" />
                   </div>
@@ -2710,7 +4228,7 @@ const finishBtnStyle = computed(() => {
                   </div>
                 </div>
               </div>
-              <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">ไม่มี condition = ดึงข้อมูลทั้งหมด</p>
+              <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">{{ t('sqlbuilder_tool_config_no_condition_all') }}</p>
             </div><!-- /LEFT -->
 
             <!-- ── RIGHT: SQL Preview ─────────────────────────────────── -->
@@ -2729,54 +4247,132 @@ const finishBtnStyle = computed(() => {
         </div>
 
         <!-- Footer -->
-        <div class="px-5 py-3.5 border-t shrink-0 flex items-center justify-between">
-          <p v-if="nodeType === 'group'" class="text-[10px] text-muted-foreground">
-            GROUP BY <span class="font-semibold text-orange-500">{{ groupColCount }}</span> fields
-            <span v-if="store.modalNode?.data?.aggs?.length">
-              + <span class="font-semibold text-orange-500">{{ store.modalNode.data.aggs.length }}</span> aggs
-            </span>
-            <span v-if="groupFilterCount">
-              + <span class="font-semibold text-amber-600">{{ groupFilterCount }}</span> HAVING
-            </span>
-            <span v-if="whereCondCount">
-              · WHERE <span class="font-semibold text-rose-500">{{ whereCondCount }}</span>
-            </span>
-          </p>
-          <p v-else-if="nodeType === 'sort'" class="text-[10px] text-muted-foreground">
-            ORDER BY <span class="font-semibold text-green-600">{{ sortItemCount }}</span> columns
-            <span v-if="whereCondCount">
-              · WHERE <span class="font-semibold text-rose-500">{{ whereCondCount }}</span>
-            </span>
-          </p>
-          <p v-else-if="nodeType === 'calc'" class="text-[10px] text-muted-foreground">
-            <span class="font-semibold text-teal-500">{{ calcItemCount }}</span> calculated columns
-            <span v-if="calcFilterCount"> + <span class="font-semibold text-rose-500">{{ calcFilterCount }}</span> filters</span>
-            <span v-if="whereCondCount"> · WHERE <span class="font-semibold text-rose-500">{{ whereCondCount }}</span></span>
-          </p>
-          <p v-else-if="nodeType === 'where'" class="text-[10px] text-muted-foreground">
-            WHERE <span class="font-semibold text-rose-500">{{ whereCondCount }}</span> conditions
-          </p>
-          <p v-else-if="nodeType === 'union'" class="text-[10px] text-muted-foreground">
-            {{ store.modalNode?.data?.unionType ?? 'UNION ALL' }}
-            <span class="font-semibold text-yellow-500">
-              {{ (store.modalNode?.data?.selectedCols ?? []).length || 'SELECT *' }}
-            </span>
-            <span v-if="(store.modalNode?.data?.selectedCols ?? []).length"> cols</span>
-          </p>
-          <span v-else />
-          <div class="flex gap-2">
-            <button @click="close"
-              class="text-xs px-4 py-2 border rounded-lg hover:bg-accent transition-colors">
-              ยกเลิก
-            </button>
-            <button @click="finish"
-              class="text-xs px-5 py-2 text-white rounded-lg font-semibold hover:opacity-90 transition-opacity flex items-center gap-1.5"
-              :style="finishBtnStyle"
-            >
-              <Sparkles class="size-3.5" />
-              Finish &amp; Generate SQL
-            </button>
-          </div>
+        <div class="border-t shrink-0 flex flex-col">
+          <!-- Status + buttons row -->
+          <div class="px-5 py-3 flex items-center justify-between">
+            <p v-if="nodeType === 'group'" class="text-[10px] text-muted-foreground">
+              GROUP BY <span class="font-semibold text-orange-500">{{ groupColCount }}</span> fields
+              <span v-if="store.modalNode?.data?.aggs?.length">
+                + <span class="font-semibold text-orange-500">{{ store.modalNode.data.aggs.length }}</span> aggs
+              </span>
+              <span v-if="groupFilterCount">
+                + <span class="font-semibold text-amber-600">{{ groupFilterCount }}</span> HAVING
+              </span>
+              <span v-if="whereCondCount">
+                · WHERE <span class="font-semibold text-rose-500">{{ whereCondCount }}</span>
+              </span>
+            </p>
+            <p v-else-if="nodeType === 'sort'" class="text-[10px] text-muted-foreground">
+              ORDER BY <span class="font-semibold text-green-600">{{ sortItemCount }}</span> columns
+              <span v-if="whereCondCount">
+                · WHERE <span class="font-semibold text-rose-500">{{ whereCondCount }}</span>
+              </span>
+            </p>
+            <p v-else-if="nodeType === 'calc'" class="text-[10px] text-muted-foreground">
+              <span class="font-semibold text-teal-500">{{ calcItemCount }}</span> calculated columns
+              <span v-if="calcFilterCount"> + <span class="font-semibold text-rose-500">{{ calcFilterCount }}</span> filters</span>
+              <span v-if="whereCondCount"> · WHERE <span class="font-semibold text-rose-500">{{ whereCondCount }}</span></span>
+            </p>
+            <p v-else-if="nodeType === 'where'" class="text-[10px] text-muted-foreground">
+              WHERE <span class="font-semibold text-rose-500">{{ whereCondCount }}</span> conditions
+            </p>
+            <p v-else-if="nodeType === 'subquery'" class="text-[10px] text-muted-foreground">
+              <span v-if="store.modalNode?.data?.customSql?.trim() && !(store.modalNode.data.selectItems as any[])?.length && !(store.modalNode.data.mathItems as any[])?.length && !(store.modalNode.data.caseWhens as any[])?.length">
+                <span class="font-semibold text-indigo-400">{{ store.modalNode.data.alias || 'verbatim' }}</span>
+                · <span class="text-muted-foreground">{{ (store.modalNode.data.customSql as string).trim().split('\n').length }} lines</span>
+              </span>
+              <span v-else-if="store.modalNode?.data?._importVerbatim && store.modalNode?.data?.customSql?.trim()">
+                <span class="font-semibold text-amber-400">imported</span>
+                · <span class="text-muted-foreground">{{ (store.modalNode.data.customSql as string).trim().split('\n').length }} lines</span>
+                · <span class="text-indigo-400">{{ (store.modalNode?.data?.selectItems ?? []).length }} cols</span>
+                <span v-if="(store.modalNode?.data?.caseWhens ?? []).length"> · <span class="text-indigo-400">{{ (store.modalNode.data.caseWhens as any[]).length }}</span> CASE</span>
+              </span>
+              <span v-else-if="store.modalNode?.data?.customSql?.trim()">
+                hybrid · <span class="text-indigo-400">{{ (store.modalNode?.data?.selectItems ?? []).length }} cols</span>
+                <span v-if="(store.modalNode?.data?.mathItems ?? []).filter((m: any) => m.expr?.trim()).length"> + <span class="font-semibold text-indigo-400">{{ (store.modalNode.data.mathItems as any[]).filter((m: any) => m.expr?.trim()).length }}</span> MATH</span>
+              </span>
+              <span v-else>
+                <span class="font-semibold text-indigo-500">{{ (store.modalNode?.data?.selectItems ?? []).length }}</span> cols
+                <span v-if="(store.modalNode?.data?.mathItems ?? []).filter((m: any) => m.expr?.trim()).length"> + <span class="font-semibold text-indigo-500">{{ (store.modalNode.data.mathItems as any[]).filter((m: any) => m.expr?.trim()).length }}</span> MATH</span>
+                <span v-if="(store.modalNode?.data?.caseWhens ?? []).length"> + <span class="font-semibold text-indigo-500">{{ (store.modalNode.data.caseWhens as any[]).length }}</span> CASE</span>
+                <span v-if="(store.modalNode?.data?.conditions ?? []).filter((c: any) => c.column).length"> + <span class="font-semibold text-rose-500">{{ (store.modalNode.data.conditions as any[]).filter((c: any) => c.column).length }}</span> WHERE</span>
+              </span>
+            </p>
+            <div v-else-if="nodeType === 'union'" class="flex items-center gap-3 flex-1 min-w-0">
+              <span class="text-[10px] text-muted-foreground/60">{{ unionStep }} / {{ UNION_STEPS.length }}</span>
+              <span class="text-[10px] font-semibold text-yellow-500">{{ UNION_STEPS[unionStep - 1]?.label }}</span>
+              <span v-if="unionSources.length" class="text-[10px] text-muted-foreground/50">
+                · {{ unionSources.length }} src · {{ unionColMapping.length || '*' }} cols
+                · {{ store.modalNode?.data?.unionType ?? 'UNION ALL' }}
+              </span>
+            </div>
+            <span v-else />
+            <div class="flex flex-col gap-2 items-end shrink-0 ml-4">
+              <!-- Union: step navigation buttons -->
+              <template v-if="nodeType === 'union'">
+                <div class="flex gap-2">
+                  <button @click="close"
+                    class="text-xs px-4 py-2 border rounded-lg hover:bg-accent transition-colors">
+                    {{ t('sqlbuilder_common_cancel') }}
+                  </button>
+                  <button v-if="unionStep > 1" @click="unionStep--"
+                    class="text-xs px-4 py-2 border border-border/60 rounded-lg hover:bg-muted/30 transition-colors flex items-center gap-1.5">
+                    {{ t('sqlbuilder_tool_config_union_back') }}
+                  </button>
+                  <!-- Skip buttons for optional steps -->
+                  <button v-if="unionStep === 2 || unionStep === 3"
+                    @click="unionStep++"
+                    class="text-xs px-4 py-2 border border-border/40 rounded-lg text-muted-foreground/60 hover:text-foreground/70 hover:bg-muted/20 transition-colors">
+                    {{ t('sqlbuilder_tool_config_union_skip_step') }}
+                  </button>
+                  <!-- Step 4 skip: no conditions -->
+                  <button v-if="unionStep === 4"
+                    @click="unionStep++"
+                    class="text-xs px-4 py-2 border border-border/40 rounded-lg text-muted-foreground/60 hover:text-foreground/70 hover:bg-muted/20 transition-colors">
+                    {{ t('sqlbuilder_tool_config_union_no_cond_arrow') }}
+                  </button>
+                  <!-- Next / final -->
+                  <button v-if="unionStep < UNION_STEPS.length"
+                    @click="unionStep++"
+                    :disabled="unionStep === 1 && unionSources.length < 1"
+                    :class="[
+                      'text-xs px-5 py-2 rounded-lg font-semibold flex items-center gap-1.5 transition-all',
+                      unionStep === 1 && unionSources.length < 1
+                        ? 'bg-yellow-500/30 text-white/50 cursor-not-allowed'
+                        : 'bg-yellow-500 text-white hover:bg-yellow-400',
+                    ]">
+                    {{ unionStep === 4 ? t('sqlbuilder_tool_config_union_review_sql') : t('sqlbuilder_common_next') }}
+                  </button>
+                  <button v-else @click="finishAndSave()"
+                    class="text-xs px-5 py-2 text-black rounded-lg font-semibold hover:opacity-90 transition-opacity flex items-center gap-1.5 bg-yellow-500">
+                    <Sparkles class="size-3.5" />
+                    {{ t('sqlbuilder_tool_config_union_confirm') }}
+                  </button>
+                </div>
+              </template>
+
+              <!-- Other node types: original buttons -->
+              <template v-else>
+                <button v-if="nodeType !== 'group'" @click="generateSQL()"
+                  class="text-xs px-4 py-2 border rounded-lg hover:bg-accent transition-colors flex items-center gap-1.5 w-full justify-center">
+                  <Play class="size-3.5" />
+                  Generate SQL
+                </button>
+                <div class="flex gap-2">
+                  <button @click="close"
+                    class="text-xs px-4 py-2 border rounded-lg hover:bg-accent transition-colors">
+                    {{ t('sqlbuilder_common_cancel') }}
+                  </button>
+                  <button @click="nodeType === 'group' ? finish() : finishAndSave()"
+                    class="text-xs px-5 py-2 text-white rounded-lg font-semibold hover:opacity-90 transition-opacity flex items-center gap-1.5"
+                    :style="finishBtnStyle">
+                    <Sparkles class="size-3.5" />
+                    Finish
+                  </button>
+                </div>
+              </template>
+            </div>
+          </div><!-- /status+buttons row -->
         </div>
       </div>
     </div>

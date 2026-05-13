@@ -4,34 +4,38 @@
  * Based on ChartDB: ChartDBRightPanel.vue
  */
 import {
-  Layers, Calculator, Database, SortAsc, GitMerge, Filter,
+  Layers, Calculator, Database, SortAsc, GitMerge, Filter, Braces,
   Play, Plus, Loader2,
 } from 'lucide-vue-next'
+
+const { t } = useI18n()
 
 const props = defineProps<{ columnsLoading?: boolean }>()
 
 const emit = defineEmits<{
   addTool: [toolId: string]
   generate: []
+  finish: []
 }>()
 
 // Processing tool nodes (create toolNode)
-const tools = [
-  { id: 'cte',   icon: Layers,     color: 'text-violet-500', bg: 'bg-violet-500/10', border: 'border-violet-500/40', label: 'CTE Frame',  desc: 'ลาก Table เข้ากรอบ' },
-  { id: 'calc',  icon: Calculator, color: 'text-teal-500',   bg: 'bg-teal-500/10',   border: 'border-teal-500/40',   label: 'Calculator', desc: 'คำนวณ column' },
-  { id: 'group', icon: Database,   color: 'text-orange-500', bg: 'bg-orange-500/10', border: 'border-orange-500/40', label: 'Group/By',   desc: 'GROUP BY + Aggregate' },
-  { id: 'sort',  icon: SortAsc,    color: 'text-green-500',  bg: 'bg-green-500/10',  border: 'border-green-500/40',  label: 'Sort Data',  desc: 'ORDER BY' },
-  { id: 'union', icon: GitMerge,   color: 'text-yellow-500', bg: 'bg-yellow-500/10', border: 'border-yellow-500/40', label: 'Union',      desc: 'UNION / UNION ALL' },
-  { id: 'where', icon: Filter,     color: 'text-rose-500',   bg: 'bg-rose-500/10',   border: 'border-rose-500/40',   label: 'Where',      desc: 'กรอง WHERE' },
-]
+const tools = computed(() => [
+  { id: 'cte',   icon: Layers,     color: 'text-violet-500', bg: 'bg-violet-500/10', border: 'border-violet-500/40', label: 'CTE Frame',  desc: t('sqlbuilder_right_tool_cte_desc') },
+  { id: 'calc',  icon: Calculator, color: 'text-teal-500',   bg: 'bg-teal-500/10',   border: 'border-teal-500/40',   label: 'Calculator', desc: t('sqlbuilder_right_tool_calc_desc') },
+  { id: 'group', icon: Database,   color: 'text-orange-500', bg: 'bg-orange-500/10', border: 'border-orange-500/40', label: 'Group/By',   desc: t('sqlbuilder_right_tool_group_desc') },
+  { id: 'sort',  icon: SortAsc,    color: 'text-green-500',  bg: 'bg-green-500/10',  border: 'border-green-500/40',  label: 'Sort Data',  desc: t('sqlbuilder_right_tool_sort_desc') },
+  { id: 'union', icon: GitMerge,   color: 'text-yellow-500', bg: 'bg-yellow-500/10', border: 'border-yellow-500/40', label: 'Union',      desc: t('sqlbuilder_right_tool_union_desc') },
+  { id: 'where',    icon: Filter,   color: 'text-rose-500',   bg: 'bg-rose-500/10',   border: 'border-rose-500/40',   label: 'Where',      desc: t('sqlbuilder_right_tool_where_desc') },
+  { id: 'subquery', icon: Braces,  color: 'text-indigo-500', bg: 'bg-indigo-500/10', border: 'border-indigo-500/40', label: 'Subquery',   desc: t('sqlbuilder_right_tool_subquery_desc') },
+])
 </script>
 
 <template>
   <aside aria-label="SQL Tools" class="w-48 border-l bg-background flex flex-col overflow-hidden shrink-0">
     <!-- Header -->
     <div class="px-3 py-2 border-b shrink-0">
-      <p class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">TOOLS</p>
-      <p class="text-[10px] text-muted-foreground mt-0.5">คลิกเพื่อเพิ่ม Node</p>
+      <p class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">{{ t('sqlbuilder_right_tools_title') }}</p>
+      <p class="text-[10px] text-muted-foreground mt-0.5">{{ t('sqlbuilder_right_click_to_add') }}</p>
     </div>
 
     <!-- Tool buttons -->
@@ -55,17 +59,24 @@ const tools = [
       </button>
     </div>
 
-    <!-- Finish button -->
-    <div class="p-3 border-t">
+    <!-- Generate SQL + Finish buttons -->
+    <div class="p-3 border-t flex flex-col gap-2">
       <button
         @click="emit('generate')"
+        class="w-full flex items-center justify-center gap-1.5 py-2 rounded-xl border transition-colors hover:bg-accent"
+      >
+        <Play class="size-3.5" />
+        <span class="text-xs font-semibold">Generate SQL</span>
+      </button>
+      <button
+        @click="emit('finish')"
         class="w-full flex flex-col items-center justify-center gap-1 py-3 rounded-xl text-white transition-colors"
         :class="props.columnsLoading ? 'bg-green-500/70' : 'bg-green-500 hover:bg-green-600'"
       >
         <Loader2 v-if="props.columnsLoading" class="size-4 animate-spin" />
         <Play v-else class="size-4" />
-        <span class="text-xs font-bold">{{ props.columnsLoading ? 'โหลดอยู่…' : 'Finish' }}</span>
-        <span class="text-[10px] opacity-80">{{ props.columnsLoading ? 'auto-generate เมื่อเสร็จ' : 'Generate SQL' }}</span>
+        <span class="text-xs font-bold">{{ props.columnsLoading ? t('sqlbuilder_right_loading') : 'Finish' }}</span>
+        <span v-if="props.columnsLoading" class="text-[10px] opacity-80">{{ t('sqlbuilder_right_autogen_done') }}</span>
       </button>
     </div>
   </aside>

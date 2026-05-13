@@ -9,6 +9,7 @@ import { OBJECT_TYPE_LABELS, USE_TYPE_LABELS } from '~/types/sql-builder'
 import { useSqlBuilderStore } from '~/stores/sql-builder'
 import { useDragDrop } from '~/composables/sql-builder/useDragDrop'
 
+const { t } = useI18n()
 const store    = useSqlBuilderStore()
 const dragDrop = useDragDrop()
 
@@ -100,11 +101,13 @@ const USE_COLORS: Record<string, string> = {
               <Layers class="size-4 text-sky-500" />
             </div>
             <div class="flex-1 min-w-0">
-              <p class="text-sm font-bold">ตารางที่เกี่ยวข้อง</p>
+              <p class="text-sm font-bold">{{ t('sqlbuilder_group_select_title') }}</p>
               <p class="text-[11px] text-muted-foreground mt-0.5 truncate">
                 <span class="font-mono text-sky-500">{{ data.primaryTableName }}</span>
                 <span class="mx-1.5 text-muted-foreground/40">·</span>
-                พบ <strong class="text-foreground">{{ data.relations.length }}</strong> ตาราง
+                <i18n-t keypath="sqlbuilder_group_select_found" tag="span">
+                  <template #n><strong class="text-foreground">{{ data.relations.length }}</strong></template>
+                </i18n-t>
               </p>
             </div>
             <button @click="skip"
@@ -127,14 +130,14 @@ const USE_COLORS: Record<string, string> = {
               <component :is="checked.size > 0 && checked.size === newRelations.length ? CheckSquare : Square"
                 class="size-3.5"
                 :class="checked.size > 0 ? 'text-sky-500' : ''" />
-              <span class="font-medium">เลือกทั้งหมด</span>
+              <span class="font-medium">{{ t('sqlbuilder_group_select_all') }}</span>
             </button>
             <span class="text-[10px] text-muted-foreground/60 ml-1">
-              {{ selectedCount }} / {{ newRelations.length }} ตารางใหม่
+              {{ t('sqlbuilder_group_select_new_count', { selected: selectedCount, total: newRelations.length }) }}
             </span>
             <span v-if="data.relations.length - newRelations.length > 0"
               class="ml-auto text-[10px] text-emerald-600 bg-emerald-500/10 px-2 py-0.5 rounded-full">
-              {{ data.relations.length - newRelations.length }} อยู่บน Canvas แล้ว
+              {{ t('sqlbuilder_group_select_on_canvas_count', { n: data.relations.length - newRelations.length }) }}
             </span>
           </div>
 
@@ -144,8 +147,8 @@ const USE_COLORS: Record<string, string> = {
             <!-- Empty state (API returned no object_table) -->
             <div v-if="!data.relations.length" class="px-5 py-8 text-center flex flex-col items-center gap-2">
               <Layers class="size-8 text-muted-foreground/30" />
-              <p class="text-sm font-medium text-muted-foreground">ไม่พบตารางที่เกี่ยวข้อง</p>
-              <p class="text-xs text-muted-foreground/60">API ไม่ส่ง object_table สำหรับ object นี้</p>
+              <p class="text-sm font-medium text-muted-foreground">{{ t('sqlbuilder_group_select_no_relations') }}</p>
+              <p class="text-xs text-muted-foreground/60">{{ t('sqlbuilder_group_select_no_relations_desc') }}</p>
             </div>
 
             <div
@@ -210,7 +213,7 @@ const USE_COLORS: Record<string, string> = {
                   <span class="text-[9px] font-mono text-violet-500">{{ r.tgtCol }}</span>
                 </div>
                 <p v-else class="text-[9px] text-muted-foreground/40 italic mt-0.5">
-                  ไม่มีเงื่อนไข ON — ตั้งค่าได้หลังสร้าง
+                  {{ t('sqlbuilder_group_select_no_on') }}
                 </p>
               </div>
 
@@ -218,7 +221,7 @@ const USE_COLORS: Record<string, string> = {
               <div class="shrink-0 mt-0.5 flex flex-col items-end gap-1">
                 <span v-if="onCanvasSet.has(r.relTable)"
                   class="text-[9px] px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-600 font-semibold whitespace-nowrap">
-                  บน Canvas แล้ว
+                  {{ t('sqlbuilder_group_select_on_canvas') }}
                 </span>
               </div>
             </div>
@@ -228,7 +231,7 @@ const USE_COLORS: Record<string, string> = {
           <div class="flex items-center justify-between gap-2 px-5 py-3.5 border-t bg-muted/10 shrink-0">
             <button @click="skip"
               class="text-xs px-4 py-2 border rounded-lg hover:bg-accent transition-colors text-muted-foreground">
-              ข้าม
+              {{ t('sqlbuilder_group_select_skip') }}
             </button>
             <button
               @click="confirm"
@@ -236,9 +239,9 @@ const USE_COLORS: Record<string, string> = {
               class="flex items-center gap-1.5 text-xs px-5 py-2 bg-sky-500 hover:bg-sky-600 disabled:opacity-40 text-white rounded-lg font-semibold transition-colors"
             >
               <Layers class="size-3.5" />
-              สร้างกลุ่ม
+              {{ t('sqlbuilder_group_select_create_group') }}
               <span class="px-1.5 py-0.5 bg-white/20 rounded-md font-bold">{{ selectedCount }}</span>
-              ตาราง
+              {{ t('sqlbuilder_group_select_tables_word') }}
             </button>
           </div>
         </div>

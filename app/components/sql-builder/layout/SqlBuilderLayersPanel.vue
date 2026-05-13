@@ -11,6 +11,7 @@ import { useVueFlow } from '@vue-flow/core'
 import { useSqlBuilderStore } from '~/stores/sql-builder'
 import { JOIN_COLORS } from '~/types/sql-builder'
 
+const { t } = useI18n()
 const store = useSqlBuilderStore()
 const { fitView } = useVueFlow('sql-builder')
 
@@ -81,7 +82,7 @@ function summariseNode(n: any): NodeRow {
       badges.push({ text: `${active} cond`, cls: active ? 'bg-amber-500/20 text-amber-400' : 'bg-muted/60 text-muted-foreground' })
     }
 
-    if (!badges.length) badges.push({ text: 'ยังไม่ได้ตั้งค่า', cls: 'bg-muted/60 text-muted-foreground' })
+    if (!badges.length) badges.push({ text: t('sqlbuilder_layers_not_configured'), cls: 'bg-muted/60 text-muted-foreground' })
 
     return {
       id: n.id, icon: tool.icon, iconCls: tool.color, iconBg: tool.bg,
@@ -277,7 +278,7 @@ function focusEdge(edge: EdgeRow) {
         <!-- Empty state -->
         <div v-if="!store.nodes.length" class="px-4 py-8 text-center">
           <Layers class="size-8 text-muted-foreground/30 mx-auto mb-2" />
-          <p class="text-xs text-muted-foreground/50">ยังไม่มี node บน Canvas</p>
+          <p class="text-xs text-muted-foreground/50">{{ t('sqlbuilder_layers_no_nodes') }}</p>
         </div>
 
       </div>

@@ -2,10 +2,12 @@
 import { Handle, Position, useVueFlow } from '@vue-flow/core'
 import {
   Layers, Calculator, Database, SortAsc, GitMerge, Filter as FilterIcon,
-  Settings2, X,
+  Settings2, X, Braces,
 } from 'lucide-vue-next'
 import { useSqlBuilderStore } from '~/stores/sql-builder'
 import { useToolNodes } from '~/composables/sql-builder/useToolNodes'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   id: string
@@ -20,21 +22,23 @@ const { updateNodeInternals } = useVueFlow()
 onMounted(() => nextTick(() => updateNodeInternals([props.id])))
 
 const TOOL_ICONS: Record<string, any> = {
-  cte:   Layers,
-  calc:  Calculator,
-  group: Database,
-  sort:  SortAsc,
-  union: GitMerge,
-  where: FilterIcon,
+  cte:      Layers,
+  calc:     Calculator,
+  group:    Database,
+  sort:     SortAsc,
+  union:    GitMerge,
+  where:    FilterIcon,
+  subquery: Braces,
 }
 
 const TOOL_META: Record<string, { label: string; color: string; bg: string; border: string; handleColor: string }> = {
-  cte:   { label: 'CTE',      color: 'text-violet-400', bg: 'bg-violet-500/10', border: 'border-violet-500/50', handleColor: '!bg-violet-400' },
-  calc:  { label: 'Calc',     color: 'text-teal-400',   bg: 'bg-teal-500/10',   border: 'border-teal-500/50',   handleColor: '!bg-teal-400'   },
-  group: { label: 'GROUP BY', color: 'text-orange-400', bg: 'bg-orange-500/10', border: 'border-orange-500/50', handleColor: '!bg-orange-400' },
-  sort:  { label: 'ORDER BY', color: 'text-green-400',  bg: 'bg-green-500/10',  border: 'border-green-500/50',  handleColor: '!bg-green-400'  },
-  union: { label: 'UNION',    color: 'text-yellow-400', bg: 'bg-yellow-500/10', border: 'border-yellow-500/50', handleColor: '!bg-yellow-400' },
-  where: { label: 'WHERE',    color: 'text-rose-400',   bg: 'bg-rose-500/10',   border: 'border-rose-500/50',   handleColor: '!bg-rose-400'   },
+  cte:      { label: 'CTE',      color: 'text-violet-400', bg: 'bg-violet-500/10', border: 'border-violet-500/50', handleColor: '!bg-violet-400' },
+  calc:     { label: 'Calc',     color: 'text-teal-400',   bg: 'bg-teal-500/10',   border: 'border-teal-500/50',   handleColor: '!bg-teal-400'   },
+  group:    { label: 'GROUP BY', color: 'text-orange-400', bg: 'bg-orange-500/10', border: 'border-orange-500/50', handleColor: '!bg-orange-400' },
+  sort:     { label: 'ORDER BY', color: 'text-green-400',  bg: 'bg-green-500/10',  border: 'border-green-500/50',  handleColor: '!bg-green-400'  },
+  union:    { label: 'UNION',    color: 'text-yellow-400', bg: 'bg-yellow-500/10', border: 'border-yellow-500/50', handleColor: '!bg-yellow-400' },
+  where:    { label: 'WHERE',    color: 'text-rose-400',   bg: 'bg-rose-500/10',   border: 'border-rose-500/50',   handleColor: '!bg-rose-400'   },
+  subquery: { label: 'SUBQUERY', color: 'text-indigo-400', bg: 'bg-indigo-500/10', border: 'border-indigo-500/50', handleColor: '!bg-indigo-400' },
 }
 
 const AGG_COLORS: Record<string, string> = {
@@ -69,6 +73,11 @@ const isCalc       = computed(() => props.data._toolId === 'calc')
 const whereConds = computed(() => (props.data.conditions ?? []).filter((c: any) => c.column && c.operator) as Array<{ column: string; operator: string; value: string }>)
 const isWhere    = computed(() => props.data._toolId === 'where')
 
+// Subquery specific data
+const subqueryAlias  = computed(() => (props.data.alias as string) || 'sub')
+const subquerySql    = computed(() => (props.data.customSql as string | undefined) ?? '')
+const isSubquery     = computed(() => props.data._toolId === 'subquery')
+
 // CTE specific data
 const cteName     = computed(() => (props.data.name as string) || 'my_cte')
 const cteSelCols  = computed(() => (props.data.selectedCols ?? []) as string[])
@@ -82,8 +91,24 @@ const WHERE_OP_BADGE: Record<string, string> = {
   'IS NULL': 'bg-amber-500', 'IS NOT NULL': 'bg-amber-600',
 }
 
+const connectedSources = computed(() => {
+  const seen = new Set<string>()
+  const result: Array<{ id: string; label: string }> = []
+  for (const edge of store.edges as any[]) {
+    if (edge.target === props.id && !seen.has(edge.source)) {
+      seen.add(edge.source)
+      const srcNode = store.nodes.find((n: any) => n.id === edge.source) as any
+      if (srcNode) {
+        result.push({ id: srcNode.id, label: srcNode.data?.label ?? srcNode.id })
+      }
+    }
+  }
+  return result
+})
+
 const hasContent = computed(() => {
-  if (isCte.value)   return true
+  if (isCte.value)      return true
+  if (isSubquery.value) return true
   if (props.data._toolId === 'union') return true
   if (isGroup.value) return groupCols.value.length > 0 || aggs.value.length > 0 || groupFilters.value.length > 0
   if (isSort.value)  return sortItems.value.length > 0
@@ -127,6 +152,17 @@ function removeNode()  { store.removeNode(props.id) }
           class="size-5 flex items-center justify-center rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors shrink-0 ml-0.5">
           <X class="size-3" />
         </button>
+      </div>
+
+      <!-- ── Connected sources ─────────────────────────────────────── -->
+      <div v-if="connectedSources.length" :class="['flex flex-wrap items-center gap-1 px-3 py-1 border-b', meta.border]">
+        <span :class="['text-[8px] font-bold uppercase tracking-wider shrink-0 opacity-60 mr-0.5', meta.color]">from</span>
+        <span
+          v-for="src in connectedSources.slice(0, 3)" :key="src.id"
+          class="text-[8px] px-1.5 py-0.5 rounded font-mono bg-black/20 text-foreground/70 truncate max-w-[80px]"
+          :title="src.label"
+        >{{ src.label }}</span>
+        <span v-if="connectedSources.length > 3" :class="['text-[8px] opacity-50', meta.color]">+{{ connectedSources.length - 3 }}</span>
       </div>
 
       <!-- ── CTE rich summary ─────────────────────────────────────── -->
@@ -218,7 +254,7 @@ function removeNode()  { store.removeNode(props.id) }
 
         </div>
         <div v-else class="px-3 py-2">
-          <p class="text-[10px] text-muted-foreground/60 italic">คลิกเพื่อตั้งค่า…</p>
+          <p class="text-[10px] text-muted-foreground/60 italic">{{ t('sqlbuilder_node_tool_click_to_config') }}</p>
         </div>
       </template>
 
@@ -233,7 +269,7 @@ function removeNode()  { store.removeNode(props.id) }
           <span v-if="sortItems.length > 4" class="text-[8px] text-muted-foreground/50">+{{ sortItems.length - 4 }} more</span>
         </div>
         <div v-else class="px-3 py-2">
-          <p class="text-[10px] text-muted-foreground/60 italic">คลิกเพื่อตั้งค่า…</p>
+          <p class="text-[10px] text-muted-foreground/60 italic">{{ t('sqlbuilder_node_tool_click_to_config') }}</p>
         </div>
       </template>
 
@@ -269,7 +305,7 @@ function removeNode()  { store.removeNode(props.id) }
 
         </div>
         <div v-else class="px-3 py-2">
-          <p class="text-[10px] text-muted-foreground/60 italic">คลิกเพื่อตั้งค่า…</p>
+          <p class="text-[10px] text-muted-foreground/60 italic">{{ t('sqlbuilder_node_tool_click_to_config') }}</p>
         </div>
       </template>
 
@@ -285,7 +321,7 @@ function removeNode()  { store.removeNode(props.id) }
           <span v-if="whereConds.length > 4" class="text-[8px] text-muted-foreground/50">+{{ whereConds.length - 4 }} more</span>
         </div>
         <div v-else class="px-3 py-2">
-          <p class="text-[10px] text-muted-foreground/60 italic">คลิกเพื่อตั้งค่า…</p>
+          <p class="text-[10px] text-muted-foreground/60 italic">{{ t('sqlbuilder_node_tool_click_to_config') }}</p>
         </div>
       </template>
 
@@ -347,6 +383,43 @@ function removeNode()  { store.removeNode(props.id) }
         </div>
       </template>
 
+      <!-- ── SUBQUERY rich summary ────────────────────────────────── -->
+      <template v-else-if="isSubquery">
+        <div class="px-3 py-2 flex flex-col gap-1.5">
+          <!-- alias + import badge -->
+          <div class="flex items-center gap-1.5">
+            <span class="text-[8px] font-bold uppercase tracking-wider text-indigo-400/70">( … )</span>
+            <span class="text-[10px] font-mono font-semibold text-indigo-300 truncate">{{ subqueryAlias }}</span>
+            <span v-if="props.data._importVerbatim"
+              class="text-[8px] px-1 py-0 rounded bg-amber-500/20 text-amber-400 font-bold border border-amber-500/30 leading-4 shrink-0">imported</span>
+          </div>
+          <!-- Structured counts for imported nodes -->
+          <div v-if="props.data._importVerbatim" class="flex flex-wrap items-center gap-1">
+            <span v-if="(props.data.selectItems ?? []).length"
+              class="text-[8px] px-1.5 py-0 rounded bg-indigo-500/15 text-indigo-300 font-mono leading-4">
+              {{ (props.data.selectItems as any[]).length }} cols
+            </span>
+            <span v-if="(props.data.caseWhens ?? []).length"
+              class="text-[8px] px-1.5 py-0 rounded bg-violet-500/15 text-violet-300 font-mono leading-4">
+              {{ (props.data.caseWhens as any[]).length }} CASE
+            </span>
+            <span v-if="(props.data.mathItems ?? []).filter((m: any) => m.expr?.trim()).length"
+              class="text-[8px] px-1.5 py-0 rounded bg-teal-500/15 text-teal-300 font-mono leading-4">
+              {{ (props.data.mathItems as any[]).filter((m: any) => m.expr?.trim()).length }} MATH
+            </span>
+            <span v-if="(props.data.conditions ?? []).filter((c: any) => c.column).length"
+              class="text-[8px] px-1.5 py-0 rounded bg-rose-500/15 text-rose-300 font-mono leading-4">
+              {{ (props.data.conditions as any[]).filter((c: any) => c.column).length }} WHERE
+            </span>
+          </div>
+          <!-- SQL preview (first non-empty line) -->
+          <p v-if="subquerySql" class="text-[9px] font-mono text-foreground/50 truncate leading-relaxed">
+            {{ subquerySql.split('\n').find(l => l.trim()) ?? subquerySql.slice(0, 60) }}
+          </p>
+          <p v-else class="text-[9px] text-muted-foreground/50 italic">SELECT * FROM upstream</p>
+        </div>
+      </template>
+
       <!-- ── Generic summary (other tools) ───────────────────────── -->
       <template v-else>
         <div class="px-3 py-2">
@@ -354,7 +427,7 @@ function removeNode()  { store.removeNode(props.id) }
             class="text-[10px] font-medium text-foreground/80 truncate">
             {{ summary }}
           </p>
-          <p v-else class="text-[10px] text-muted-foreground/60 italic">คลิกเพื่อตั้งค่า…</p>
+          <p v-else class="text-[10px] text-muted-foreground/60 italic">{{ t('sqlbuilder_node_tool_click_to_config') }}</p>
         </div>
       </template>
 

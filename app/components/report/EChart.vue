@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import * as echarts from 'echarts'
-
-const props = defineProps<{ option: Record<string, any> }>()
+const props = defineProps<{
+  option: Record<string, any>
+  /** Base font size for axis labels and text (default: 11) */
+  fontSize?: number
+}>()
 
 const emit = defineEmits<{
   (e: 'chart-click', params: { name: string; value: any; seriesName: string; dataIndex: number }): void
@@ -9,7 +11,13 @@ const emit = defineEmits<{
 
 const el        = ref<HTMLDivElement | null>(null)
 const colorMode = useColorMode()
-let   chart:          echarts.ECharts | null = null
+let   chart:          any = null
+
+let _lib: typeof import('echarts') | null = null
+async function loadEcharts() {
+  if (!_lib) _lib = await import('echarts')
+  return _lib
+}
 let   ro:             ResizeObserver  | null = null
 let   zrClickHandler: ((e: any) => void) | null = null
 let   suppressZrClick = false
@@ -19,7 +27,7 @@ const isDark = computed(() => colorMode.value === 'dark')
 // Merge transparent bg + themed text into every option
 const mergedOption = computed(() => ({
   backgroundColor: 'transparent',
-  textStyle: { color: isDark.value ? '#94a3b8' : '#64748b', fontSize: 11 },
+  textStyle: { color: isDark.value ? '#94a3b8' : '#64748b', fontSize: props.fontSize ?? 11 },
   ...props.option,
 }))
 
@@ -76,9 +84,10 @@ function registerClick() {
   chart.getZr().on('click', zrClickHandler)
 }
 
-function init() {
+async function init() {
   if (!el.value) return
-  chart = echarts.init(el.value, null, { renderer: 'canvas' })
+  const ec = await loadEcharts()
+  chart = ec.init(el.value, null, { renderer: 'canvas' })
   chart.setOption(mergedOption.value)
   registerClick()
 }

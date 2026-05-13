@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Handle, Position, useVueFlow } from '@vue-flow/core'
-import { Table2, Hash, Type, X } from 'lucide-vue-next'
+import { Table2, Hash, Type, X, Loader2 } from 'lucide-vue-next'
 
 const props = defineProps<{
   id: string
@@ -14,9 +14,10 @@ const { removeNodes } = useVueFlow()
 const { nodeEl, width, height, onDragStart, onDragStartHeight, onDragStartCorner } = useNodeResize(120, 60)
 const isSized = computed(() => height.value !== 'auto')
 
-const table    = computed(() => dmStore.getTable(props.id))
-const columns  = computed(() => dmStore.columnsOf(props.id))
-const rowCount = computed(() => table.value?.rows.length ?? 0)
+const table      = computed(() => dmStore.getTable(props.id))
+const columns    = computed(() => dmStore.columnsOf(props.id))
+const rowCount   = computed(() => table.value?.rows.length ?? 0)
+const isLoading  = computed(() => dmStore.isTableLoading(props.id))
 
 const MAX_COLS       = 20
 const visibleColumns = computed(() => columns.value.slice(0, MAX_COLS))
@@ -52,7 +53,8 @@ function deleteNode() {
         <span class="text-xs font-semibold text-indigo-700 dark:text-indigo-400 truncate flex-1" :title="table?.name">
           {{ table?.name ?? props.id }}
         </span>
-        <span class="text-[10px] text-indigo-400 font-mono shrink-0">
+        <Loader2 v-if="isLoading" class="size-3 text-indigo-400 animate-spin shrink-0" />
+        <span v-else class="text-[10px] text-indigo-400 font-mono shrink-0">
           {{ rowCount.toLocaleString() }}r
         </span>
         <button
@@ -83,7 +85,11 @@ function deleteNode() {
           +{{ hiddenCount }} columns
         </div>
 
-        <div v-if="!columns.length" class="px-3 py-2 text-[10px] text-muted-foreground text-center">
+        <div v-if="isLoading && !columns.length" class="px-3 py-3 flex flex-col items-center gap-1.5 text-indigo-400">
+          <Loader2 class="size-4 animate-spin" />
+          <span class="text-[10px]">กำลังโหลด...</span>
+        </div>
+        <div v-else-if="!columns.length" class="px-3 py-2 text-[10px] text-muted-foreground text-center">
           ไม่มีข้อมูล
         </div>
       </div>

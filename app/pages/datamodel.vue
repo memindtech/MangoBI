@@ -7,8 +7,13 @@ import '@vue-flow/controls/dist/style.css'
 import {
   Database, Download, Loader2, AlertCircle, Bug,
   GitMerge, Home, Trash2, Link2, X, Table2, ArrowRight,
-  Shuffle, Plus, ChevronDown, Layers, RotateCcw,
+  Shuffle, Plus, ChevronDown, ChevronRight, Layers, RotateCcw, Globe, Lock,
+  Calculator, BookMarked, RefreshCw, Sparkles,
 } from 'lucide-vue-next'
+import { useAiContext } from '~/composables/datamodel/useAiContext'
+import { applyColumnMapping } from '~/composables/useMangoBIApi'
+import { useAiChatStore } from '~/stores/ai-chat'
+import { useAiFeature } from '~/composables/useAiFeature'
 import {
   applyTransform, componentKey,
   accumulateRow, materializeAccumulators, matchFilters, normDateStr,
@@ -16,15 +21,29 @@ import {
   AGG_OPTIONS, OP_OPTIONS,
   DATE_TOKEN_TODAY, DATE_TOKEN_YESTERDAY, DATE_TOKEN_LABELS,
 } from '~/utils/transformData'
+import {
+  applyComputedColumns, defToFormula, previewColDef, newComputedColDef,
+  COL_TYPE_OPTIONS, ARITH_OP_OPTIONS, CMP_OP_OPTIONS, FUNCTION_DEFS, FN_CATEGORY_LABELS,
+  type ComputedColDef,
+} from '~/utils/computedColumn'
 import ModelTableNode from '~/components/datamodel/ModelTableNode.vue'
 import { MOCK_DATA, DATASET_META, type DatasetKey } from '~/stores/canvas'
-import { AgGridVue } from 'ag-grid-vue3'
-import { ClientSideRowModelModule, CommunityFeaturesModule, ModuleRegistry } from 'ag-grid-community'
 import type { ColDef } from 'ag-grid-community'
 import { parseColumnMapping, isDateMeta } from '~/utils/columnMapping'
 import { formatDateValue, formatNumericValue, DATE_PATTERNS } from '~/utils/formatValue'
 
-ModuleRegistry.registerModules([ClientSideRowModelModule, CommunityFeaturesModule])
+let _agGridReady = false
+const AgGridVue = defineAsyncComponent(async () => {
+  const [{ AgGridVue: Grid }, { ClientSideRowModelModule, CommunityFeaturesModule, ModuleRegistry }] = await Promise.all([
+    import('ag-grid-vue3'),
+    import('ag-grid-community'),
+  ])
+  if (!_agGridReady) {
+    ModuleRegistry.registerModules([ClientSideRowModelModule, CommunityFeaturesModule])
+    _agGridReady = true
+  }
+  return Grid
+})
 
 // ─── Page meta ────────────────────────────────────────────────────────────────
 definePageMeta({ layout: false, auth: true })
@@ -36,19 +55,21 @@ useHead({ title: computed(() => `${t('page_title_datamodel')} | MangoBI`) })
 // ─── Stores / Router ──────────────────────────────────────────────────────────
 const dmStore     = useDataModelStore()
 const reportStore = useReportStore()
+const authStore   = useAuthStore()
 const router      = useRouter()
 const { $xt } = useNuxtApp() as any
 
 // ─── Vue Flow ─────────────────────────────────────────────────────────────────
 const {
   addEdges, removeEdges,
-  onConnect, onNodeClick, onEdgeClick, onPaneClick,
+  onConnect, onNodeClick, onNodeDoubleClick, onEdgeClick, onPaneClick,
   onNodesChange, onEdgesChange,
   screenToFlowCoordinate,
   fitView,
 } = useVueFlow({ id: 'data-model' })
 
-const nodeTypes = { modelTable: markRaw(ModelTableNode) }
+// Cast as any: Vue Flow's NodeTypesObject expects NodeProps generics our SFCs don't expose
+const nodeTypes = { modelTable: markRaw(ModelTableNode) } as any
 
 const nodes = ref<Node[]>([])
 const edges = ref<Edge[]>([])
@@ -245,9 +266,10 @@ const txFilteredAggGroups = computed(() => {
   })).filter(g => g.cols.length)
 })
 
-const txFilters      = ref<TransformFilter[]>([])
-const txGroupBy      = ref('')
-const txAggregations = ref<Record<string, AggFn>>({})
+const txFilters       = ref<TransformFilter[]>([])
+const txGroupBy       = ref('')
+const txAggregations  = ref<Record<string, AggFn>>({})
+const txComputedCols  = ref<ComputedColDef[]>([])
 
 // Load config when component selection changes
 watch(selectedCompKey, (key) => {
@@ -255,6 +277,7 @@ watch(selectedCompKey, (key) => {
   txFilters.value      = cfg ? [...cfg.filters]      : []
   txGroupBy.value      = cfg?.groupByField            ?? ''
   txAggregations.value = cfg ? { ...cfg.aggregations } : {}
+  txComputedCols.value = cfg?.computedColumns ? cfg.computedColumns.map(c => ({ ...c })) : []
 }, { immediate: true })
 
 // Auto-init aggregations when columns change (use joined row sample for correct type detection)
@@ -268,17 +291,20 @@ watch(txColumns, (cols) => {
 })
 
 // Save config whenever it changes
-watch([txFilters, txGroupBy, txAggregations], () => {
+watch([txFilters, txGroupBy, txAggregations, txComputedCols], () => {
   if (!selectedCompKey.value) return
   dmStore.setTransform(selectedCompKey.value, {
-    filters:      txFilters.value,
-    groupByField: txGroupBy.value,
-    aggregations: txAggregations.value,
+    filters:         txFilters.value,
+    groupByField:    txGroupBy.value,
+    aggregations:    txAggregations.value,
+    computedColumns: txComputedCols.value.filter(c => c.name.trim()),
   })
 }, { deep: true })
 
 const txHasConfig = computed(() =>
-  txFilters.value.length > 0 || txGroupBy.value !== '',
+  txFilters.value.length > 0 ||
+  txGroupBy.value !== '' ||
+  txComputedCols.value.some(c => c.name.trim()),
 )
 
 // Resolve display label — search all tables in the component
@@ -356,7 +382,7 @@ const txInputColDefs = computed<ColDef[]>(() =>
     return {
       field: col, headerName: txColLabel(col),
       sortable: true, resizable: true, filter: true, minWidth: 60,
-      cellStyle: isNum ? { textAlign: 'right', fontFamily: 'monospace' } : {},
+      cellStyle: (isNum ? { textAlign: 'right', fontFamily: 'monospace' } : {}) as Record<string, string>,
       valueFormatter: makeTxFmt(col),
     }
   })
@@ -365,10 +391,34 @@ const txInputColDefs = computed<ColDef[]>(() =>
 // Output sample as computed — auto-tracks all reactive dependencies (filters, groupBy, aggs, rows)
 const txOutputSample = computed<any[]>(() => {
   if (!txHasConfig.value || !txJoinedRows.value.length) return []
+  // Deep-track every field in computedCols (Vue only tracks .name via filter() otherwise)
+  void JSON.stringify(txComputedCols.value)
   return applyTransform(
     txJoinedRows.value,
-    { filters: txFilters.value, groupByField: txGroupBy.value, aggregations: { ...txAggregations.value } },
+    {
+      filters:         txFilters.value,
+      groupByField:    txGroupBy.value,
+      aggregations:    { ...txAggregations.value },
+      computedColumns: txComputedCols.value.filter(c => c.name.trim()),
+    },
   ).slice(0, 200)
+})
+
+// Key that changes whenever the set of output columns changes → forces AG Grid to rebuild column defs
+const txOutputColsKey = computed(() => Object.keys(txOutputSample.value[0] ?? {}).join(','))
+
+// Per-def preview value for the UI (sample row result)
+const txComputedColPreviews = computed(() => {
+  void JSON.stringify(txComputedCols.value)   // deep-track nested fields
+  return txComputedCols.value.map(cc => {
+    const sample = txJoinedRows.value[0] ?? {}
+    return cc.name.trim() ? previewColDef(cc, sample) : '—'
+  })
+})
+
+const txComputedColFormulas = computed(() => {
+  void JSON.stringify(txComputedCols.value)
+  return txComputedCols.value.map(cc => cc.name.trim() ? defToFormula(cc) : '')
 })
 
 const txOutputColDefs = computed<ColDef[]>(() => {
@@ -378,7 +428,7 @@ const txOutputColDefs = computed<ColDef[]>(() => {
     return {
       field: col, headerName: txColLabel(col),
       sortable: true, resizable: true, filter: true, minWidth: 60,
-      cellStyle: isNum ? { textAlign: 'right', fontFamily: 'monospace' } : {},
+      cellStyle: (isNum ? { textAlign: 'right', fontFamily: 'monospace' } : {}) as Record<string, string>,
       valueFormatter: makeTxFmt(col),
     }
   })
@@ -457,7 +507,7 @@ watch(selectedEdgeId, () => {
 // ─── Add Table panel ─────────────────────────────────────────────────────────
 const showAddPanel    = ref(false)
 const showLayersPanel = ref(false)
-const addMode       = ref<'mock' | 'passcode' | 'rawsql'>('mock')
+const addMode       = ref<'saved' | 'passcode' | 'rawsql'>('saved')
 const customName    = ref('')
 const selectedKey   = ref<DatasetKey>('sales_monthly')
 const loading       = ref(false)
@@ -466,6 +516,79 @@ const errorMsg      = ref('')
 const datasetOptions = Object.entries(DATASET_META).map(([key, m]) => ({
   key: key as DatasetKey, label: m.label,
 }))
+
+// ─── DM Templates (Append) ───────────────────────────────────────────────────
+const tplOpen        = ref(true)
+const tplMyList      = ref<import('~/composables/useMangoBIApi').BIListItem[]>([])
+const tplPublicList  = ref<import('~/composables/useMangoBIApi').BIListItem[]>([])
+const tplLoading     = ref(false)
+const tplAppending   = ref<string | null>(null)
+
+// ─── My SQL Builder (saved) ───────────────────────────────────────────────────
+const savedSqlItems   = ref<import('~/composables/useMangoBIApi').BIListItem[]>([])
+const publicSqlItems  = ref<import('~/composables/useMangoBIApi').BIListItem[]>([])
+const savedSqlLoading = ref(false)
+const savedSqlAdding  = ref<string | null>(null)
+
+async function loadSavedSqlList() {
+  savedSqlLoading.value = true
+  try {
+    const [mine, pub] = await Promise.all([
+      biApi.listSQLBuilders(),
+      biApi.listPublicSQLBuilders(),
+    ])
+    savedSqlItems.value  = mine
+    const myIds          = new Set(mine.map(i => i.id))
+    publicSqlItems.value = pub.filter(i => !myIds.has(i.id))
+  } catch {
+    savedSqlItems.value = []; publicSqlItems.value = []
+  } finally {
+    savedSqlLoading.value = false
+  }
+}
+
+async function addSavedSqlTable(item: import('~/composables/useMangoBIApi').BIListItem) {
+  savedSqlAdding.value = item.id
+  errorMsg.value = ''
+  try {
+    const full = await biApi.loadSQLBuilder(item.id)
+    if (!full?.sqlText) throw new Error('ไม่พบ SQL ของชุดนี้')
+
+    const res: any = await $xt.postServerJson('MangoBI/ExecuteCustomSql', {
+      sql:  full.sqlText,
+      name: customName.value.trim() || item.name,
+    })
+    if (res?.error) throw new Error(res.error)
+    const payload = extractSqlPayload(res)
+    if (!payload?.rows?.length) throw new Error(t('bi_no_data_found'))
+
+    // Apply columnMapping to rename columns
+    let rows: any[] = payload.rows
+    if (full.columnMapping) {
+      const mapping: import('~/composables/useMangoBIApi').ColumnMapEntry[] = JSON.parse(full.columnMapping)
+      const renamed = mapping.filter(m => m.newColumnName && m.newColumnName !== m.columnName)
+      if (renamed.length) {
+        rows = rows.map(row => {
+          const out: Record<string, any> = {}
+          for (const [k, v] of Object.entries(row as Record<string, any>)) {
+            const m = renamed.find(r => r.columnName === k)
+            out[m ? m.newColumnName : k] = v
+          }
+          return out
+        })
+      }
+    }
+
+    const name = customName.value.trim() || item.name
+    placeTableNode(`saved_${Date.now()}`, name, rows, parseColumnMapping(full.columnMapping), full.sqlText, full.columnMapping)
+    showAddPanel.value = false
+    customName.value   = ''
+  } catch (e: any) {
+    errorMsg.value = e?.message ?? t('bi_error')
+  } finally {
+    savedSqlAdding.value = null
+  }
+}
 
 // SQL Template mode
 const sqlPasscode        = ref('')
@@ -495,8 +618,14 @@ async function fetchSqlTemplates() {
 }
 
 watch(addMode, (m) => {
+  if (m === 'saved')    loadSavedSqlList()
   if (m === 'passcode') { sqlTemplatesLoaded.value = false; sqlTemplates.value = [] }
   rawSqlErrors.value = []
+})
+
+watch(showAddPanel, (v) => {
+  if (v && addMode.value === 'saved') loadSavedSqlList()
+  if (v && !tplMyList.value.length && !tplLoading.value) loadDmTemplates()
 })
 
 // ─── Raw SQL mode ─────────────────────────────────────────────────────────────
@@ -515,8 +644,8 @@ function validateRawSql(sql: string): string[] {
   const trimmed = sql.trim()
 
   if (!trimmed) { errors.push('กรุณาใส่ SQL'); return errors }
-  if (!/^SELECT\b/i.test(trimmed))
-    errors.push('SQL ต้องเริ่มต้นด้วย SELECT เท่านั้น')
+  if (!/^(SELECT|WITH)\b/i.test(trimmed))
+    errors.push('SQL ต้องเริ่มต้นด้วย SELECT หรือ WITH (CTE) เท่านั้น')
   if (trimmed.includes(';'))
     errors.push('ไม่อนุญาตให้ใช้ semicolon (;) เพื่อป้องกันการ inject หลาย statement')
 
@@ -536,7 +665,7 @@ async function addRawSqlTable() {
   rawSqlLoading.value = true
   errorMsg.value = ''
   try {
-    const res: any = await $xt.postServerJson('Planning/MangoBI/ExecuteCustomSql', {
+    const res: any = await $xt.postServerJson('MangoBI/ExecuteCustomSql', {
       sql:  rawSqlText.value.trim(),
       name: customName.value.trim() || 'Custom SQL',
     })
@@ -544,7 +673,7 @@ async function addRawSqlTable() {
     const payload = extractSqlPayload(res)
     if (!payload?.rows?.length) throw new Error(t('bi_no_data_found'))
     const name = customName.value.trim() || 'Custom SQL'
-    placeTableNode(`rawsql_${Date.now()}`, name, payload.rows, parseColumnMapping(payload.column_mapping_json))
+    placeTableNode(`rawsql_${Date.now()}`, name, payload.rows, parseColumnMapping(payload.column_mapping_json), rawSqlText.value.trim())
     showAddPanel.value = false
     customName.value   = ''
     rawSqlText.value   = ''
@@ -571,8 +700,12 @@ function extractSqlPayload(res: any): { rows: any[]; column_mapping_json?: any }
 }
 
 let _xOffset = 0
-function placeTableNode(id: string, name: string, rows: any[], columnLabels?: ReturnType<typeof parseColumnMapping>) {
-  dmStore.addTable({ id, name, rows, columnLabels })
+function placeTableNode(
+  id: string, name: string, rows: any[],
+  columnLabels?: ReturnType<typeof parseColumnMapping>,
+  sqlText?: string, columnMapping?: string,
+) {
+  dmStore.addTable({ id, name, rows, columnLabels, sqlText, columnMapping })
   const pos = screenToFlowCoordinate({
     x: window.innerWidth  / 2 - 90 + _xOffset,
     y: window.innerHeight / 2 - 60,
@@ -674,7 +807,32 @@ onConnect((conn: Connection) => {
 // ─── Click handlers ───────────────────────────────────────────────────────────
 onEdgeClick(({ edge })  => { selectedEdgeId.value = edge.id;   selectedNodeId.value = null })
 onNodeClick(({ node }) => { selectedNodeId.value  = node.id;  selectedEdgeId.value = null })
-onPaneClick(()          => { selectedEdgeId.value = null;     selectedNodeId.value = null })
+onPaneClick((event)     => {
+  // Skip deselect if the click originated inside the layers overlay
+  // OR if the layers panel is currently open (pointer events may be tricky)
+  const target = event.target as HTMLElement
+  if (target.closest?.('.layers-panel-overlay')) return
+  if (showLayersPanel.value) return
+  selectedEdgeId.value = null
+  selectedNodeId.value = null
+})
+
+// Double-click node → open Transform Modal directly
+onNodeDoubleClick(({ node }) => {
+  selectedNodeId.value = node.id
+  selectedEdgeId.value = null
+  const compKey = componentKey(
+    node.id,
+    dmStore.tables.map(t => t.id),
+    Object.values(dmStore.relations),
+  )
+  if (compKey.split('+').length > 1) {
+    openJoinTxModal(compKey)
+  } else {
+    showTxModal.value  = true
+    txModalTab.value   = 'before'
+  }
+})
 
 // ─── Sync deletions → store (listen to specific remove events only) ───────────
 onNodesChange((changes) => {
@@ -699,7 +857,7 @@ function updateRelation(field: string, value: string) {
   // sync cardinality label on edge
   if (field === 'cardinality') {
     const idx = edges.value.findIndex(e => e.id === selectedEdgeId.value)
-    if (idx !== -1) edges.value[idx] = { ...edges.value[idx], label: value }
+    if (idx !== -1) edges.value[idx] = { ...edges.value[idx]!, label: value }
   }
 }
 
@@ -776,13 +934,14 @@ const joinedComponents = computed(() => {
 })
 
 // ─── Join Component Transform Modal ──────────────────────────────────────────
-const showJoinTxModal    = ref(false)
-const joinTxCompKey      = ref('')
-const joinTxTab          = ref<'before' | 'after'>('before')
-const joinTxAfterMounted = ref(false)
-const joinTxFilters      = ref<TransformFilter[]>([])
-const joinTxGroupBy      = ref('')
-const joinTxAggregations = ref<Record<string, AggFn>>({})
+const showJoinTxModal     = ref(false)
+const joinTxCompKey       = ref('')
+const joinTxTab           = ref<'before' | 'after'>('before')
+const joinTxAfterMounted  = ref(false)
+const joinTxFilters       = ref<TransformFilter[]>([])
+const joinTxGroupBy       = ref('')
+const joinTxAggregations  = ref<Record<string, AggFn>>({})
+const joinTxComputedCols  = ref<ComputedColDef[]>([])
 
 const joinTxCompName = computed(() =>
   joinTxCompKey.value.split('+')
@@ -885,16 +1044,41 @@ const joinTxColDefs = computed<ColDef[]>(() =>
 )
 
 const joinTxHasConfig = computed(() =>
-  joinTxFilters.value.length > 0 || joinTxGroupBy.value !== '',
+  joinTxFilters.value.length > 0 ||
+  joinTxGroupBy.value !== '' ||
+  joinTxComputedCols.value.some(c => c.name.trim()),
 )
 
 // Output sample as computed — auto-tracks all reactive dependencies
 const joinTxOutputSample = computed<any[]>(() => {
   if (!joinTxHasConfig.value || !joinTxRows.value.length) return []
+  // Deep-track every field in computedCols
+  void JSON.stringify(joinTxComputedCols.value)
   return applyTransform(
     joinTxRows.value,
-    { filters: joinTxFilters.value, groupByField: joinTxGroupBy.value, aggregations: { ...joinTxAggregations.value } },
+    {
+      filters:         joinTxFilters.value,
+      groupByField:    joinTxGroupBy.value,
+      aggregations:    { ...joinTxAggregations.value },
+      computedColumns: joinTxComputedCols.value.filter(c => c.name.trim()),
+    },
   ).slice(0, 200)
+})
+
+const joinTxOutputColsKey = computed(() => Object.keys(joinTxOutputSample.value[0] ?? {}).join(','))
+
+// Per-def preview value for join TX modal
+const joinTxComputedColPreviews = computed(() => {
+  void JSON.stringify(joinTxComputedCols.value)  // deep-track nested fields
+  return joinTxComputedCols.value.map(cc => {
+    const sample = joinTxRows.value[0] ?? {}
+    return cc.name.trim() ? previewColDef(cc, sample) : '—'
+  })
+})
+
+const joinTxComputedColFormulas = computed(() => {
+  void JSON.stringify(joinTxComputedCols.value)
+  return joinTxComputedCols.value.map(cc => cc.name.trim() ? defToFormula(cc) : '')
 })
 
 // Output column defs derived from actual output (respects 'none' aggregation exclusions)
@@ -907,12 +1091,13 @@ const joinTxOutputColDefs = computed<ColDef[]>(() => {
 })
 
 // Persist transform config whenever it changes
-watch([joinTxFilters, joinTxGroupBy, joinTxAggregations], () => {
+watch([joinTxFilters, joinTxGroupBy, joinTxAggregations, joinTxComputedCols], () => {
   if (!joinTxCompKey.value) return
   dmStore.setTransform(joinTxCompKey.value, {
-    filters:      joinTxFilters.value,
-    groupByField: joinTxGroupBy.value,
-    aggregations: joinTxAggregations.value,
+    filters:         joinTxFilters.value,
+    groupByField:    joinTxGroupBy.value,
+    aggregations:    joinTxAggregations.value,
+    computedColumns: joinTxComputedCols.value.filter(c => c.name.trim()),
   })
 }, { deep: true })
 
@@ -926,6 +1111,7 @@ function openJoinTxModal(compKey: string) {
   joinTxFilters.value      = cfg ? [...cfg.filters]        : []
   joinTxGroupBy.value      = cfg?.groupByField              ?? ''
   joinTxAggregations.value = cfg ? { ...cfg.aggregations }  : {}
+  joinTxComputedCols.value = cfg?.computedColumns ? cfg.computedColumns.map(c => ({ ...c })) : []
   for (const col of joinTxColumns.value) {
     if (!(col in joinTxAggregations.value)) {
       const sample = joinTxRows.value[0]?.[col]
@@ -1092,7 +1278,7 @@ function joinStep(
   return { result, truncated }
 }
 
-function buildJoinedDatasets(): { id: string; name: string; rows: any[]; columnLabels?: ReturnType<typeof parseColumnMapping>; columnSources?: Record<string, string>; numericFormat?: import('~/utils/formatValue').NumericFormat }[] {
+function buildJoinedDatasets(): { id: string; name: string; rows: any[]; columnLabels?: ReturnType<typeof parseColumnMapping>; columnSources?: Record<string, string>; numericFormat?: import('~/utils/formatValue').NumericFormat; sqlText?: string; columnMapping?: string }[] {
   const tables = dmStore.tables
   if (!tables.length) return []
 
@@ -1104,10 +1290,11 @@ function buildJoinedDatasets(): { id: string; name: string; rows: any[]; columnL
       const cfg    = dmStore.getTransform(t.id)
       const preF   = dmStore.getNodeFilters(t.id)
       const base   = preF.length ? t.rows.filter(r => matchFilters(r, preF)) : t.rows
-      const rows   = cfg && (cfg.filters.length || cfg.groupByField) ? applyTransform(base, cfg) : base
+      const rows   = cfg && (cfg.filters.length || cfg.groupByField || cfg.computedColumns?.length) ? applyTransform(base, cfg) : base
       const rawFmt = dmStore.getNumericFormat(t.id)
       const fmt    = Object.keys(rawFmt).length ? rawFmt : undefined
-      return { id: `dm_${t.id}_${Date.now()}`, name: t.name, rows, columnLabels: t.columnLabels, numericFormat: fmt }
+      const dsId = dmSavedId.value ? `dm_${dmSavedId.value}_${t.id}` : `dm_${t.id}_${Date.now()}`
+      return { id: dsId, name: t.name, rows, columnLabels: t.columnLabels, numericFormat: fmt, sqlText: t.sqlText, columnMapping: t.columnMapping }
     })
   }
 
@@ -1156,10 +1343,11 @@ function buildJoinedDatasets(): { id: string; name: string; rows: any[]; columnL
       const preF = dmStore.getNodeFilters(t.id)
       const baseRows = preF.length ? t.rows.filter(r => matchFilters(r, preF)) : t.rows
       const isoCfg = dmStore.getTransform(t.id)
-      const isoRows = isoCfg && (isoCfg.filters.length || isoCfg.groupByField)
+      const isoRows = isoCfg && (isoCfg.filters.length || isoCfg.groupByField || isoCfg.computedColumns?.length)
         ? applyTransform(baseRows, isoCfg)
         : baseRows
-      datasets.push({ id: `dm_${t.id}_${Date.now()}`, name: t.name, rows: isoRows, columnLabels, numericFormat: fmt })
+      const dsId = dmSavedId.value ? `dm_${dmSavedId.value}_${t.id}` : `dm_${t.id}_${Date.now()}`
+      datasets.push({ id: dsId, name: t.name, rows: isoRows, columnLabels, numericFormat: fmt, sqlText: t.sqlText, columnMapping: t.columnMapping })
       continue
     }
 
@@ -1199,6 +1387,10 @@ function buildJoinedDatasets(): { id: string; name: string; rows: any[]; columnL
     if (txCfg?.groupByField) {
       // ── Streaming join + GROUP BY ──────────────────────────────────────────
       rows = joinStreamGroupBy(firstTableId, orderedRels, txCfg)
+      // Apply computed columns after streaming GROUP BY (applyTransform not called here)
+      if (txCfg?.computedColumns?.length) {
+        rows = applyComputedColumns(rows, txCfg.computedColumns)
+      }
     } else {
       // ── Regular join with cap + optional filter-only transform ─────────────
       const _preFrom = dmStore.getNodeFilters(firstTableId)
@@ -1214,12 +1406,13 @@ function buildJoinedDatasets(): { id: string; name: string; rows: any[]; columnL
         if (truncated) anyTruncated = true
         rows = result
       }
-      if (txCfg && txCfg.filters.length) rows = applyTransform(rows, txCfg)
+      if (txCfg && (txCfg.filters.length || txCfg.computedColumns?.length)) rows = applyTransform(rows, txCfg)
     }
 
     const joinedRawFmt = dmStore.getNumericFormat(compKey)
+    const joinId = dmSavedId.value ? `dm_joined_${dmSavedId.value}_${compKey}` : `dm_joined_${Date.now()}_${Math.random().toString(36).slice(2)}`
     datasets.push({
-      id: `dm_joined_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      id: joinId,
       name, rows, columnLabels,
       numericFormat:  Object.keys(joinedRawFmt).length ? joinedRawFmt : undefined,
       columnSources:  Object.keys(columnSources).length > 0 ? columnSources : undefined,
@@ -1236,8 +1429,7 @@ function buildJoinedDatasets(): { id: string; name: string; rows: any[]; columnL
 function exportToReport() {
   exportWarning.value = ''
   const datasets = buildJoinedDatasets()
-  reportStore.resetAll()
-  for (const ds of datasets) reportStore.addDataset(ds)
+  for (const ds of datasets) reportStore.upsertDataset(ds as any)
   router.push('/report')
 }
 
@@ -1330,14 +1522,18 @@ const biApi = useMangoBIApi()
 
 const dmSavedId    = ref<string | null>(null)   // current saved record id
 const dmSaveName   = ref('')
+const dmIsPublic   = ref(false)
 const dmSaving     = ref(false)
 const dmSaveMsg    = ref('')
 const showDmSave   = ref(false)
 
-const showDmLoad   = ref(false)
-const dmLoadList   = ref<import('~/composables/useMangoBIApi').BIListItem[]>([])
-const dmLoadBusy   = ref(false)
-const dmDeleting   = ref<string | null>(null)
+const showDmLoad    = ref(false)
+const dmLoadTab     = ref<'mine' | 'public'>('mine')
+const dmLoadList    = ref<import('~/composables/useMangoBIApi').BIListItem[]>([])
+const dmPublicList  = ref<import('~/composables/useMangoBIApi').BIListItem[]>([])
+const dmLoadBusy    = ref(false)
+const dmPublicBusy  = ref(false)
+const dmDeleting    = ref<string | null>(null)
 
 async function openDmSave() {
   dmSaveMsg.value  = ''
@@ -1357,7 +1553,8 @@ async function doSaveDm() {
       labelBgPadding: e.labelBgPadding,
     }))
     const tablesPayload = dmStore.tables.map(t => ({
-      id: t.id, name: t.name, rows: t.rows, columnLabels: t.columnLabels,
+      id: t.id, name: t.name, columnLabels: t.columnLabels,
+      sqlText: t.sqlText, columnMapping: t.columnMapping,
     }))
     const nodesJson = JSON.stringify({
       nodes:         nodesPayload,
@@ -1374,6 +1571,7 @@ async function doSaveDm() {
       name:         dmSaveName.value.trim(),
       nodesJson,
       relationsJson,
+      isPublic:     dmIsPublic.value,
     })
     if (savedId) {
       dmSavedId.value = savedId
@@ -1388,12 +1586,26 @@ async function doSaveDm() {
 
 async function openDmLoad() {
   showDmLoad.value  = true
+  dmLoadTab.value   = 'mine'
   dmLoadBusy.value  = true
   dmLoadList.value  = []
+  dmPublicList.value = []
   try { dmLoadList.value = await biApi.listDataModels() }
   catch { dmLoadList.value = [] }
   finally { dmLoadBusy.value = false }
 }
+
+async function loadDmPublicTab() {
+  if (dmPublicList.value.length) return
+  dmPublicBusy.value = true
+  try { dmPublicList.value = await biApi.listPublicDataModels() }
+  catch { dmPublicList.value = [] }
+  finally { dmPublicBusy.value = false }
+}
+
+watch(dmLoadTab, (tab) => {
+  if (tab === 'public') loadDmPublicTab()
+})
 
 async function doLoadDm(id: string) {
   dmLoadBusy.value = true
@@ -1410,7 +1622,7 @@ async function doLoadDm(id: string) {
     for (const k of Object.keys(dmStore.nodeFilters))    delete dmStore.nodeFilters[k]
     for (const k of Object.keys(dmStore.numericFormats)) delete dmStore.numericFormats[k]
 
-    for (const t of (payload.tables ?? [])) dmStore.addTable(t)
+    for (const t of (payload.tables ?? [])) dmStore.addTable({ ...t, rows: t.rows ?? [] })
     for (const [k, v] of Object.entries(relPay.relations        ?? {})) dmStore.setRelation(k, v as any)
     for (const [k, v] of Object.entries(payload.transforms      ?? {})) dmStore.setTransform(k, v as any)
     for (const [k, v] of Object.entries(payload.nodeFilters     ?? {})) dmStore.setNodeFilters(k, v as any)
@@ -1430,9 +1642,25 @@ async function doLoadDm(id: string) {
 
     dmSavedId.value  = id
     dmSaveName.value = row.name ?? ''
+    dmIsPublic.value = row.isPublic ?? false
     showDmLoad.value = false
     selectedNodeId.value = null
     selectedEdgeId.value = null
+
+    // Re-execute SQL for fresh data — run in parallel, fall back to empty rows on error
+    const sqlTables = dmStore.tables.filter(t => t.sqlText)
+    sqlTables.forEach(t => dmStore.setTableLoading(t.id, true))
+    await Promise.all(
+      sqlTables.map(async (t) => {
+        try {
+          const result = await biApi.executeQuery(t.sqlText!)
+          if (!result?.rows?.length) return
+          const rows = applyColumnMapping(result.rows as any[], t.columnMapping)
+          dmStore.updateTableRows(t.id, rows)
+        } catch (e) { console.error('[doLoadDm] SQL re-execute failed for', t.id, e) }
+        finally { dmStore.setTableLoading(t.id, false) }
+      }),
+    )
   } catch (err) { console.error(err) }
   finally { dmLoadBusy.value = false }
 }
@@ -1465,6 +1693,109 @@ function clearDatamodel() {
   selectedNodeId.value = null
   selectedEdgeId.value = null
 }
+
+// ─── Append DM Templates ──────────────────────────────────────────────────────
+async function loadDmTemplates() {
+  tplLoading.value = true
+  try {
+    const [mine, pub] = await Promise.all([
+      biApi.listDataModels(),
+      biApi.listPublicDataModels(),
+    ])
+    tplMyList.value     = mine
+    const myIds         = new Set(mine.map((i: any) => i.id))
+    tplPublicList.value = pub.filter((i: any) => !myIds.has(i.id))
+  } catch {
+    tplMyList.value = []; tplPublicList.value = []
+  } finally {
+    tplLoading.value = false
+  }
+}
+
+async function appendDmTemplate(id: string) {
+  if (tplAppending.value) return
+  tplAppending.value = id
+  try {
+    const row = await biApi.loadDataModel(id)
+    if (!row) return
+    const payload = JSON.parse(row.nodesJson    ?? '{}')
+    const relPay  = JSON.parse(row.relationsJson ?? '{}')
+
+    const suffix = `-${Date.now()}`
+    // Offset Y so appended nodes appear below existing ones
+    const dy = nodes.value.length
+      ? Math.max(...nodes.value.map((n: any) => (n.position?.y ?? 0) + 200)) + 80
+      : 0
+
+    // Build ID remap: old tableId → new tableId
+    const idMap = new Map<string, string>()
+    for (const t of (payload.tables ?? [])) idMap.set(t.id, t.id + suffix)
+
+    // Append tables with remapped IDs
+    for (const t of (payload.tables ?? [])) {
+      dmStore.addTable({ ...t, id: idMap.get(t.id) ?? t.id, rows: t.rows ?? [] })
+    }
+
+    // Append relations with remapped keys + fromTable/toTable
+    for (const [k, v] of Object.entries(relPay.relations ?? {})) {
+      const rel = v as any
+      const newKey = k + suffix
+      dmStore.setRelation(newKey, {
+        ...rel,
+        fromTable: idMap.get(rel.fromTable) ?? (rel.fromTable + suffix),
+        toTable:   idMap.get(rel.toTable)   ?? (rel.toTable   + suffix),
+      })
+    }
+
+    // Append transforms / nodeFilters / numericFormats with remapped keys
+    for (const [k, v] of Object.entries(payload.transforms ?? {}))
+      dmStore.setTransform(k + suffix, v as any)
+    for (const [k, v] of Object.entries(payload.nodeFilters ?? {}))
+      dmStore.setNodeFilters(k + suffix, v as any)
+    for (const [k, v] of Object.entries(payload.numericFormats ?? {}))
+      dmStore.setNumericFormat(k + suffix, v as any)
+
+    // Append VueFlow nodes
+    const newNodes = (payload.nodes ?? []).map((n: any) => ({
+      id: idMap.get(n.id) ?? (n.id + suffix),
+      type: 'modelTable',
+      position: { x: n.position?.x ?? 0, y: (n.position?.y ?? 0) + dy },
+      data: {},
+    }))
+
+    // Append VueFlow edges
+    const newEdges = (payload.edges ?? []).map((e: any) => ({
+      ...e,
+      id:     e.id + suffix,
+      source: idMap.get(e.source) ?? (e.source + suffix),
+      target: idMap.get(e.target) ?? (e.target + suffix),
+    }))
+
+    nodes.value = [...nodes.value, ...newNodes]
+    edges.value = [...edges.value, ...newEdges]
+
+    // Re-execute SQL for appended tables that have sqlText
+    const appendSqlTables = (payload.tables ?? []).filter((t: any) => t.sqlText)
+    appendSqlTables.forEach((t: any) => dmStore.setTableLoading(idMap.get(t.id) ?? t.id, true))
+    await Promise.all(
+      appendSqlTables.map(async (t: any) => {
+        const newId = idMap.get(t.id) ?? t.id
+        try {
+          const result = await biApi.executeQuery(t.sqlText)
+          if (!result?.rows?.length) return
+          const rows = applyColumnMapping(result.rows as any[], t.columnMapping)
+          dmStore.updateTableRows(newId, rows)
+        } catch (e) { console.error('[appendDmTemplate] SQL re-execute failed for', newId, e) }
+        finally { dmStore.setTableLoading(newId, false) }
+      }),
+    )
+  } catch (err) { console.error(err) }
+  finally { tplAppending.value = null }
+}
+
+const { context: aiContext, contextLabel: aiContextLabel } = useAiContext()
+const aiStore = useAiChatStore()
+const { enabled: aiEnabled } = useAiFeature()
 </script>
 
 <template>
@@ -1495,18 +1826,6 @@ function clearDatamodel() {
         <span class="text-xs text-muted-foreground">
           {{ t('bi_table_stat', { count: tableCount, rel: relationCount }) }}
         </span>
-        <button
-          @click="showLayersPanel = !showLayersPanel"
-          :class="[
-            'flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg font-medium transition-colors border',
-            showLayersPanel
-              ? 'bg-indigo-500 text-white border-indigo-500'
-              : 'bg-background hover:bg-accent text-muted-foreground border-border',
-          ]"
-          title="Layers"
-        >
-          <Layers class="size-3.5" />
-        </button>
         <button
           @click="showAddPanel = !showAddPanel"
           class="flex items-center gap-1.5 text-xs px-3 py-1.5 bg-indigo-500 hover:bg-indigo-600
@@ -1540,11 +1859,26 @@ function clearDatamodel() {
           </button>
         </div>
 
+        <!-- AI Assistant (paying customers only) -->
+        <button
+          v-if="aiEnabled"
+          @click="aiStore.togglePanel('datamodel')"
+          :class="[
+            'flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border font-medium transition-all',
+            aiStore.openPage === 'datamodel'
+              ? 'bg-violet-500 text-white border-violet-500'
+              : 'border-violet-300 text-violet-600 hover:bg-violet-50 dark:border-violet-700 dark:text-violet-400 dark:hover:bg-violet-950/30',
+          ]"
+        >
+          <Sparkles class="size-3.5" />
+          AI
+        </button>
+
         <!-- Export to Report -->
         <div class="flex items-center gap-2 border-l pl-3">
           <span
             v-if="!exportStatus.ready"
-            class="flex items-center gap-1 text-[10px] text-amber-600 dark:text-amber-400 max-w-[160px]"
+            class="flex items-center gap-1 text-[12px] text-amber-600 dark:text-amber-400 max-w-[160px]"
             :title="exportStatus.reason"
           >
             <AlertCircle class="size-3 shrink-0" />
@@ -1562,6 +1896,9 @@ function clearDatamodel() {
             {{ t('bi_use_in_report') }}
           </button>
         </div>
+
+        <div class="h-4 w-px bg-border" />
+        <AppDisplayControls />
       </div>
     </header>
 
@@ -1573,7 +1910,7 @@ function clearDatamodel() {
                border-b border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400 shrink-0 z-10"
       >
         <AlertCircle class="size-3.5 shrink-0" />
-        <span class="text-[11px] flex-1">{{ exportWarning }}</span>
+        <span class="text-[13px] flex-1">{{ exportWarning }}</span>
         <button @click="exportWarning = ''" class="text-amber-500 hover:text-amber-700">
           <X class="size-3.5" />
         </button>
@@ -1598,9 +1935,9 @@ function clearDatamodel() {
           </div>
 
           <!-- Mode tabs -->
-          <div class="flex border-b text-[10px] shrink-0">
+          <div class="flex border-b text-[12px] shrink-0">
             <button
-              v-for="[m, label] in ([['mock','📦 Demo'],['passcode','🔑 Passcode'],['rawsql','🗄️ SQL']] as const)"
+              v-for="[m, label] in ([['saved','🗄️ My SQL'],['passcode','🔑 Passcode'],['rawsql','✏️ SQL']] as const)"
               :key="m"
               @click="addMode = m; errorMsg = ''"
               :class="[
@@ -1613,7 +1950,7 @@ function clearDatamodel() {
           <div class="p-3 flex flex-col gap-3">
             <!-- Custom name -->
             <div>
-              <p class="text-[10px] font-semibold text-muted-foreground mb-1">{{ t('bi_table_name_optional') }}</p>
+              <p class="text-[12px] font-semibold text-muted-foreground mb-1">{{ t('bi_table_name_optional') }}</p>
               <input
                 v-model="customName"
                 :placeholder="t('bi_display_name_placeholder')"
@@ -1622,33 +1959,112 @@ function clearDatamodel() {
               />
             </div>
 
-            <!-- Mock mode -->
-            <template v-if="addMode === 'mock'">
-              <div>
-                <p class="text-[10px] font-semibold text-muted-foreground mb-1">{{ t('bi_dataset') }}</p>
-                <select
-                  v-model="selectedKey"
-                  class="w-full text-xs border rounded-lg px-2 py-1.5 bg-background
-                         focus:outline-none focus:ring-1 focus:ring-indigo-400"
+            <!-- My SQL Builder (saved) -->
+            <template v-if="addMode === 'saved'">
+              <div class="flex items-center justify-between">
+                <p class="text-[12px] font-semibold text-muted-foreground">SQL Builder ของฉัน</p>
+                <button
+                  @click="loadSavedSqlList"
+                  :disabled="savedSqlLoading"
+                  class="size-5 flex items-center justify-center rounded hover:bg-accent transition-colors text-muted-foreground disabled:opacity-50"
+                  title="รีเฟรช"
                 >
-                  <option v-for="ds in datasetOptions" :key="ds.key" :value="ds.key">
-                    {{ ds.label }}
-                  </option>
-                </select>
+                  <RotateCcw v-if="!savedSqlLoading" class="size-3" />
+                  <Loader2 v-else class="size-3 animate-spin" />
+                </button>
               </div>
-              <button
-                @click="addMockTable"
-                class="w-full text-xs py-2 bg-indigo-500 hover:bg-indigo-600 text-white rounded-lg font-medium transition-colors"
-              >
-                {{ t('bi_add_table') }}
-              </button>
+
+              <!-- Loading -->
+              <div v-if="savedSqlLoading" class="flex justify-center py-5">
+                <Loader2 class="size-4 animate-spin text-muted-foreground" />
+              </div>
+
+              <!-- Empty -->
+              <div v-else-if="!savedSqlItems.length"
+                class="flex flex-col items-center gap-1.5 py-5 text-[12px] text-muted-foreground/60 italic border border-dashed rounded-lg">
+                <Database class="size-4" />
+                ยังไม่มี SQL Builder ที่บันทึกไว้
+              </div>
+
+              <!-- List -->
+              <div v-else class="flex flex-col gap-1 max-h-56 overflow-y-auto -mx-1 px-1">
+                <div
+                  v-for="item in savedSqlItems" :key="item.id"
+                  class="flex items-center gap-2 px-2.5 py-2 rounded-xl border hover:bg-accent/50 transition-colors group"
+                >
+                  <div class="flex-1 min-w-0">
+                    <p class="text-xs font-medium truncate">{{ item.name }}</p>
+                    <p class="text-[13px] text-muted-foreground/60 font-mono">
+                      {{ new Date(item.updatedAt ?? item.createdAt).toLocaleString('th-TH') }}
+                    </p>
+                  </div>
+                  <button
+                    @click="addSavedSqlTable(item)"
+                    :disabled="!!savedSqlAdding"
+                    class="flex items-center gap-1 text-[12px] px-2.5 py-1 bg-indigo-500 hover:bg-indigo-600
+                           text-white rounded-lg font-semibold transition-colors disabled:opacity-50 shrink-0"
+                  >
+                    <Loader2 v-if="savedSqlAdding === item.id" class="size-3 animate-spin" />
+                    <Plus v-else class="size-3" />
+                    <span v-if="savedSqlAdding !== item.id">Add</span>
+                  </button>
+                </div>
+              </div>
+
+              <!-- Error -->
+              <div v-if="errorMsg && addMode === 'saved'"
+                class="flex items-start gap-1.5 text-[12px] text-destructive bg-destructive/10 rounded-lg px-2 py-1.5">
+                <AlertCircle class="size-3 shrink-0 mt-0.5" />
+                <span class="break-all">{{ errorMsg }}</span>
+              </div>
+
+              <!-- Public SQL Builder -->
+              <div class="flex items-center gap-1.5 pt-1">
+                <Globe class="size-3 text-sky-400 shrink-0" />
+                <p class="text-[12px] font-semibold text-muted-foreground flex-1">SQL Builder สาธารณะ</p>
+                <span class="text-[13px] text-muted-foreground/50 font-mono">({{ publicSqlItems.length }})</span>
+              </div>
+
+              <div v-if="savedSqlLoading" class="flex justify-center py-3">
+                <Loader2 class="size-4 animate-spin text-muted-foreground" />
+              </div>
+              <div v-else-if="!publicSqlItems.length"
+                class="flex flex-col items-center gap-1 py-3 text-[12px] text-muted-foreground/50 italic border border-dashed rounded-lg">
+                <Globe class="size-3.5" />
+                ยังไม่มี SQL Builder สาธารณะ
+              </div>
+              <div v-else class="flex flex-col gap-1 max-h-48 overflow-y-auto -mx-1 px-1">
+                <div
+                  v-for="item in publicSqlItems" :key="item.id"
+                  class="flex items-center gap-2 px-2.5 py-2 rounded-xl border border-sky-500/20 hover:bg-sky-500/5 transition-colors group"
+                >
+                  <Globe class="size-3 text-sky-400 shrink-0" />
+                  <div class="flex-1 min-w-0">
+                    <p class="text-xs font-medium truncate">{{ item.name }}</p>
+                    <p class="text-[13px] text-muted-foreground/60 font-mono truncate">
+                      {{ item.createdBy }} · {{ new Date(item.updatedAt ?? item.createdAt).toLocaleString('th-TH') }}
+                    </p>
+                  </div>
+                  <button
+                    @click="addSavedSqlTable(item)"
+                    :disabled="!!savedSqlAdding"
+                    class="flex items-center gap-1 text-[12px] px-2.5 py-1 bg-sky-500 hover:bg-sky-600
+                           text-white rounded-lg font-semibold transition-colors disabled:opacity-50 shrink-0"
+                  >
+                    <Loader2 v-if="savedSqlAdding === item.id" class="size-3 animate-spin" />
+                    <Plus v-else class="size-3" />
+                    <span v-if="savedSqlAdding !== item.id">Add</span>
+                  </button>
+                </div>
+              </div>
+
             </template>
 
             <!-- Passcode / SQL Template mode -->
             <template v-else-if="addMode === 'passcode'">
               <!-- Passcode -->
               <div>
-                <p class="text-[10px] font-semibold text-muted-foreground mb-1">Passcode</p>
+                <p class="text-[12px] font-semibold text-muted-foreground mb-1">Passcode</p>
                 <div class="flex gap-1.5">
                   <input
                     v-model="sqlPasscode"
@@ -1662,7 +2078,7 @@ function clearDatamodel() {
                   <button
                     @click="fetchSqlTemplates"
                     :disabled="sqlLoading"
-                    class="px-2.5 text-[10px] font-semibold bg-indigo-100 dark:bg-indigo-900/40
+                    class="px-2.5 text-[12px] font-semibold bg-indigo-100 dark:bg-indigo-900/40
                            text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-700
                            rounded-lg hover:bg-indigo-200 dark:hover:bg-indigo-800/50 transition-colors
                            disabled:opacity-60 shrink-0"
@@ -1677,8 +2093,8 @@ function clearDatamodel() {
               <template v-if="sqlTemplatesLoaded">
                 <div v-if="sqlTemplates.length" class="space-y-1.5">
                   <div class="flex items-center justify-between">
-                    <p class="text-[10px] font-semibold text-muted-foreground">Template</p>
-                    <span class="text-[10px] text-indigo-500">{{ sqlTemplates.length }} {{ t('bi_items') }}</span>
+                    <p class="text-[12px] font-semibold text-muted-foreground">Template</p>
+                    <span class="text-[12px] text-indigo-500">{{ sqlTemplates.length }} {{ t('bi_items') }}</span>
                   </div>
                   <select
                     v-model="selectedTemplateId"
@@ -1692,7 +2108,7 @@ function clearDatamodel() {
                 </div>
                 <div
                   v-else
-                  class="flex items-center justify-center gap-1.5 py-2 text-[10px] text-muted-foreground border border-dashed rounded-lg"
+                  class="flex items-center justify-center gap-1.5 py-2 text-[12px] text-muted-foreground border border-dashed rounded-lg"
                 >
                   {{ t('bi_template_not_found_passcode') }}
                 </div>
@@ -1700,7 +2116,7 @@ function clearDatamodel() {
 
               <div
                 v-if="errorMsg"
-                class="flex items-start gap-1.5 text-[10px] text-destructive bg-destructive/10 rounded-lg px-2 py-1.5"
+                class="flex items-start gap-1.5 text-[12px] text-destructive bg-destructive/10 rounded-lg px-2 py-1.5"
               >
                 <AlertCircle class="size-3 shrink-0 mt-0.5" />
                 <span class="break-all">{{ errorMsg }}</span>
@@ -1739,8 +2155,8 @@ function clearDatamodel() {
                 v-if="rawSqlErrors.length"
                 class="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 space-y-0.5"
               >
-                <p class="text-[10px] font-semibold text-destructive mb-1">SQL ไม่ผ่านการตรวจสอบ</p>
-                <p v-for="err in rawSqlErrors" :key="err" class="text-[10px] text-destructive flex items-start gap-1">
+                <p class="text-[12px] font-semibold text-destructive mb-1">SQL ไม่ผ่านการตรวจสอบ</p>
+                <p v-for="err in rawSqlErrors" :key="err" class="text-[12px] text-destructive flex items-start gap-1">
                   <AlertCircle class="size-3 shrink-0 mt-0.5" />
                   {{ err }}
                 </p>
@@ -1749,15 +2165,15 @@ function clearDatamodel() {
               <!-- SQL textarea -->
               <div>
                 <div class="flex items-center justify-between mb-1">
-                  <p class="text-[10px] font-semibold text-muted-foreground">SQL Statement</p>
-                  <span class="text-[9px] text-muted-foreground/60">SELECT เท่านั้น</span>
+                  <p class="text-[12px] font-semibold text-muted-foreground">SQL Statement</p>
+                  <span class="text-[13px] text-muted-foreground/60">SELECT / WITH CTE</span>
                 </div>
                 <textarea
                   v-model="rawSqlText"
                   rows="10"
-                  placeholder="SELECT col1, col2&#10;FROM table_name&#10;WHERE condition"
+                  placeholder="SELECT col1, col2&#10;FROM table_name&#10;WHERE condition&#10;&#10;-- หรือ CTE:&#10;WITH cte AS (&#10;  SELECT ...&#10;)&#10;SELECT * FROM cte"
                   spellcheck="false"
-                  class="w-full text-[10px] font-mono border rounded-lg px-2 py-1.5 bg-background
+                  class="w-full text-[12px] font-mono border rounded-lg px-2 py-1.5 bg-background
                          focus:outline-none focus:ring-1 focus:ring-indigo-400 resize-none leading-relaxed"
                   :class="rawSqlErrors.length ? 'border-destructive' : ''"
                   @input="rawSqlErrors = []"
@@ -1765,15 +2181,15 @@ function clearDatamodel() {
               </div>
 
               <!-- Security note -->
-              <div class="flex items-start gap-1.5 text-[10px] text-muted-foreground bg-muted/40 rounded-lg px-2.5 py-2">
+              <div class="flex items-start gap-1.5 text-[12px] text-muted-foreground bg-muted/40 rounded-lg px-2.5 py-2">
                 <AlertCircle class="size-3 shrink-0 mt-0.5 text-amber-500" />
-                <span>ระบบจะตรวจสอบ SQL ทั้ง client และ server — อนุญาตเฉพาะ SELECT เท่านั้น</span>
+                <span>ระบบจะตรวจสอบ SQL ทั้ง client และ server — อนุญาตเฉพาะ SELECT และ WITH … AS (CTE) เท่านั้น</span>
               </div>
 
               <!-- Error -->
               <div
                 v-if="errorMsg"
-                class="flex items-start gap-1.5 text-[10px] text-destructive bg-destructive/10 rounded-lg px-2 py-1.5"
+                class="flex items-start gap-1.5 text-[12px] text-destructive bg-destructive/10 rounded-lg px-2 py-1.5"
               >
                 <AlertCircle class="size-3 shrink-0 mt-0.5" />
                 <span class="break-all">{{ errorMsg }}</span>
@@ -1792,6 +2208,82 @@ function clearDatamodel() {
               </button>
             </template>
           </div>
+
+          <!-- ── DM Templates (Append) ──────────────────────────────────── -->
+          <div class="border-t shrink-0">
+
+            <!-- Section header -->
+            <button
+              class="w-full flex items-center gap-2 px-3 py-2 bg-muted/30 hover:bg-muted/60 transition-colors text-left"
+              @click="tplOpen = !tplOpen; if (tplOpen && !tplMyList.length && !tplLoading) loadDmTemplates()"
+            >
+              <ChevronRight :class="['size-3.5 text-muted-foreground shrink-0 transition-transform duration-150', tplOpen ? 'rotate-90' : '']" />
+              <BookMarked class="size-3.5 text-violet-400 shrink-0" />
+              <span class="text-xs font-bold text-muted-foreground uppercase tracking-wide flex-1">Templates</span>
+              <Loader2 v-if="tplLoading" class="size-3.5 animate-spin text-muted-foreground shrink-0" />
+              <button
+                v-else
+                @click.stop="loadDmTemplates()"
+                class="text-muted-foreground hover:text-foreground shrink-0"
+                title="รีเฟรช"
+              >
+                <RefreshCw class="size-3.5" />
+              </button>
+            </button>
+
+            <div v-if="tplOpen" class="max-h-64 overflow-y-auto">
+
+              <!-- ของฉัน -->
+              <div class="px-3 py-1 flex items-center gap-1.5 sticky top-0 bg-background/90 backdrop-blur-sm z-10">
+                <Lock class="size-2.5 text-muted-foreground/60" />
+                <span class="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wide">ของฉัน</span>
+                <span class="text-[9px] text-muted-foreground/40 font-mono">({{ tplMyList.length }})</span>
+              </div>
+              <div v-if="!tplMyList.length && !tplLoading"
+                class="px-4 pb-2 text-[10px] text-muted-foreground/50 italic">ยังไม่มี</div>
+              <button
+                v-for="t in tplMyList" :key="t.id"
+                @click="appendDmTemplate(t.id)"
+                :disabled="tplAppending === t.id"
+                class="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-accent transition-colors text-left disabled:opacity-50 border-b border-border/10 last:border-0"
+              >
+                <Loader2 v-if="tplAppending === t.id" class="size-3 animate-spin text-violet-400 shrink-0" />
+                <BookMarked v-else class="size-3 text-violet-400 shrink-0" />
+                <div class="flex-1 min-w-0">
+                  <p class="text-xs truncate">{{ t.name }}</p>
+                  <p class="text-[9px] text-muted-foreground/50 truncate">
+                    {{ new Date(t.updatedAt ?? t.createdAt).toLocaleDateString('th-TH') }}
+                  </p>
+                </div>
+              </button>
+
+              <!-- สาธารณะ -->
+              <div class="px-3 py-1 flex items-center gap-1.5 sticky top-0 bg-background/90 backdrop-blur-sm z-10 mt-1">
+                <Globe class="size-2.5 text-sky-400/80" />
+                <span class="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wide">สาธารณะ</span>
+                <span class="text-[9px] text-muted-foreground/40 font-mono">({{ tplPublicList.length }})</span>
+              </div>
+              <div v-if="!tplPublicList.length && !tplLoading"
+                class="px-4 pb-2 text-[10px] text-muted-foreground/50 italic">ยังไม่มี</div>
+              <button
+                v-for="t in tplPublicList" :key="t.id"
+                @click="appendDmTemplate(t.id)"
+                :disabled="tplAppending === t.id"
+                class="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-accent transition-colors text-left disabled:opacity-50 border-b border-border/10 last:border-0"
+              >
+                <Loader2 v-if="tplAppending === t.id" class="size-3 animate-spin text-sky-400 shrink-0" />
+                <Globe v-else class="size-3 text-sky-400 shrink-0" />
+                <div class="flex-1 min-w-0">
+                  <p class="text-xs truncate">{{ t.name }}</p>
+                  <p class="text-[9px] text-muted-foreground/50 truncate">
+                    {{ t.createdBy }} · {{ new Date(t.updatedAt ?? t.createdAt).toLocaleDateString('th-TH') }}
+                  </p>
+                </div>
+              </button>
+
+            </div>
+          </div>
+
         </aside>
       </Transition>
 
@@ -1818,20 +2310,44 @@ function clearDatamodel() {
           <p class="text-xs text-muted-foreground/60">{{ t('bi_hint_drag_handle') }}</p>
         </div>
 
+        <!-- ── Layers toggle button (top-right of canvas) ──────────────── -->
+        <button
+          v-if="!showLayersPanel"
+          @click.stop="showLayersPanel = true"
+          @pointerdown.stop
+          @mousedown.stop
+          :class="[
+            'layers-panel-overlay absolute top-3 right-3 z-20 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-all shadow-sm',
+            'bg-background text-muted-foreground border-border hover:border-indigo-400/50 hover:text-indigo-500',
+          ]"
+        >
+          <Layers class="size-3.5" />
+          Layers
+        </button>
+
         <!-- ── Layers Panel ──────────────────────────────────────────────── -->
-        <Transition name="slide-left">
+        <Transition name="slide-right">
           <div
             v-if="showLayersPanel && nodes.length"
-            class="absolute top-3 left-3 z-10 w-52 rounded-xl border bg-background/95 backdrop-blur-sm shadow-lg flex flex-col overflow-hidden"
+            class="layers-panel-overlay absolute top-3 right-3 z-20 w-60 rounded-xl border bg-background shadow-2xl flex flex-col overflow-hidden"
+            style="max-height: calc(100% - 24px)"
+            @click.stop
+            @pointerdown.stop
+            @mousedown.stop
           >
-            <div class="px-3 py-2 border-b flex items-center justify-between">
+            <div class="px-3 py-2.5 border-b flex items-center justify-between shrink-0 bg-muted/30">
               <div class="flex items-center gap-1.5">
                 <Layers class="size-3.5 text-indigo-500" />
                 <span class="text-xs font-semibold">Layers</span>
               </div>
-              <span class="text-[10px] text-muted-foreground">{{ tableCount }} {{ t('bi_tables') }}</span>
+              <div class="flex items-center gap-2">
+                <span class="text-[12px] text-muted-foreground">{{ tableCount }} {{ t('bi_tables') }}</span>
+                <button @click="showLayersPanel = false" class="text-muted-foreground hover:text-foreground transition-colors">
+                  <X class="size-3.5" />
+                </button>
+              </div>
             </div>
-            <div class="overflow-y-auto max-h-[60vh]">
+            <div class="flex-1 overflow-y-auto min-h-0">
               <!-- Tables list -->
               <button
                 v-for="table in dmStore.tables"
@@ -1847,7 +2363,7 @@ function clearDatamodel() {
                     :class="selectedNodeId === table.id && !selectedEdge ? 'text-indigo-600 dark:text-indigo-400' : ''">
                     {{ table.name }}
                   </p>
-                  <p class="text-[10px] text-muted-foreground">
+                  <p class="text-[12px] text-muted-foreground">
                     {{ table.rows.length.toLocaleString() }} {{ t('bi_rows') }}
                     <template v-if="nodeRelationCount[table.id]">
                       · {{ nodeRelationCount[table.id] }} {{ t('bi_relations') }}
@@ -1865,7 +2381,7 @@ function clearDatamodel() {
               <template v-if="joinedComponents.length">
                 <div class="px-3 py-1.5 bg-muted/40 border-t flex items-center gap-1.5">
                   <GitMerge class="size-3 text-violet-500" />
-                  <span class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+                  <span class="text-[12px] font-semibold text-muted-foreground uppercase tracking-wide">
                     {{ t('bi_joined_components') }}
                   </span>
                 </div>
@@ -1877,10 +2393,10 @@ function clearDatamodel() {
                   <div class="flex items-start gap-1.5">
                     <GitMerge class="size-3.5 shrink-0 text-violet-400 mt-0.5" />
                     <div class="flex-1 min-w-0">
-                      <p class="text-[11px] font-medium text-violet-700 dark:text-violet-300 leading-tight">
+                      <p class="text-[13px] font-medium text-violet-700 dark:text-violet-300 leading-tight">
                         {{ comp.tableIds.map(id => dmStore.getTable(id)?.name ?? id).join(' + ') }}
                       </p>
-                      <p class="text-[10px] text-muted-foreground">
+                      <p class="text-[12px] text-muted-foreground">
                         {{ comp.tableIds.length }} {{ t('bi_tables') }} · {{ comp.relCount }} {{ t('bi_relations') }}
                         <span
                           v-if="dmStore.getTransform(comp.key)"
@@ -1891,7 +2407,7 @@ function clearDatamodel() {
                   </div>
                   <button
                     @click="openJoinTxModal(comp.key)"
-                    class="w-full flex items-center justify-center gap-1.5 py-1.5 text-[10px] font-semibold
+                    class="w-full flex items-center justify-center gap-1.5 py-1.5 text-[12px] font-semibold
                            rounded-lg border border-violet-300 dark:border-violet-700
                            text-violet-600 dark:text-violet-400
                            hover:bg-violet-50 dark:hover:bg-violet-950/40 transition-colors"
@@ -1927,12 +2443,12 @@ function clearDatamodel() {
           </div>
 
           <!-- Stats row + Transform button -->
-          <div class="px-3 py-2 border-b flex items-center gap-3 text-[10px] text-muted-foreground shrink-0">
+          <div class="px-3 py-2 border-b flex items-center gap-3 text-[12px] text-muted-foreground shrink-0">
             <span><span class="font-semibold text-foreground">{{ selectedNodeData.rows.length.toLocaleString() }}</span> {{ t('bi_rows') }}</span>
             <span><span class="font-semibold text-foreground">{{ nodePreviewCols.length }}</span> {{ t('bi_columns_label') }}</span>
             <button
               @click="showTxModal = true; txModalTab = 'before'"
-              class="ml-auto flex items-center gap-1.5 px-2 py-1 rounded-md border text-[10px] font-semibold transition-colors"
+              class="ml-auto flex items-center gap-1.5 px-2 py-1 rounded-md border text-[12px] font-semibold transition-colors"
               :class="txHasConfig
                 ? 'border-violet-400 text-violet-600 bg-violet-50 dark:bg-violet-950/40'
                 : 'border-border text-muted-foreground hover:bg-accent'"
@@ -1947,21 +2463,21 @@ function clearDatamodel() {
           <div class="px-3 py-2.5 flex flex-col gap-2 overflow-y-auto flex-1">
             <div class="flex items-center justify-between">
               <div class="flex items-center gap-1.5">
-                <p class="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Pre-filter</p>
+                <p class="text-[12px] font-semibold uppercase tracking-wide text-muted-foreground">Pre-filter</p>
                 <span v-if="nodeHasPreFilters"
-                  class="text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-orange-100 dark:bg-orange-950/40 text-orange-600 dark:text-orange-400">
+                  class="text-[13px] font-semibold px-1.5 py-0.5 rounded-full bg-orange-100 dark:bg-orange-950/40 text-orange-600 dark:text-orange-400">
                   {{ nodePreFilters.length }}
                 </span>
               </div>
               <button
                 @click="nodeAddPreFilter"
-                class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded bg-orange-100 dark:bg-orange-950/40 text-orange-600 dark:text-orange-400 hover:bg-orange-200 transition-colors font-semibold"
+                class="flex items-center gap-1 text-[12px] px-2 py-0.5 rounded bg-orange-100 dark:bg-orange-950/40 text-orange-600 dark:text-orange-400 hover:bg-orange-200 transition-colors font-semibold"
               >
                 <Plus class="size-3" /> {{ t('bi_add') }}
               </button>
             </div>
 
-            <div v-if="!nodeHasPreFilters" class="text-[10px] text-muted-foreground text-center py-3 border border-dashed rounded-lg">
+            <div v-if="!nodeHasPreFilters" class="text-[12px] text-muted-foreground text-center py-3 border border-dashed rounded-lg">
               {{ t('bi_no_filters') }}
             </div>
 
@@ -1970,7 +2486,7 @@ function clearDatamodel() {
               <select
                 :value="f.field"
                 @change="nodeUpdatePreFilter(i, { field: ($event.target as HTMLSelectElement).value })"
-                class="w-full text-[10px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-orange-400"
+                class="w-full text-[12px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-orange-400"
               >
                 <option v-for="c in nodePreviewCols" :key="c.name" :value="c.name">{{ c.label }}</option>
               </select>
@@ -1979,7 +2495,7 @@ function clearDatamodel() {
                 <select
                   :value="f.op"
                   @change="nodeUpdatePreFilter(i, { op: ($event.target as HTMLSelectElement).value as any })"
-                  class="w-16 shrink-0 text-[10px] border rounded px-1 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-orange-400"
+                  class="w-16 shrink-0 text-[12px] border rounded px-1 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-orange-400"
                 >
                   <option v-for="o in OP_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
                 </select>
@@ -1987,7 +2503,7 @@ function clearDatamodel() {
                 <template v-if="isNodeDateField(f.field)">
                   <span
                     v-if="DATE_TOKEN_LABELS[f.value]"
-                    class="flex items-center gap-1 text-[10px] font-semibold text-blue-600 dark:text-blue-400
+                    class="flex items-center gap-1 text-[12px] font-semibold text-blue-600 dark:text-blue-400
                            bg-blue-50 dark:bg-blue-950/40 border border-blue-300 dark:border-blue-700
                            rounded px-2 py-1 shrink-0 cursor-pointer"
                     @click="nodeUpdatePreFilter(i, { value: '' })"
@@ -1995,9 +2511,9 @@ function clearDatamodel() {
                   >{{ DATE_TOKEN_LABELS[f.value] }} <X class="size-2.5" /></span>
                   <input v-else type="date" :value="f.value"
                     @change="nodeUpdatePreFilter(i, { value: ($event.target as HTMLInputElement).value })"
-                    class="flex-1 min-w-0 text-[10px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-orange-400" />
+                    class="flex-1 min-w-0 text-[12px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-orange-400" />
                   <button @click="nodeUpdatePreFilter(i, { value: DATE_TOKEN_TODAY })"
-                    :class="['shrink-0 text-[9px] font-semibold px-1.5 py-1 rounded transition-colors border',
+                    :class="['shrink-0 text-[13px] font-semibold px-1.5 py-1 rounded transition-colors border',
                       f.value === DATE_TOKEN_TODAY
                         ? 'bg-blue-500 text-white border-blue-500'
                         : 'text-blue-600 dark:text-blue-400 border-blue-300 dark:border-blue-700 hover:bg-blue-50 dark:hover:bg-blue-950/40']"
@@ -2008,7 +2524,7 @@ function clearDatamodel() {
                   :value="f.value"
                   @input="nodeUpdatePreFilter(i, { value: ($event.target as HTMLInputElement).value })"
                   :placeholder="t('bi_value')"
-                  class="flex-1 min-w-0 text-[10px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-orange-400"
+                  class="flex-1 min-w-0 text-[12px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-orange-400"
                 />
                 <button @click="nodeRemovePreFilter(i)" class="shrink-0 text-muted-foreground hover:text-destructive transition-colors">
                   <X class="size-3.5" />
@@ -2045,7 +2561,7 @@ function clearDatamodel() {
 
             <!-- From table + column -->
             <div class="space-y-1.5">
-              <p class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">{{ t('bi_from_table') }}</p>
+              <p class="text-[12px] font-semibold text-muted-foreground uppercase tracking-wide">{{ t('bi_from_table') }}</p>
               <div class="rounded-lg border bg-muted/20 px-2.5 py-2 space-y-1.5">
                 <p class="text-xs font-semibold text-indigo-600 dark:text-indigo-400 truncate">
                   {{ dmStore.getTable(selectedEdge.fromTable)?.name ?? selectedEdge.fromTable }}
@@ -2081,9 +2597,9 @@ function clearDatamodel() {
                         :class="selectedEdge.fromColumn === col.name ? 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400' : ''"
                       >
                         <span class="block truncate">{{ col.label }}</span>
-                        <span v-if="col.label !== col.name" class="block text-[10px] text-muted-foreground/60 font-mono truncate">{{ col.name }}</span>
+                        <span v-if="col.label !== col.name" class="block text-[12px] text-muted-foreground/60 font-mono truncate">{{ col.name }}</span>
                       </button>
-                      <div v-if="!filteredFromCols.length" class="px-2 py-2 text-[10px] text-muted-foreground text-center">{{ t('bi_not_found') }}</div>
+                      <div v-if="!filteredFromCols.length" class="px-2 py-2 text-[12px] text-muted-foreground text-center">{{ t('bi_not_found') }}</div>
                     </div>
                   </div>
                 </div>
@@ -2092,7 +2608,7 @@ function clearDatamodel() {
 
             <!-- To table + column -->
             <div class="space-y-1.5">
-              <p class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">{{ t('bi_to_table') }}</p>
+              <p class="text-[12px] font-semibold text-muted-foreground uppercase tracking-wide">{{ t('bi_to_table') }}</p>
               <div class="rounded-lg border bg-muted/20 px-2.5 py-2 space-y-1.5">
                 <p class="text-xs font-semibold text-indigo-600 dark:text-indigo-400 truncate">
                   {{ dmStore.getTable(selectedEdge.toTable)?.name ?? selectedEdge.toTable }}
@@ -2128,9 +2644,9 @@ function clearDatamodel() {
                         :class="selectedEdge.toColumn === col.name ? 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400' : ''"
                       >
                         <span class="block truncate">{{ col.label }}</span>
-                        <span v-if="col.label !== col.name" class="block text-[10px] text-muted-foreground/60 font-mono truncate">{{ col.name }}</span>
+                        <span v-if="col.label !== col.name" class="block text-[12px] text-muted-foreground/60 font-mono truncate">{{ col.name }}</span>
                       </button>
-                      <div v-if="!filteredToCols.length" class="px-2 py-2 text-[10px] text-muted-foreground text-center">{{ t('bi_not_found') }}</div>
+                      <div v-if="!filteredToCols.length" class="px-2 py-2 text-[12px] text-muted-foreground text-center">{{ t('bi_not_found') }}</div>
                     </div>
                   </div>
                 </div>
@@ -2139,14 +2655,14 @@ function clearDatamodel() {
 
             <!-- Cardinality -->
             <div class="space-y-1.5">
-              <p class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Cardinality</p>
+              <p class="text-[12px] font-semibold text-muted-foreground uppercase tracking-wide">Cardinality</p>
               <div class="grid grid-cols-2 gap-1.5">
                 <button
                   v-for="c in (['1:1','1:*','*:1','*:*'] as const)"
                   :key="c"
                   @click="updateRelation('cardinality', c)"
                   :class="[
-                    'py-2 rounded-lg border text-[11px] font-mono font-bold transition-colors',
+                    'py-2 rounded-lg border text-[13px] font-mono font-bold transition-colors',
                     selectedEdge.cardinality === c
                       ? 'bg-indigo-500 text-white border-indigo-500'
                       : 'text-muted-foreground hover:border-indigo-300 hover:text-indigo-600',
@@ -2157,7 +2673,7 @@ function clearDatamodel() {
 
             <!-- Join Type -->
             <div class="space-y-1.5">
-              <p class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Join Type</p>
+              <p class="text-[12px] font-semibold text-muted-foreground uppercase tracking-wide">Join Type</p>
               <select
                 :value="selectedEdge.joinType"
                 @change="updateRelation('joinType', ($event.target as HTMLSelectElement).value)"
@@ -2172,7 +2688,7 @@ function clearDatamodel() {
 
             <!-- Summary chip -->
             <div class="rounded-lg bg-indigo-50 dark:bg-indigo-950/30 px-3 py-2">
-              <p class="text-[10px] text-indigo-600 dark:text-indigo-400 font-mono text-center leading-relaxed">
+              <p class="text-[12px] text-indigo-600 dark:text-indigo-400 font-mono text-center leading-relaxed">
                 {{ dmStore.getTable(selectedEdge.fromTable)?.name }}.{{ colLabel(selectedEdge.fromTable, selectedEdge.fromColumn) }}<br/>
                 <span class="font-bold">{{ selectedEdge.cardinality }}</span> ({{ selectedEdge.joinType }})<br/>
                 {{ dmStore.getTable(selectedEdge.toTable)?.name }}.{{ colLabel(selectedEdge.toTable, selectedEdge.toColumn) }}
@@ -2182,8 +2698,8 @@ function clearDatamodel() {
             <!-- Data Preview -->
             <div class="space-y-1.5">
               <div class="flex items-center justify-between">
-                <p class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">{{ t('bi_sample_data') }}</p>
-                <span class="text-[10px] text-indigo-500">
+                <p class="text-[12px] font-semibold text-muted-foreground uppercase tracking-wide">{{ t('bi_sample_data') }}</p>
+                <span class="text-[12px] text-indigo-500">
                   {{ sampleJoin ? `${sampleJoin.rows.length} ${t('bi_rows')}` : '—' }}
                 </span>
               </div>
@@ -2203,7 +2719,7 @@ function clearDatamodel() {
 
               <div
                 v-else
-                class="text-[10px] text-muted-foreground text-center py-3 border border-dashed rounded-lg"
+                class="text-[12px] text-muted-foreground text-center py-3 border border-dashed rounded-lg"
               >
                 {{ sampleJoin ? t('bi_no_matching_rows') : t('bi_add_data_to_tables_first') }}
               </div>
@@ -2228,7 +2744,7 @@ function clearDatamodel() {
               </button>
             </div>
             <div>
-              <label class="text-[10px] font-semibold text-muted-foreground mb-1 block">{{ t('bi_name') }}</label>
+              <label class="text-[12px] font-semibold text-muted-foreground mb-1 block">{{ t('bi_name') }}</label>
               <input
                 v-model="dmSaveName"
                 :placeholder="t('bi_dm_name_placeholder')"
@@ -2237,6 +2753,27 @@ function clearDatamodel() {
                 @keydown.enter="doSaveDm"
               />
             </div>
+            <!-- Public toggle -->
+            <button
+              type="button"
+              @click="dmIsPublic = !dmIsPublic"
+              :class="[
+                'w-full flex items-center gap-3 px-3 py-2 rounded-xl border transition-colors',
+                dmIsPublic
+                  ? 'bg-sky-500/10 border-sky-500/40 text-sky-600'
+                  : 'bg-muted/30 border-border text-muted-foreground hover:bg-accent'
+              ]"
+            >
+              <Globe v-if="dmIsPublic" class="size-4 shrink-0" />
+              <Lock v-else class="size-4 shrink-0" />
+              <div class="flex-1 text-left">
+                <p class="text-xs font-semibold">{{ dmIsPublic ? 'สาธารณะ' : 'ส่วนตัว' }}</p>
+                <p class="text-[12px] opacity-70">{{ dmIsPublic ? 'ทุกคนในระบบเห็นและโหลดได้' : 'มองเห็นเฉพาะคุณ' }}</p>
+              </div>
+              <div :class="['relative w-9 h-5 rounded-full transition-colors shrink-0', dmIsPublic ? 'bg-sky-500' : 'bg-muted-foreground/30']">
+                <div :class="['absolute top-0.5 size-4 rounded-full bg-white shadow transition-transform', dmIsPublic ? 'translate-x-4' : 'translate-x-0.5']" />
+              </div>
+            </button>
             <p v-if="dmSaveMsg" class="text-xs text-center"
                :class="dmSaveMsg.startsWith('✓') ? 'text-emerald-600' : 'text-red-500'">
               {{ dmSaveMsg }}
@@ -2262,45 +2799,100 @@ function clearDatamodel() {
       <Transition name="fade">
         <div v-if="showDmLoad" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
           @click.self="showDmLoad = false">
-          <div class="bg-background rounded-xl shadow-2xl w-[420px] flex flex-col max-h-[80vh]">
+          <div class="bg-background rounded-xl shadow-2xl w-[460px] flex flex-col max-h-[80vh]">
+
+            <!-- Header -->
             <div class="flex items-center justify-between px-5 py-4 border-b">
               <span class="font-semibold text-sm">{{ t('bi_load_dm_title') }}</span>
               <button @click="showDmLoad = false" class="text-muted-foreground hover:text-foreground">
                 <X class="size-4" />
               </button>
             </div>
-            <div class="flex-1 overflow-y-auto p-3">
-              <div v-if="dmLoadBusy" class="flex items-center justify-center py-10 gap-2 text-muted-foreground">
-                <Loader2 class="size-4 animate-spin" />
-                <span class="text-xs">{{ t('bi_loading') }}</span>
-              </div>
-              <div v-else-if="!dmLoadList.length"
-                class="text-center py-10 text-xs text-muted-foreground">{{ t('bi_no_saved_dm') }}</div>
-              <div v-else class="flex flex-col gap-1.5">
-                <div
-                  v-for="item in dmLoadList" :key="item.id"
-                  class="flex items-center gap-2 px-3 py-2.5 rounded-lg border hover:bg-accent cursor-pointer transition-colors"
-                  @click="doLoadDm(item.id)"
-                >
-                  <div class="flex-1 min-w-0">
-                    <p class="text-xs font-semibold truncate">{{ item.name }}</p>
-                    <p class="text-[10px] text-muted-foreground">
-                      {{ item.createdBy }} ·
-                      {{ new Date(item.updatedAt ?? item.createdAt).toLocaleDateString('th-TH') }}
-                    </p>
-                  </div>
-                  <button
-                    @click.stop="doDeleteDm(item.id)"
-                    :disabled="dmDeleting === item.id"
-                    class="shrink-0 p-1 rounded hover:bg-red-100 dark:hover:bg-red-900/30
-                           text-red-500 transition-colors disabled:opacity-50"
-                    :title="t('delete')"
-                  >
-                    <Trash2 class="size-3.5" />
-                  </button>
-                </div>
-              </div>
+
+            <!-- Tabs -->
+            <div class="flex gap-1 mx-4 mt-3 mb-1 p-1 bg-muted/50 rounded-lg shrink-0">
+              <button
+                @click="dmLoadTab = 'mine'"
+                :class="['flex-1 text-xs py-1 rounded-md font-medium transition-colors',
+                  dmLoadTab === 'mine' ? 'bg-background shadow text-sky-600' : 'text-muted-foreground hover:text-foreground']"
+              >
+                ของฉัน <span class="text-[12px] opacity-60">({{ dmLoadList.length }})</span>
+              </button>
+              <button
+                @click="dmLoadTab = 'public'"
+                :class="['flex-1 text-xs py-1 rounded-md font-medium transition-colors flex items-center justify-center gap-1',
+                  dmLoadTab === 'public' ? 'bg-background shadow text-sky-600' : 'text-muted-foreground hover:text-foreground']"
+              >
+                <Globe class="size-3" />
+                สาธารณะ
+              </button>
             </div>
+
+            <!-- List -->
+            <div class="flex-1 overflow-y-auto p-3">
+
+              <!-- ของฉัน -->
+              <template v-if="dmLoadTab === 'mine'">
+                <div v-if="dmLoadBusy" class="flex items-center justify-center py-10 gap-2 text-muted-foreground">
+                  <Loader2 class="size-4 animate-spin" />
+                  <span class="text-xs">{{ t('bi_loading') }}</span>
+                </div>
+                <div v-else-if="!dmLoadList.length"
+                  class="text-center py-10 text-xs text-muted-foreground">{{ t('bi_no_saved_dm') }}</div>
+                <div v-else class="flex flex-col gap-1.5">
+                  <div
+                    v-for="item in dmLoadList" :key="item.id"
+                    class="flex items-center gap-2 px-3 py-2.5 rounded-lg border hover:bg-accent cursor-pointer transition-colors"
+                    @click="doLoadDm(item.id)"
+                  >
+                    <div class="flex-1 min-w-0">
+                      <p class="text-xs font-semibold truncate">{{ item.name }}</p>
+                      <p class="text-[12px] text-muted-foreground">
+                        {{ item.createdBy }} ·
+                        {{ new Date(item.updatedAt ?? item.createdAt).toLocaleDateString('th-TH') }}
+                      </p>
+                    </div>
+                    <button
+                      @click.stop="doDeleteDm(item.id)"
+                      :disabled="dmDeleting === item.id"
+                      class="shrink-0 p-1 rounded hover:bg-red-100 dark:hover:bg-red-900/30
+                             text-red-500 transition-colors disabled:opacity-50"
+                      :title="t('delete')"
+                    >
+                      <Trash2 class="size-3.5" />
+                    </button>
+                  </div>
+                </div>
+              </template>
+
+              <!-- สาธารณะ -->
+              <template v-else>
+                <div v-if="dmPublicBusy" class="flex items-center justify-center py-10 gap-2 text-muted-foreground">
+                  <Loader2 class="size-4 animate-spin" />
+                  <span class="text-xs">{{ t('bi_loading') }}</span>
+                </div>
+                <div v-else-if="!dmPublicList.length"
+                  class="text-center py-10 text-xs text-muted-foreground">ยังไม่มี Data Model สาธารณะ</div>
+                <div v-else class="flex flex-col gap-1.5">
+                  <div
+                    v-for="item in dmPublicList" :key="item.id"
+                    class="flex items-center gap-2 px-3 py-2.5 rounded-lg border hover:bg-accent cursor-pointer transition-colors"
+                    @click="doLoadDm(item.id)"
+                  >
+                    <Globe class="size-3.5 text-sky-400 shrink-0" />
+                    <div class="flex-1 min-w-0">
+                      <p class="text-xs font-semibold truncate">{{ item.name }}</p>
+                      <p class="text-[12px] text-muted-foreground">
+                        {{ item.createdBy }} ·
+                        {{ new Date(item.updatedAt ?? item.createdAt).toLocaleDateString('th-TH') }}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </template>
+
+            </div>
+
             <div class="px-5 py-3 border-t flex justify-end">
               <button @click="showDmLoad = false"
                 class="text-xs px-4 py-1.5 rounded-lg border hover:bg-accent transition-colors">
@@ -2320,8 +2912,7 @@ function clearDatamodel() {
           class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
           @click.self="showTxModal = false"
         >
-          <div class="bg-background rounded-2xl shadow-2xl flex flex-col overflow-hidden"
-               style="width: min(88vw, 1100px); height: min(88vh, 720px);">
+          <div class="bg-background flex flex-col overflow-hidden w-screen h-screen">
 
             <!-- Modal header -->
             <div class="flex items-center gap-2.5 px-5 py-3 border-b shrink-0">
@@ -2334,7 +2925,7 @@ function clearDatamodel() {
               </span>
               <div class="ml-auto flex items-center gap-2">
                 <button
-                  @click="txFilters = []; txGroupBy = ''; txAggregations = {}"
+                  @click="txFilters = []; txGroupBy = ''; txAggregations = {}; txComputedCols = []"
                   class="text-xs px-2.5 py-1 rounded-lg border text-muted-foreground hover:text-destructive hover:border-destructive transition-colors"
                 >
                   {{ t('bi_clear') }}
@@ -2357,23 +2948,23 @@ function clearDatamodel() {
                 <!-- Filter -->
                 <div class="space-y-2">
                   <div class="flex items-center justify-between">
-                    <p class="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Filter</p>
+                    <p class="text-[13px] font-semibold uppercase tracking-wide text-muted-foreground">Filter</p>
                     <button
                       @click="txAddFilter"
-                      class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded bg-violet-100 dark:bg-violet-950/40 text-violet-600 dark:text-violet-400 hover:bg-violet-200 transition-colors font-semibold"
+                      class="flex items-center gap-1 text-[12px] px-2 py-0.5 rounded bg-violet-100 dark:bg-violet-950/40 text-violet-600 dark:text-violet-400 hover:bg-violet-200 transition-colors font-semibold"
                     >
                       <Plus class="size-3" /> {{ t('bi_add') }}
                     </button>
                   </div>
 
-                  <div v-if="!txFilters.length" class="text-[10px] text-muted-foreground text-center py-2 border border-dashed rounded-lg">
+                  <div v-if="!txFilters.length" class="text-[12px] text-muted-foreground text-center py-2 border border-dashed rounded-lg">
                     {{ t('bi_no_filters') }}
                   </div>
 
                   <div v-for="(f, i) in txFilters" :key="i" class="flex items-center gap-1.5">
                     <select
                       v-model="f.field"
-                      class="flex-1 min-w-0 text-[10px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400"
+                      class="flex-1 min-w-0 text-[12px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400"
                     >
                       <template v-if="txColGroups.length > 1">
                         <optgroup v-for="g in txColGroups" :key="g.sourceName" :label="g.sourceName">
@@ -2384,7 +2975,7 @@ function clearDatamodel() {
                     </select>
                     <select
                       v-model="f.op"
-                      class="w-16 shrink-0 text-[10px] border rounded px-1 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400"
+                      class="w-16 shrink-0 text-[12px] border rounded px-1 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400"
                     >
                       <option v-for="o in OP_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
                     </select>
@@ -2392,16 +2983,16 @@ function clearDatamodel() {
                     <template v-if="isDateField(f.field)">
                       <span
                         v-if="DATE_TOKEN_LABELS[f.value]"
-                        class="flex items-center gap-1 text-[10px] font-semibold text-blue-600 dark:text-blue-400
+                        class="flex items-center gap-1 text-[12px] font-semibold text-blue-600 dark:text-blue-400
                                bg-blue-50 dark:bg-blue-950/40 border border-blue-300 dark:border-blue-700
                                rounded px-2 py-1 shrink-0 cursor-pointer"
                         @click="f.value = ''"
                         title="Click to clear"
                       >{{ DATE_TOKEN_LABELS[f.value] }} <X class="size-2.5" /></span>
                       <input v-else type="date" v-model="f.value"
-                        class="w-28 shrink-0 text-[10px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400" />
+                        class="w-28 shrink-0 text-[12px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400" />
                       <button @click="f.value = DATE_TOKEN_TODAY"
-                        :class="['shrink-0 text-[9px] font-semibold px-1.5 py-1 rounded transition-colors border',
+                        :class="['shrink-0 text-[13px] font-semibold px-1.5 py-1 rounded transition-colors border',
                           f.value === DATE_TOKEN_TODAY
                             ? 'bg-blue-500 text-white border-blue-500'
                             : 'text-blue-600 dark:text-blue-400 border-blue-300 dark:border-blue-700 hover:bg-blue-50 dark:hover:bg-blue-950/40']"
@@ -2411,7 +3002,7 @@ function clearDatamodel() {
                     <input v-else
                       v-model="f.value"
                       :placeholder="t('bi_value')"
-                      class="w-20 shrink-0 text-[10px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400"
+                      class="w-20 shrink-0 text-[12px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400"
                     />
                     <button @click="txRemoveFilter(i)" class="shrink-0 text-muted-foreground hover:text-destructive transition-colors">
                       <X class="size-3.5" />
@@ -2421,7 +3012,7 @@ function clearDatamodel() {
 
                 <!-- Group By -->
                 <div class="space-y-1.5">
-                  <p class="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Group By</p>
+                  <p class="text-[13px] font-semibold uppercase tracking-wide text-muted-foreground">Group By</p>
                   <select
                     v-model="txGroupBy"
                     class="w-full text-xs border rounded-lg px-2 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400"
@@ -2438,13 +3029,13 @@ function clearDatamodel() {
 
                 <!-- Aggregations (shown only when group by is set) -->
                 <div v-if="txGroupBy" class="space-y-1.5">
-                  <p class="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Aggregation</p>
+                  <p class="text-[13px] font-semibold uppercase tracking-wide text-muted-foreground">Aggregation</p>
                   <!-- search -->
                   <div class="relative flex items-center">
                     <input
                       v-model="txAggSearch"
                       placeholder="Filter columns..."
-                      class="w-full text-[10px] border rounded-md px-2 py-1 pr-6 bg-background
+                      class="w-full text-[12px] border rounded-md px-2 py-1 pr-6 bg-background
                              focus:outline-none focus:ring-1 focus:ring-violet-400 placeholder:text-muted-foreground/40"
                     />
                     <button v-if="txAggSearch" @click="txAggSearch = ''"
@@ -2455,35 +3046,224 @@ function clearDatamodel() {
                   <div class="space-y-1 max-h-52 overflow-y-auto pr-1">
                     <template v-for="g in txFilteredAggGroups" :key="g.sourceName">
                       <p v-if="txColGroups.length > 1 && g.cols.length"
-                         class="text-[9px] font-semibold text-muted-foreground/50 uppercase tracking-wide pt-1 pb-0.5 pl-0.5">
+                         class="text-[13px] font-semibold text-muted-foreground/50 uppercase tracking-wide pt-1 pb-0.5 pl-0.5">
                         {{ g.sourceName }}
                       </p>
                       <div v-for="col in g.cols" :key="col" class="flex items-center gap-2">
-                        <span class="flex-1 min-w-0 text-[10px] text-muted-foreground truncate" :title="col">{{ txColLabel(col) }}</span>
+                        <span class="flex-1 min-w-0 text-[12px] text-muted-foreground truncate" :title="col">{{ txColLabel(col) }}</span>
                         <select
                           :value="txAggregations[col] ?? 'first'"
                           @change="txAggregations[col] = ($event.target as HTMLSelectElement).value as AggFn"
-                          class="w-20 shrink-0 text-[10px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400"
+                          class="w-20 shrink-0 text-[12px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400"
                         >
                           <option v-for="a in AGG_OPTIONS" :key="a.value" :value="a.value">{{ a.label }}</option>
                         </select>
                       </div>
                     </template>
-                    <p v-if="!txFilteredAggGroups.length" class="text-[10px] text-muted-foreground/50 text-center py-2">No columns match</p>
+                    <p v-if="!txFilteredAggGroups.length" class="text-[12px] text-muted-foreground/50 text-center py-2">No columns match</p>
+                  </div>
+                </div>
+
+                <!-- Computed Columns -->
+                <div class="rounded-xl border border-border overflow-hidden">
+                  <div class="px-3 py-2 bg-muted/40 border-b border-border flex items-center justify-between">
+                    <div class="flex items-center gap-1.5">
+                      <Calculator class="size-3 text-violet-500" />
+                      <p class="text-[12px] font-semibold uppercase tracking-wide text-muted-foreground">Computed Columns</p>
+                    </div>
+                    <button
+                      @click="txComputedCols.push(newComputedColDef())"
+                      class="flex items-center gap-0.5 text-[13px] px-1.5 py-0.5 rounded bg-violet-100 dark:bg-violet-950/40 text-violet-600 dark:text-violet-400 hover:bg-violet-200 transition-colors font-semibold"
+                    >
+                      <Plus class="size-2.5" /> Add
+                    </button>
+                  </div>
+
+                  <div class="divide-y divide-border/40">
+                    <div v-if="!txComputedCols.length" class="px-3 py-3 text-[12px] text-muted-foreground text-center">
+                      ยังไม่มี computed column
+                    </div>
+
+                    <div v-for="(cc, i) in txComputedCols" :key="i" class="px-3 py-2.5 flex flex-col gap-2">
+
+                      <!-- Row 1: name + type + delete -->
+                      <div class="flex items-center gap-1.5">
+                        <input v-model="cc.name" placeholder="ชื่อ column"
+                          class="flex-1 min-w-0 text-[12px] font-semibold border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400" />
+                        <select v-model="cc.type"
+                          class="w-28 shrink-0 text-[12px] border rounded px-1 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400">
+                          <option v-for="t in COL_TYPE_OPTIONS" :key="t.value" :value="t.value">{{ t.label }}</option>
+                        </select>
+                        <button @click="txComputedCols.splice(i, 1)" class="shrink-0 text-muted-foreground hover:text-destructive transition-colors">
+                          <X class="size-3.5" />
+                        </button>
+                      </div>
+
+                      <!-- Arithmetic builder -->
+                      <template v-if="cc.type === 'arithmetic'">
+                        <div class="flex items-center gap-1">
+                          <!-- Left operand -->
+                          <div class="flex-1 min-w-0 flex items-center gap-1">
+                            <button @click="cc.left!.kind = cc.left!.kind === 'col' ? 'const' : 'col'"
+                              :class="['shrink-0 text-[12px] font-bold px-1 py-0.5 rounded border transition-colors',
+                                cc.left!.kind === 'col' ? 'bg-violet-100 dark:bg-violet-950/40 text-violet-600 border-violet-300' : 'text-muted-foreground border-border']">
+                              {{ cc.left!.kind === 'col' ? 'col' : 'val' }}</button>
+                            <select v-if="cc.left!.kind === 'col'" v-model="cc.left!.col"
+                              class="flex-1 min-w-0 text-[12px] border rounded px-1 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400 truncate">
+                              <option value="">— เลือก —</option>
+                              <option v-for="c in txColumns" :key="c" :value="c">{{ txColLabel(c) }}</option>
+                            </select>
+                            <input v-else v-model="cc.left!.val" placeholder="0"
+                              class="flex-1 min-w-0 text-[12px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400" />
+                          </div>
+                          <!-- Operator -->
+                          <select v-model="cc.op"
+                            class="w-16 shrink-0 text-[12px] border rounded px-1 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400">
+                            <option v-for="o in ARITH_OP_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
+                          </select>
+                          <!-- Right operand -->
+                          <div class="flex-1 min-w-0 flex items-center gap-1">
+                            <button @click="cc.right!.kind = cc.right!.kind === 'col' ? 'const' : 'col'"
+                              :class="['shrink-0 text-[12px] font-bold px-1 py-0.5 rounded border transition-colors',
+                                cc.right!.kind === 'col' ? 'bg-violet-100 dark:bg-violet-950/40 text-violet-600 border-violet-300' : 'text-muted-foreground border-border']">
+                              {{ cc.right!.kind === 'col' ? 'col' : 'val' }}</button>
+                            <select v-if="cc.right!.kind === 'col'" v-model="cc.right!.col"
+                              class="flex-1 min-w-0 text-[12px] border rounded px-1 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400 truncate">
+                              <option value="">— เลือก —</option>
+                              <option v-for="c in txColumns" :key="c" :value="c">{{ txColLabel(c) }}</option>
+                            </select>
+                            <input v-else v-model="cc.right!.val" placeholder="0"
+                              class="flex-1 min-w-0 text-[12px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400" />
+                          </div>
+                        </div>
+                      </template>
+
+                      <!-- Function builder -->
+                      <template v-else-if="cc.type === 'function'">
+                        <select v-model="cc.fn"
+                          class="w-full text-[12px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400">
+                          <optgroup v-for="cat in ['math','text','date']" :key="cat" :label="FN_CATEGORY_LABELS[cat]">
+                            <option v-for="f in FUNCTION_DEFS.filter(f => f.category === cat)" :key="f.value" :value="f.value">{{ f.label }}</option>
+                          </optgroup>
+                        </select>
+                        <!-- arg1 (always column) -->
+                        <div class="flex items-center gap-1">
+                          <span class="text-[13px] text-muted-foreground shrink-0 w-8">arg 1</span>
+                          <select v-model="cc.arg1!.col"
+                            class="flex-1 min-w-0 text-[12px] border rounded px-1 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400 truncate">
+                            <option value="">— เลือก column —</option>
+                            <option v-for="c in txColumns" :key="c" :value="c">{{ txColLabel(c) }}</option>
+                          </select>
+                        </div>
+                        <!-- CONCAT separator (optional) -->
+                        <div v-if="cc.fn === 'CONCAT'" class="flex items-center gap-1">
+                          <span class="text-[13px] text-muted-foreground shrink-0 w-8">sep</span>
+                          <input v-model="cc.concatSep" placeholder="เว้นว่างถ้าไม่ต้องการ"
+                            class="flex-1 text-[12px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400" />
+                        </div>
+                        <!-- arg2: second col or n — only for fns that need it -->
+                        <div v-if="FUNCTION_DEFS.find(f => f.value === cc.fn)?.args.length === 2" class="flex items-center gap-1">
+                          <span class="text-[13px] text-muted-foreground shrink-0 w-8">arg 2</span>
+                          <!-- col2: second column picker -->
+                          <template v-if="FUNCTION_DEFS.find(f => f.value === cc.fn)?.args[1] === 'col2'">
+                            <select v-model="cc.arg2!.col"
+                              class="flex-1 min-w-0 text-[12px] border rounded px-1 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400 truncate">
+                              <option value="">— เลือก column —</option>
+                              <option v-for="c in txColumns" :key="c" :value="c">{{ txColLabel(c) }}</option>
+                            </select>
+                          </template>
+                          <!-- n: number input -->
+                          <template v-else>
+                            <input v-model="cc.arg2!.val" type="number" placeholder="n"
+                              class="flex-1 text-[12px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400" />
+                          </template>
+                        </div>
+                      </template>
+
+                      <!-- IF builder -->
+                      <template v-else-if="cc.type === 'if'">
+                        <!-- Condition row -->
+                        <div class="flex items-center gap-1">
+                          <span class="text-[13px] font-bold text-violet-500 shrink-0">IF</span>
+                          <select v-model="cc.ifCol"
+                            class="flex-1 min-w-0 text-[12px] border rounded px-1 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400 truncate">
+                            <option value="">— เลือก column —</option>
+                            <option v-for="c in txColumns" :key="c" :value="c">{{ txColLabel(c) }}</option>
+                          </select>
+                          <select v-model="cc.ifOp"
+                            class="w-10 shrink-0 text-[12px] border rounded px-1 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400">
+                            <option v-for="o in CMP_OP_OPTIONS" :key="o.value" :value="o.value">{{ o.value }}</option>
+                          </select>
+                          <div class="flex-1 min-w-0 flex items-center gap-1">
+                            <button @click="cc.ifVal!.kind = cc.ifVal!.kind === 'col' ? 'const' : 'col'"
+                              :class="['shrink-0 text-[12px] font-bold px-1 py-0.5 rounded border transition-colors',
+                                cc.ifVal!.kind === 'col' ? 'bg-violet-100 dark:bg-violet-950/40 text-violet-600 border-violet-300' : 'text-muted-foreground border-border']">
+                              {{ cc.ifVal!.kind === 'col' ? 'col' : 'val' }}</button>
+                            <select v-if="cc.ifVal!.kind === 'col'" v-model="cc.ifVal!.col"
+                              class="flex-1 min-w-0 text-[12px] border rounded px-1 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400 truncate">
+                              <option value="">— เลือก —</option>
+                              <option v-for="c in txColumns" :key="c" :value="c">{{ txColLabel(c) }}</option>
+                            </select>
+                            <input v-else v-model="cc.ifVal!.val" placeholder="ค่า"
+                              class="flex-1 min-w-0 text-[12px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400" />
+                          </div>
+                        </div>
+                        <!-- THEN row -->
+                        <div class="flex items-center gap-1">
+                          <span class="text-[13px] font-bold text-emerald-500 shrink-0 w-8">THEN</span>
+                          <button @click="cc.thenVal!.kind = cc.thenVal!.kind === 'col' ? 'const' : 'col'"
+                            :class="['shrink-0 text-[12px] font-bold px-1 py-0.5 rounded border transition-colors',
+                              cc.thenVal!.kind === 'col' ? 'bg-violet-100 dark:bg-violet-950/40 text-violet-600 border-violet-300' : 'text-muted-foreground border-border']">
+                            {{ cc.thenVal!.kind === 'col' ? 'col' : 'val' }}</button>
+                          <select v-if="cc.thenVal!.kind === 'col'" v-model="cc.thenVal!.col"
+                            class="flex-1 min-w-0 text-[12px] border rounded px-1 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400 truncate">
+                            <option value="">— เลือก —</option>
+                            <option v-for="c in txColumns" :key="c" :value="c">{{ txColLabel(c) }}</option>
+                          </select>
+                          <input v-else v-model="cc.thenVal!.val" placeholder="ค่า"
+                            class="flex-1 min-w-0 text-[12px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400" />
+                        </div>
+                        <!-- ELSE row -->
+                        <div class="flex items-center gap-1">
+                          <span class="text-[13px] font-bold text-orange-400 shrink-0 w-8">ELSE</span>
+                          <button @click="cc.elseVal!.kind = cc.elseVal!.kind === 'col' ? 'const' : 'col'"
+                            :class="['shrink-0 text-[12px] font-bold px-1 py-0.5 rounded border transition-colors',
+                              cc.elseVal!.kind === 'col' ? 'bg-violet-100 dark:bg-violet-950/40 text-violet-600 border-violet-300' : 'text-muted-foreground border-border']">
+                            {{ cc.elseVal!.kind === 'col' ? 'col' : 'val' }}</button>
+                          <select v-if="cc.elseVal!.kind === 'col'" v-model="cc.elseVal!.col"
+                            class="flex-1 min-w-0 text-[12px] border rounded px-1 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400 truncate">
+                            <option value="">— เลือก —</option>
+                            <option v-for="c in txColumns" :key="c" :value="c">{{ txColLabel(c) }}</option>
+                          </select>
+                          <input v-else v-model="cc.elseVal!.val" placeholder="ค่า"
+                            class="flex-1 min-w-0 text-[12px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400" />
+                        </div>
+                      </template>
+
+                      <!-- Preview -->
+                      <div v-if="cc.name.trim()" class="flex flex-col gap-0.5 text-[13px] text-muted-foreground">
+                        <span class="font-mono bg-muted/50 rounded px-1.5 py-0.5 truncate max-w-full opacity-60">
+                          {{ txComputedColFormulas[i] }}
+                        </span>
+                        <span class="font-mono bg-violet-50 dark:bg-violet-950/30 text-violet-700 dark:text-violet-300 rounded px-1.5 py-0.5 truncate max-w-full">
+                          {{ cc.name }} = {{ txComputedColPreviews[i] }}
+                        </span>
+                      </div>
+                    </div>
                   </div>
                 </div>
 
                 <!-- Number Format -->
                 <div class="rounded-xl border border-border overflow-hidden">
                   <div class="px-3 py-2 bg-muted/40 border-b border-border">
-                    <p class="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Number Format</p>
+                    <p class="text-[12px] font-semibold uppercase tracking-wide text-muted-foreground">Number Format</p>
                   </div>
                   <div class="divide-y divide-border/60">
                     <!-- Comma toggle -->
                     <label class="flex items-center justify-between gap-3 px-3 py-2.5 hover:bg-muted/30 cursor-pointer transition-colors">
                       <div class="flex flex-col gap-0.5">
-                        <span class="text-[11px] font-medium">Thousands separator</span>
-                        <span class="text-[10px] text-muted-foreground font-mono">
+                        <span class="text-[13px] font-medium">Thousands separator</span>
+                        <span class="text-[12px] text-muted-foreground font-mono">
                           {{ txNumericFormat.comma ? '1,000,000' : '1000000' }}
                         </span>
                       </div>
@@ -2507,8 +3287,8 @@ function clearDatamodel() {
                     <!-- Decimal places -->
                     <div class="flex items-center justify-between gap-3 px-3 py-2.5">
                       <div class="flex flex-col gap-0.5">
-                        <span class="text-[11px] font-medium">Decimal places</span>
-                        <span class="text-[10px] text-muted-foreground font-mono">
+                        <span class="text-[13px] font-medium">Decimal places</span>
+                        <span class="text-[12px] text-muted-foreground font-mono">
                           {{ txNumericFormat.decimals !== undefined ? (1234.5678).toFixed(txNumericFormat.decimals) : '—' }}
                         </span>
                       </div>
@@ -2517,7 +3297,7 @@ function clearDatamodel() {
                           @click="setTxNumericFormat({ ...txNumericFormat, decimals: txNumericFormat.decimals !== undefined && txNumericFormat.decimals > 0 ? txNumericFormat.decimals - 1 : undefined })"
                           class="size-6 flex items-center justify-center rounded border border-border text-muted-foreground hover:bg-muted/50 text-sm font-bold transition-colors"
                         >−</button>
-                        <span class="w-7 text-center text-[11px] font-mono font-semibold">
+                        <span class="w-7 text-center text-[13px] font-mono font-semibold">
                           {{ txNumericFormat.decimals ?? 'auto' }}
                         </span>
                         <button
@@ -2530,12 +3310,12 @@ function clearDatamodel() {
                     <!-- Per-column exclusion (shown when comma or decimals is active) -->
                     <div v-if="txNumericColumns.length && (txNumericFormat.comma || txNumericFormat.decimals !== undefined)"
                          class="px-3 py-2.5 flex flex-col gap-1.5">
-                      <span class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Exclude columns</span>
+                      <span class="text-[12px] font-semibold text-muted-foreground uppercase tracking-wide">Exclude columns</span>
                       <div class="relative flex items-center">
                         <input
                           v-model="txExcludeSearch"
                           placeholder="Filter columns..."
-                          class="w-full text-[10px] border rounded-md px-2 py-1 pr-6 bg-background
+                          class="w-full text-[12px] border rounded-md px-2 py-1 pr-6 bg-background
                                  focus:outline-none focus:ring-1 focus:ring-violet-400 placeholder:text-muted-foreground/40"
                         />
                         <button v-if="txExcludeSearch" @click="txExcludeSearch = ''"
@@ -2555,9 +3335,9 @@ function clearDatamodel() {
                             @change="toggleTxExcludeDecimalCol(col)"
                             class="accent-violet-500 shrink-0"
                           />
-                          <span class="text-[10px] truncate flex-1" :title="col">{{ txColLabel(col) }}</span>
+                          <span class="text-[12px] truncate flex-1" :title="col">{{ txColLabel(col) }}</span>
                           <span v-if="txNumericFormat.excludeDecimalCols?.includes(col)"
-                                class="text-[9px] text-muted-foreground/50 shrink-0">excluded</span>
+                                class="text-[13px] text-muted-foreground/50 shrink-0">excluded</span>
                         </label>
                       </div>
                     </div>
@@ -2567,16 +3347,16 @@ function clearDatamodel() {
                 <!-- Date Format -->
                 <div class="rounded-xl border border-border overflow-hidden">
                   <div class="px-3 py-2 bg-muted/40 border-b border-border">
-                    <p class="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Date Format</p>
+                    <p class="text-[12px] font-semibold uppercase tracking-wide text-muted-foreground">Date Format</p>
                   </div>
                   <div class="divide-y divide-border/60">
                     <!-- Pattern -->
                     <div class="px-3 py-2.5 flex flex-col gap-1.5">
-                      <span class="text-[11px] font-medium">Pattern</span>
+                      <span class="text-[13px] font-medium">Pattern</span>
                       <select
                         :value="txNumericFormat.datePattern ?? ''"
                         @change="setTxNumericFormat({ ...txNumericFormat, datePattern: ($event.target as HTMLSelectElement).value || undefined })"
-                        class="w-full text-[11px] border rounded-lg px-2 py-1.5 bg-background
+                        class="w-full text-[13px] border rounded-lg px-2 py-1.5 bg-background
                                focus:outline-none focus:ring-1 focus:ring-violet-400"
                       >
                         <option value="">— original —</option>
@@ -2585,14 +3365,14 @@ function clearDatamodel() {
                     </div>
                     <!-- Era -->
                     <div class="px-3 py-2.5 flex flex-col gap-1.5">
-                      <span class="text-[11px] font-medium">Year era</span>
+                      <span class="text-[13px] font-medium">Year era</span>
                       <div class="flex gap-1.5">
                         <button
                           v-for="era in [{ v: 'CE', label: 'ค.ศ.' }, { v: 'BE', label: 'พ.ศ.' }]"
                           :key="era.v"
                           @click="setTxNumericFormat({ ...txNumericFormat, dateEra: era.v as 'CE' | 'BE' })"
                           :class="[
-                            'flex-1 text-[11px] py-1.5 rounded-lg border transition-colors font-medium',
+                            'flex-1 text-[13px] py-1.5 rounded-lg border transition-colors font-medium',
                             (txNumericFormat.dateEra ?? 'CE') === era.v
                               ? 'bg-violet-500 border-violet-500 text-white'
                               : 'border-border text-muted-foreground hover:bg-muted/50',
@@ -2603,8 +3383,8 @@ function clearDatamodel() {
                     <!-- Preview -->
                     <div v-if="txNumericFormat.datePattern" class="px-3 py-2 bg-muted/20">
                       <div class="flex items-center justify-between">
-                        <span class="text-[10px] text-muted-foreground">Preview</span>
-                        <span class="text-[11px] font-mono font-semibold text-violet-600 dark:text-violet-400">
+                        <span class="text-[12px] text-muted-foreground">Preview</span>
+                        <span class="text-[13px] font-mono font-semibold text-violet-600 dark:text-violet-400">
                           {{ formatDateValue('2024-03-15', txNumericFormat.datePattern, txNumericFormat.dateEra ?? 'CE') }}
                         </span>
                       </div>
@@ -2617,11 +3397,11 @@ function clearDatamodel() {
 
                 <!-- Row count summary — fixed at bottom -->
                 <div class="shrink-0 px-4 py-3 border-t bg-background">
-                  <div class="flex items-center justify-between text-[10px]">
+                  <div class="flex items-center justify-between text-[12px]">
                     <span class="text-muted-foreground">{{ t('bi_original_data') }}</span>
                     <span class="font-semibold">{{ txJoinedRows.length.toLocaleString() }} {{ t('bi_rows') }}</span>
                   </div>
-                  <div v-if="txHasConfig" class="flex items-center justify-between text-[10px] mt-1">
+                  <div v-if="txHasConfig" class="flex items-center justify-between text-[12px] mt-1">
                     <span class="text-muted-foreground">{{ t('bi_after_transform') }}</span>
                     <span class="font-semibold text-violet-600 dark:text-violet-400">{{ txOutputSample.length.toLocaleString() }} {{ t('bi_rows') }}</span>
                   </div>
@@ -2643,7 +3423,7 @@ function clearDatamodel() {
                     ]"
                   >
                     {{ t('bi_original_data') }}
-                    <span class="ml-1.5 text-[10px] bg-muted text-muted-foreground rounded px-1.5 py-0.5">
+                    <span class="ml-1.5 text-[12px] bg-muted text-muted-foreground rounded px-1.5 py-0.5">
                       {{ txInputSample.length.toLocaleString() }}
                     </span>
                   </button>
@@ -2658,7 +3438,7 @@ function clearDatamodel() {
                   >
                     {{ t('bi_results') }}
                     <span
-                      class="ml-1.5 text-[10px] rounded px-1.5 py-0.5"
+                      class="ml-1.5 text-[12px] rounded px-1.5 py-0.5"
                       :class="txHasConfig
                         ? 'bg-violet-100 dark:bg-violet-950/40 text-violet-600 dark:text-violet-400'
                         : 'bg-muted text-muted-foreground'"
@@ -2681,7 +3461,7 @@ function clearDatamodel() {
                     :suppressMovableColumns="true"
                     :suppressCellFocus="true"
                     :enableCellTextSelection="true"
-                    @first-data-rendered="(p) => p.api.autoSizeAllColumns()"
+                    @first-data-rendered="(p: any) => p.api.autoSizeAllColumns()"
                   />
                   <!-- results tab — placeholder when no config -->
                   <div
@@ -2694,6 +3474,7 @@ function clearDatamodel() {
                        so AG Grid always initialises with a visible container) -->
                   <AgGridVue
                     v-else-if="txAfterMounted"
+                    :key="txOutputColsKey"
                     :class="[themeClass, 'ag-tx-grid w-full h-full']"
                     :rowData="txOutputSample"
                     :columnDefs="txOutputColDefs"
@@ -2702,7 +3483,7 @@ function clearDatamodel() {
                     :suppressMovableColumns="true"
                     :suppressCellFocus="true"
                     :enableCellTextSelection="true"
-                    @first-data-rendered="(p) => p.api.autoSizeAllColumns()"
+                    @first-data-rendered="(p: any) => p.api.autoSizeAllColumns()"
                   />
                 </div>
               </div>
@@ -2721,8 +3502,7 @@ function clearDatamodel() {
           class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
           @click.self="showJoinTxModal = false"
         >
-          <div class="bg-background rounded-2xl shadow-2xl flex flex-col overflow-hidden"
-               style="width: min(92vw, 1200px); height: min(90vh, 760px);">
+          <div class="bg-background flex flex-col overflow-hidden w-screen h-screen">
 
             <!-- Header -->
             <div class="flex items-center gap-2.5 px-5 py-3 border-b shrink-0 bg-violet-50 dark:bg-violet-950/20">
@@ -2731,7 +3511,7 @@ function clearDatamodel() {
               <span class="text-xs text-muted-foreground truncate max-w-[300px]">— {{ joinTxCompName }}</span>
               <div class="ml-auto flex items-center gap-2">
                 <button
-                  @click="joinTxFilters = []; joinTxGroupBy = ''; joinTxAggregations = {}"
+                  @click="joinTxFilters = []; joinTxGroupBy = ''; joinTxAggregations = {}; joinTxComputedCols = []"
                   class="text-xs px-2.5 py-1 rounded-lg border text-muted-foreground hover:text-destructive hover:border-destructive transition-colors"
                 >
                   {{ t('bi_clear') }}
@@ -2760,49 +3540,49 @@ function clearDatamodel() {
                 <!-- Filter -->
                 <div class="space-y-2">
                   <div class="flex items-center justify-between">
-                    <p class="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Filter</p>
+                    <p class="text-[13px] font-semibold uppercase tracking-wide text-muted-foreground">Filter</p>
                     <button
                       @click="joinTxFilters.push({ field: joinTxColumns[0] ?? '', op: '=', value: '' })"
-                      class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded bg-violet-100 dark:bg-violet-950/40 text-violet-600 dark:text-violet-400 hover:bg-violet-200 transition-colors font-semibold"
+                      class="flex items-center gap-1 text-[12px] px-2 py-0.5 rounded bg-violet-100 dark:bg-violet-950/40 text-violet-600 dark:text-violet-400 hover:bg-violet-200 transition-colors font-semibold"
                     >
                       <Plus class="size-3" /> {{ t('bi_add') }}
                     </button>
                   </div>
-                  <div v-if="!joinTxFilters.length" class="text-[10px] text-muted-foreground text-center py-2 border border-dashed rounded-lg">
+                  <div v-if="!joinTxFilters.length" class="text-[12px] text-muted-foreground text-center py-2 border border-dashed rounded-lg">
                     {{ t('bi_no_filters') }}
                   </div>
                   <div v-for="(f, i) in joinTxFilters" :key="i" class="flex items-center gap-1.5">
                     <select v-model="f.field"
-                      class="flex-1 min-w-0 text-[10px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400">
+                      class="flex-1 min-w-0 text-[12px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400">
                       <optgroup v-for="g in joinTxColGroups" :key="g.sourceName" :label="g.sourceName">
                         <option v-for="c in g.cols" :key="c" :value="c">{{ joinTxColLabel(c) }}</option>
                       </optgroup>
                     </select>
                     <select v-model="f.op"
-                      class="w-16 shrink-0 text-[10px] border rounded px-1 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400">
+                      class="w-16 shrink-0 text-[12px] border rounded px-1 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400">
                       <option v-for="o in OP_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
                     </select>
                     <!-- Date field: datepicker + dynamic tokens -->
                     <template v-if="isJoinDateField(f.field)">
                       <span
                         v-if="DATE_TOKEN_LABELS[f.value]"
-                        class="flex items-center gap-1 text-[10px] font-semibold text-blue-600 dark:text-blue-400
+                        class="flex items-center gap-1 text-[12px] font-semibold text-blue-600 dark:text-blue-400
                                bg-blue-50 dark:bg-blue-950/40 border border-blue-300 dark:border-blue-700
                                rounded px-2 py-1 shrink-0 cursor-pointer"
                         @click="f.value = ''"
                         title="Click to clear"
                       >{{ DATE_TOKEN_LABELS[f.value] }} <X class="size-2.5" /></span>
                       <input v-else type="date" v-model="f.value"
-                        class="w-28 shrink-0 text-[10px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400" />
+                        class="w-28 shrink-0 text-[12px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400" />
                       <button @click="f.value = DATE_TOKEN_TODAY"
-                        :class="['shrink-0 text-[9px] font-semibold px-1.5 py-1 rounded transition-colors border',
+                        :class="['shrink-0 text-[13px] font-semibold px-1.5 py-1 rounded transition-colors border',
                           f.value === DATE_TOKEN_TODAY
                             ? 'bg-blue-500 text-white border-blue-500'
                             : 'text-blue-600 dark:text-blue-400 border-blue-300 dark:border-blue-700 hover:bg-blue-50 dark:hover:bg-blue-950/40']"
                         :title="t('bi_today')">T</button>
                     </template>
                     <input v-else v-model="f.value" :placeholder="t('bi_value')"
-                      class="w-20 shrink-0 text-[10px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400" />
+                      class="w-20 shrink-0 text-[12px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400" />
                     <button @click="joinTxFilters.splice(i, 1)" class="shrink-0 text-muted-foreground hover:text-destructive transition-colors">
                       <X class="size-3.5" />
                     </button>
@@ -2811,7 +3591,7 @@ function clearDatamodel() {
 
                 <!-- Group By -->
                 <div class="space-y-1.5">
-                  <p class="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Group By</p>
+                  <p class="text-[13px] font-semibold uppercase tracking-wide text-muted-foreground">Group By</p>
                   <select v-model="joinTxGroupBy"
                     class="w-full text-xs border rounded-lg px-2 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400">
                     <option value="">{{ t('bi_no_group') }}</option>
@@ -2823,19 +3603,19 @@ function clearDatamodel() {
 
                 <!-- Aggregations -->
                 <div v-if="joinTxGroupBy" class="space-y-1.5">
-                  <p class="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Aggregation</p>
+                  <p class="text-[13px] font-semibold uppercase tracking-wide text-muted-foreground">Aggregation</p>
                   <div class="space-y-1 max-h-64 overflow-y-auto pr-1">
                     <template v-for="g in joinTxColGroups" :key="g.sourceName">
                       <p v-if="g.cols.some(c => c !== joinTxGroupBy)"
-                         class="text-[9px] font-semibold text-muted-foreground/50 uppercase tracking-wide pt-1 pb-0.5 pl-0.5">
+                         class="text-[13px] font-semibold text-muted-foreground/50 uppercase tracking-wide pt-1 pb-0.5 pl-0.5">
                         {{ g.sourceName }}
                       </p>
                       <div v-for="col in g.cols.filter(c => c !== joinTxGroupBy)" :key="col" class="flex items-center gap-2">
-                        <span class="flex-1 min-w-0 text-[10px] text-muted-foreground truncate" :title="col">{{ joinTxColLabel(col) }}</span>
+                        <span class="flex-1 min-w-0 text-[12px] text-muted-foreground truncate" :title="col">{{ joinTxColLabel(col) }}</span>
                         <select
                           :value="joinTxAggregations[col] ?? 'first'"
                           @change="joinTxAggregations[col] = ($event.target as HTMLSelectElement).value as AggFn"
-                          class="w-20 shrink-0 text-[10px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400"
+                          class="w-20 shrink-0 text-[12px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400"
                         >
                           <option v-for="a in AGG_OPTIONS" :key="a.value" :value="a.value">{{ a.label }}</option>
                         </select>
@@ -2844,13 +3624,192 @@ function clearDatamodel() {
                   </div>
                 </div>
 
+                <!-- Computed Columns -->
+                <div class="rounded-xl border border-border overflow-hidden shrink-0">
+                  <div class="px-3 py-2 bg-muted/40 border-b border-border flex items-center justify-between">
+                    <div class="flex items-center gap-1.5">
+                      <Calculator class="size-3 text-violet-500" />
+                      <p class="text-[12px] font-semibold uppercase tracking-wide text-muted-foreground">Computed Columns</p>
+                    </div>
+                    <button
+                      @click="joinTxComputedCols.push(newComputedColDef())"
+                      class="flex items-center gap-0.5 text-[13px] px-1.5 py-0.5 rounded bg-violet-100 dark:bg-violet-950/40 text-violet-600 dark:text-violet-400 hover:bg-violet-200 transition-colors font-semibold"
+                    >
+                      <Plus class="size-2.5" /> Add
+                    </button>
+                  </div>
+
+                  <div class="divide-y divide-border/40">
+                    <div v-if="!joinTxComputedCols.length" class="px-3 py-3 text-[12px] text-muted-foreground text-center">
+                      ยังไม่มี computed column
+                    </div>
+
+                    <div v-for="(cc, i) in joinTxComputedCols" :key="i" class="px-3 py-2.5 flex flex-col gap-2">
+
+                      <!-- Row 1: name + type + delete -->
+                      <div class="flex items-center gap-1.5">
+                        <input v-model="cc.name" placeholder="ชื่อ column"
+                          class="flex-1 min-w-0 text-[12px] font-semibold border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400" />
+                        <select v-model="cc.type"
+                          class="w-28 shrink-0 text-[12px] border rounded px-1 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400">
+                          <option v-for="t in COL_TYPE_OPTIONS" :key="t.value" :value="t.value">{{ t.label }}</option>
+                        </select>
+                        <button @click="joinTxComputedCols.splice(i, 1)" class="shrink-0 text-muted-foreground hover:text-destructive transition-colors">
+                          <X class="size-3.5" />
+                        </button>
+                      </div>
+
+                      <!-- Arithmetic builder -->
+                      <template v-if="cc.type === 'arithmetic'">
+                        <div class="flex items-center gap-1">
+                          <div class="flex-1 min-w-0 flex items-center gap-1">
+                            <button @click="cc.left!.kind = cc.left!.kind === 'col' ? 'const' : 'col'"
+                              :class="['shrink-0 text-[12px] font-bold px-1 py-0.5 rounded border transition-colors',
+                                cc.left!.kind === 'col' ? 'bg-violet-100 dark:bg-violet-950/40 text-violet-600 border-violet-300' : 'text-muted-foreground border-border']">
+                              {{ cc.left!.kind === 'col' ? 'col' : 'val' }}</button>
+                            <select v-if="cc.left!.kind === 'col'" v-model="cc.left!.col"
+                              class="flex-1 min-w-0 text-[12px] border rounded px-1 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400 truncate">
+                              <option value="">— เลือก —</option>
+                              <option v-for="c in joinTxColumns" :key="c" :value="c">{{ joinTxColLabel(c) }}</option>
+                            </select>
+                            <input v-else v-model="cc.left!.val" placeholder="0"
+                              class="flex-1 min-w-0 text-[12px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400" />
+                          </div>
+                          <select v-model="cc.op"
+                            class="w-16 shrink-0 text-[12px] border rounded px-1 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400">
+                            <option v-for="o in ARITH_OP_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
+                          </select>
+                          <div class="flex-1 min-w-0 flex items-center gap-1">
+                            <button @click="cc.right!.kind = cc.right!.kind === 'col' ? 'const' : 'col'"
+                              :class="['shrink-0 text-[12px] font-bold px-1 py-0.5 rounded border transition-colors',
+                                cc.right!.kind === 'col' ? 'bg-violet-100 dark:bg-violet-950/40 text-violet-600 border-violet-300' : 'text-muted-foreground border-border']">
+                              {{ cc.right!.kind === 'col' ? 'col' : 'val' }}</button>
+                            <select v-if="cc.right!.kind === 'col'" v-model="cc.right!.col"
+                              class="flex-1 min-w-0 text-[12px] border rounded px-1 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400 truncate">
+                              <option value="">— เลือก —</option>
+                              <option v-for="c in joinTxColumns" :key="c" :value="c">{{ joinTxColLabel(c) }}</option>
+                            </select>
+                            <input v-else v-model="cc.right!.val" placeholder="0"
+                              class="flex-1 min-w-0 text-[12px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400" />
+                          </div>
+                        </div>
+                      </template>
+
+                      <!-- Function builder -->
+                      <template v-else-if="cc.type === 'function'">
+                        <select v-model="cc.fn"
+                          class="w-full text-[12px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400">
+                          <optgroup v-for="cat in ['math','text','date']" :key="cat" :label="FN_CATEGORY_LABELS[cat]">
+                            <option v-for="f in FUNCTION_DEFS.filter(f => f.category === cat)" :key="f.value" :value="f.value">{{ f.label }}</option>
+                          </optgroup>
+                        </select>
+                        <div class="flex items-center gap-1">
+                          <span class="text-[13px] text-muted-foreground shrink-0 w-8">arg 1</span>
+                          <select v-model="cc.arg1!.col"
+                            class="flex-1 min-w-0 text-[12px] border rounded px-1 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400 truncate">
+                            <option value="">— เลือก column —</option>
+                            <option v-for="c in joinTxColumns" :key="c" :value="c">{{ joinTxColLabel(c) }}</option>
+                          </select>
+                        </div>
+                        <!-- CONCAT separator (optional) -->
+                        <div v-if="cc.fn === 'CONCAT'" class="flex items-center gap-1">
+                          <span class="text-[13px] text-muted-foreground shrink-0 w-8">sep</span>
+                          <input v-model="cc.concatSep" placeholder="เว้นว่างถ้าไม่ต้องการ"
+                            class="flex-1 text-[12px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400" />
+                        </div>
+                        <div v-if="FUNCTION_DEFS.find(f => f.value === cc.fn)?.args.length === 2" class="flex items-center gap-1">
+                          <span class="text-[13px] text-muted-foreground shrink-0 w-8">arg 2</span>
+                          <template v-if="FUNCTION_DEFS.find(f => f.value === cc.fn)?.args[1] === 'col2'">
+                            <select v-model="cc.arg2!.col"
+                              class="flex-1 min-w-0 text-[12px] border rounded px-1 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400 truncate">
+                              <option value="">— เลือก column —</option>
+                              <option v-for="c in joinTxColumns" :key="c" :value="c">{{ joinTxColLabel(c) }}</option>
+                            </select>
+                          </template>
+                          <template v-else>
+                            <input v-model="cc.arg2!.val" type="number" placeholder="n"
+                              class="flex-1 text-[12px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400" />
+                          </template>
+                        </div>
+                      </template>
+
+                      <!-- IF builder -->
+                      <template v-else-if="cc.type === 'if'">
+                        <div class="flex items-center gap-1">
+                          <span class="text-[13px] font-bold text-violet-500 shrink-0">IF</span>
+                          <select v-model="cc.ifCol"
+                            class="flex-1 min-w-0 text-[12px] border rounded px-1 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400 truncate">
+                            <option value="">— เลือก column —</option>
+                            <option v-for="c in joinTxColumns" :key="c" :value="c">{{ joinTxColLabel(c) }}</option>
+                          </select>
+                          <select v-model="cc.ifOp"
+                            class="w-10 shrink-0 text-[12px] border rounded px-1 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400">
+                            <option v-for="o in CMP_OP_OPTIONS" :key="o.value" :value="o.value">{{ o.value }}</option>
+                          </select>
+                          <div class="flex-1 min-w-0 flex items-center gap-1">
+                            <button @click="cc.ifVal!.kind = cc.ifVal!.kind === 'col' ? 'const' : 'col'"
+                              :class="['shrink-0 text-[12px] font-bold px-1 py-0.5 rounded border transition-colors',
+                                cc.ifVal!.kind === 'col' ? 'bg-violet-100 dark:bg-violet-950/40 text-violet-600 border-violet-300' : 'text-muted-foreground border-border']">
+                              {{ cc.ifVal!.kind === 'col' ? 'col' : 'val' }}</button>
+                            <select v-if="cc.ifVal!.kind === 'col'" v-model="cc.ifVal!.col"
+                              class="flex-1 min-w-0 text-[12px] border rounded px-1 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400 truncate">
+                              <option value="">— เลือก —</option>
+                              <option v-for="c in joinTxColumns" :key="c" :value="c">{{ joinTxColLabel(c) }}</option>
+                            </select>
+                            <input v-else v-model="cc.ifVal!.val" placeholder="ค่า"
+                              class="flex-1 min-w-0 text-[12px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400" />
+                          </div>
+                        </div>
+                        <div class="flex items-center gap-1">
+                          <span class="text-[13px] font-bold text-emerald-500 shrink-0 w-8">THEN</span>
+                          <button @click="cc.thenVal!.kind = cc.thenVal!.kind === 'col' ? 'const' : 'col'"
+                            :class="['shrink-0 text-[12px] font-bold px-1 py-0.5 rounded border transition-colors',
+                              cc.thenVal!.kind === 'col' ? 'bg-violet-100 dark:bg-violet-950/40 text-violet-600 border-violet-300' : 'text-muted-foreground border-border']">
+                            {{ cc.thenVal!.kind === 'col' ? 'col' : 'val' }}</button>
+                          <select v-if="cc.thenVal!.kind === 'col'" v-model="cc.thenVal!.col"
+                            class="flex-1 min-w-0 text-[12px] border rounded px-1 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400 truncate">
+                            <option value="">— เลือก —</option>
+                            <option v-for="c in joinTxColumns" :key="c" :value="c">{{ joinTxColLabel(c) }}</option>
+                          </select>
+                          <input v-else v-model="cc.thenVal!.val" placeholder="ค่า"
+                            class="flex-1 min-w-0 text-[12px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400" />
+                        </div>
+                        <div class="flex items-center gap-1">
+                          <span class="text-[13px] font-bold text-orange-400 shrink-0 w-8">ELSE</span>
+                          <button @click="cc.elseVal!.kind = cc.elseVal!.kind === 'col' ? 'const' : 'col'"
+                            :class="['shrink-0 text-[12px] font-bold px-1 py-0.5 rounded border transition-colors',
+                              cc.elseVal!.kind === 'col' ? 'bg-violet-100 dark:bg-violet-950/40 text-violet-600 border-violet-300' : 'text-muted-foreground border-border']">
+                            {{ cc.elseVal!.kind === 'col' ? 'col' : 'val' }}</button>
+                          <select v-if="cc.elseVal!.kind === 'col'" v-model="cc.elseVal!.col"
+                            class="flex-1 min-w-0 text-[12px] border rounded px-1 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400 truncate">
+                            <option value="">— เลือก —</option>
+                            <option v-for="c in joinTxColumns" :key="c" :value="c">{{ joinTxColLabel(c) }}</option>
+                          </select>
+                          <input v-else v-model="cc.elseVal!.val" placeholder="ค่า"
+                            class="flex-1 min-w-0 text-[12px] border rounded px-1.5 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-violet-400" />
+                        </div>
+                      </template>
+
+                      <!-- Preview -->
+                      <div v-if="cc.name.trim()" class="flex flex-col gap-0.5 text-[13px] text-muted-foreground">
+                        <span class="font-mono bg-muted/50 rounded px-1.5 py-0.5 truncate max-w-full opacity-60">
+                          {{ joinTxComputedColFormulas[i] }}
+                        </span>
+                        <span class="font-mono bg-violet-50 dark:bg-violet-950/30 text-violet-700 dark:text-violet-300 rounded px-1.5 py-0.5 truncate max-w-full">
+                          {{ cc.name }} = {{ joinTxComputedColPreviews[i] }}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
                 <!-- Row count summary -->
                 <div class="mt-auto pt-3 border-t space-y-1">
-                  <div class="flex items-center justify-between text-[10px]">
+                  <div class="flex items-center justify-between text-[12px]">
                     <span class="text-muted-foreground">{{ t('bi_original_data') }}</span>
                     <span class="font-semibold">{{ joinTxRows.length.toLocaleString() }} {{ t('bi_rows') }}</span>
                   </div>
-                  <div v-if="joinTxHasConfig" class="flex items-center justify-between text-[10px]">
+                  <div v-if="joinTxHasConfig" class="flex items-center justify-between text-[12px]">
                     <span class="text-muted-foreground">{{ t('bi_after_transform') }}</span>
                     <span class="font-semibold text-violet-600 dark:text-violet-400">
                       {{ joinTxOutputSample.length.toLocaleString() }} {{ t('bi_rows') }}
@@ -2871,7 +3830,7 @@ function clearDatamodel() {
                         : 'border-transparent text-muted-foreground hover:text-foreground']"
                   >
                     {{ t('bi_original_data') }}
-                    <span class="ml-1.5 text-[10px] bg-muted text-muted-foreground rounded px-1.5 py-0.5">
+                    <span class="ml-1.5 text-[12px] bg-muted text-muted-foreground rounded px-1.5 py-0.5">
                       {{ joinTxRows.length.toLocaleString() }}
                     </span>
                   </button>
@@ -2883,7 +3842,7 @@ function clearDatamodel() {
                         : 'border-transparent text-muted-foreground hover:text-foreground']"
                   >
                     {{ t('bi_results') }}
-                    <span class="ml-1.5 text-[10px] rounded px-1.5 py-0.5"
+                    <span class="ml-1.5 text-[12px] rounded px-1.5 py-0.5"
                       :class="joinTxHasConfig ? 'bg-violet-100 dark:bg-violet-950/40 text-violet-600 dark:text-violet-400' : 'bg-muted text-muted-foreground'">
                       {{ joinTxOutputSample.length.toLocaleString() }}
                     </span>
@@ -2899,7 +3858,7 @@ function clearDatamodel() {
                     :columnDefs="joinTxColDefs"
                     :rowHeight="26" :headerHeight="30"
                     :suppressMovableColumns="true" :suppressCellFocus="true" :enableCellTextSelection="true"
-                    @first-data-rendered="(p) => p.api.autoSizeAllColumns()"
+                    @first-data-rendered="(p: any) => p.api.autoSizeAllColumns()"
                   />
                   <div v-else-if="!joinTxHasConfig"
                     class="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
@@ -2907,12 +3866,13 @@ function clearDatamodel() {
                   </div>
                   <AgGridVue
                     v-else-if="joinTxAfterMounted"
+                    :key="joinTxOutputColsKey"
                     :class="[themeClass, 'ag-tx-grid w-full h-full']"
                     :rowData="joinTxOutputSample"
                     :columnDefs="joinTxOutputColDefs"
                     :rowHeight="26" :headerHeight="30"
                     :suppressMovableColumns="true" :suppressCellFocus="true" :enableCellTextSelection="true"
-                    @first-data-rendered="(p) => p.api.autoSizeAllColumns()"
+                    @first-data-rendered="(p: any) => p.api.autoSizeAllColumns()"
                   />
                 </div>
               </div>
@@ -2922,6 +3882,14 @@ function clearDatamodel() {
         </div>
       </Transition>
     </Teleport>
+
+    <!-- AI Panel -->
+    <AiPanel
+      v-if="aiEnabled && aiStore.openPage === 'datamodel'"
+      page="datamodel"
+      :context="aiContext"
+      :context-label="aiContextLabel"
+    />
 
   </div>
 </template>

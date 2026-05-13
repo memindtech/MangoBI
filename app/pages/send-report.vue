@@ -10,7 +10,7 @@ import type { FilterOperator } from '~/stores/report'
 import { DATE_TOKEN_TODAY, DATE_TOKEN_YESTERDAY } from '~/utils/transformData'
 import {
   AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle,
-  AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogCancel,
 } from '@/components/ui/alert-dialog'
 
 definePageMeta({ auth: true })
@@ -121,6 +121,7 @@ const deleting  = ref<string | null>(null)
 // ── Confirm delete dialog ─────────────────────────────────────────────────────
 const confirmDeleteId   = ref<string | null>(null)
 const confirmDeleteName = ref('')
+const deleteError       = ref('')
 
 // ── Send Now ──────────────────────────────────────────────────────────────────
 const sendingNow     = ref<string | null>(null)   // id ที่กำลังส่ง
@@ -144,12 +145,14 @@ async function doSendNow(item: ScheduleItem) {
 function askDelete(item: ScheduleItem) {
   confirmDeleteId.value   = item.id
   confirmDeleteName.value = item.reportName ?? ''
+  deleteError.value       = ''
 }
 
 async function confirmDelete() {
   if (!confirmDeleteId.value) return
-  await doDelete(confirmDeleteId.value)
-  confirmDeleteId.value = null
+  deleteError.value = ''
+  const ok = await doDelete(confirmDeleteId.value)
+  if (ok) confirmDeleteId.value = null
 }
 
 function emptyForm(): FormModel {
@@ -234,11 +237,19 @@ async function doSave() {
   }
 }
 
-async function doDelete(id: string) {
+async function doDelete(id: string): Promise<boolean> {
   deleting.value = id
   try {
-    await $xt.getServer(`Planning/MangoBISchedule/Delete?id=${id}`)
+    const res: any = await $xt.postServerJson(`Planning/MangoBISchedule/Delete?id=${id}`, {})
+    if (res?.error) {
+      deleteError.value = res.error
+      return false
+    }
     schedules.value = schedules.value.filter(s => s.id !== id)
+    return true
+  } catch (err: any) {
+    deleteError.value = err?.message ?? 'เกิดข้อผิดพลาด'
+    return false
   } finally {
     deleting.value = null
   }
@@ -1204,7 +1215,7 @@ function intervalLabel(days: number): string {
   <!-- ════════════════════════════════════════
        Confirm Delete Dialog
   ════════════════════════════════════════ -->
-  <AlertDialog :open="!!confirmDeleteId" @update:open="v => { if (!v) confirmDeleteId = null }">
+  <AlertDialog :open="!!confirmDeleteId" @update:open="v => { if (!v) { confirmDeleteId = null; deleteError = '' } }">
     <AlertDialogContent>
       <AlertDialogHeader>
         <AlertDialogTitle class="flex items-center gap-2">
@@ -1217,15 +1228,23 @@ function intervalLabel(days: number): string {
           ออกจากระบบ? การกระทำนี้ไม่สามารถย้อนกลับได้
         </AlertDialogDescription>
       </AlertDialogHeader>
+
+      <!-- Error message -->
+      <p v-if="deleteError" class="text-sm text-destructive bg-destructive/10 rounded-md px-3 py-2">
+        {{ deleteError }}
+      </p>
+
       <AlertDialogFooter>
-        <AlertDialogCancel @click="confirmDeleteId = null">ยกเลิก</AlertDialogCancel>
-        <AlertDialogAction
-          class="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-          @click="confirmDelete"
+        <AlertDialogCancel @click="confirmDeleteId = null; deleteError = ''">ยกเลิก</AlertDialogCancel>
+        <!-- ใช้ Button แทน AlertDialogAction เพื่อควบคุมการปิด dialog เอง -->
+        <Button
+          variant="destructive"
+          :disabled="!!deleting"
+          @click.prevent="confirmDelete"
         >
           <Loader2 v-if="deleting" class="size-3.5 mr-1.5 animate-spin" />
           ลบรายการ
-        </AlertDialogAction>
+        </Button>
       </AlertDialogFooter>
     </AlertDialogContent>
   </AlertDialog>

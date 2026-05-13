@@ -27,14 +27,23 @@ export function useErpData() {
   const store = useSqlBuilderStore()
 
   // ── Load module list then immediately load all objects ───────────────
+  // B4: validates response shape so a malformed 200 (e.g. misconfigured
+  //     backend returning HTML) doesn't silently result in an empty
+  //     modules list with no warning.
   async function loadModules() {
     store.loadingMods  = true
     store.syncStatus   = 'syncing'
     try {
       const res: any = await $fetch('/api/mango-schema/modules')
+      const raw = res?.data
+      if (!Array.isArray(raw)) {
+        console.error('[loadModules] unexpected response shape', res)
+        throw new Error('invalid_shape')
+      }
       const seen = new Set<string>()
-      store.modules = (res?.data ?? [])
-        .map((m: any) => m.module)
+      store.modules = raw
+        .map((m: any) => m?.module)
+        .filter((m: any): m is string => typeof m === 'string' && m.length > 0)
         .filter((m: string) => {
           if (seen.has(m)) return false
           seen.add(m)
@@ -42,7 +51,8 @@ export function useErpData() {
         })
       store.syncStatus  = 'ok'
       store.syncLastAt  = new Date()
-    } catch {
+    } catch (err) {
+      console.error('[loadModules] failed', err)
       store.modules    = []
       store.syncStatus = 'error'
     } finally {
@@ -75,27 +85,30 @@ export function useErpData() {
   }
 
   // ── Load table columns (schema) ───────────────────────────────────────
+  // B2+B4: propagates errors (server now throws 502) so the caller can
+  // distinguish "table really has no columns" from "failed to reach Mango".
+  // Validates response shape: the detail array must exist on the response.
   async function loadTableColumns(tableName: string): Promise<ColumnInfo[]> {
     const cached = store.getCachedColumns(tableName)
     if (cached) return cached
 
-    try {
-      const res: any = await $fetch(`/api/mango-schema/table-columns?table=${encodeURIComponent(tableName)}`)
-      const detail = res?.data?.detail ?? res?.detail ?? []
-      const cols: ColumnInfo[] = detail.map((d: any) => ({
-        column_name: d.COLUMN_NAME ?? d.column_name ?? '',
-        column_type: d.DATA_TYPE ?? d.column_type ?? d.data_type ?? '',
-        data_type:   d.data_type ?? d.DATA_TYPE ?? '',
-        data_pk:     d.COLUMN_KEY === 'PRI' || d.data_pk === 'Y' ? 'Y' : 'N',
-        remark:      d.COLUMN_COMMENT ?? d.remark ?? '',
-      })).sort((a: ColumnInfo, b: ColumnInfo) =>
-        a.data_pk === b.data_pk ? 0 : a.data_pk === 'Y' ? -1 : 1
-      )
-      store.cacheColumns(tableName, cols)
-      return cols
-    } catch {
-      return []
+    const res: any = await $fetch(`/api/mango-schema/table-columns?table=${encodeURIComponent(tableName)}`)
+    const detail = res?.data?.detail ?? res?.detail
+    if (!Array.isArray(detail)) {
+      console.error('[loadTableColumns] unexpected response shape', tableName, res)
+      throw new Error('invalid_shape')
     }
+    const cols: ColumnInfo[] = detail.map((d: any) => ({
+      column_name: d.COLUMN_NAME ?? d.column_name ?? '',
+      column_type: d.DATA_TYPE ?? d.column_type ?? d.data_type ?? '',
+      data_type:   d.data_type ?? d.DATA_TYPE ?? '',
+      data_pk:     (d.COLUMN_KEY === 'PRI' || d.data_pk === 'Y' ? 'Y' : 'N') as 'Y' | 'N',
+      remark:      d.COLUMN_COMMENT ?? d.remark ?? '',
+    })).sort((a: ColumnInfo, b: ColumnInfo) =>
+      a.data_pk === b.data_pk ? 0 : a.data_pk === 'Y' ? -1 : 1
+    )
+    store.cacheColumns(tableName, cols)
+    return cols
   }
 
   // ── Load ADDSPEC column metadata (step 2 of onRead) ──────────────────
@@ -117,10 +130,13 @@ export function useErpData() {
   }
 
   // ── Load DB schema + merge ADDSPEC remarks ─────────────────────────────
+  // loadTableColumns now throws on error (B2+B4), so Promise.all would reject
+  // the whole enrichment. loadObjectTableDetail is enrichment-only and
+  // stays best-effort — caller still gets columns if ADDSPEC is unreachable.
   async function loadTableColumnsEnriched(tableName: string): Promise<ColumnInfo[]> {
     const [dbCols, addspecCols] = await Promise.all([
       loadTableColumns(tableName),
-      loadObjectTableDetail(tableName),
+      loadObjectTableDetail(tableName),  // already swallows errors → []
     ])
     if (!addspecCols.length) return dbCols
     return dbCols.map(dbCol => {

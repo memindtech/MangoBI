@@ -1,3 +1,9 @@
+import type { ComputedColDef } from './computedColumn'
+import { applyComputedColumns } from './computedColumn'
+
+export type ComputedColumn = ComputedColDef
+export type { ComputedColDef }
+
 export type AggFn   = 'sum' | 'avg' | 'count' | 'min' | 'max' | 'first' | 'none'
 export type FilterOp = '=' | '!=' | '>' | '<' | '>=' | '<=' | 'contains' | 'not contains'
 
@@ -8,9 +14,10 @@ export interface TransformFilter {
 }
 
 export interface TransformConfig {
-  filters:      TransformFilter[]
-  groupByField: string
-  aggregations: Record<string, AggFn>
+  filters:          TransformFilter[]
+  groupByField:     string
+  aggregations:     Record<string, AggFn>
+  computedColumns?: ComputedColDef[]
 }
 
 export const AGG_OPTIONS: { value: AggFn; label: string }[] = [
@@ -157,22 +164,31 @@ export function materializeAccumulators(
   })
 }
 
-/** Apply filter + optional GROUP BY to a row array.
+/** Apply filter + optional GROUP BY + computed columns to a row array.
  *  Single-pass streaming accumulation — never stores intermediate grouped arrays,
  *  so memory use is O(unique_groups × cols) regardless of input size. */
 export function applyTransform(rows: any[], cfg: TransformConfig): any[] {
+  let result: any[]
+
   // ── Filter only (no GROUP BY) ─────────────────────────────────────────────
   if (!cfg.groupByField) {
-    return cfg.filters.length ? rows.filter(r => matchFilters(r, cfg.filters)) : rows
+    result = cfg.filters.length ? rows.filter(r => matchFilters(r, cfg.filters)) : rows
+  } else if (!rows.length) {
+    result = []
+  } else {
+    // ── Single-pass streaming GROUP BY ─────────────────────────────────────
+    const accs: Map<string, GroupAcc> = new Map()
+    const colsRef = { v: [] as string[] }
+    for (const row of rows) accumulateRow(row, cfg, accs, colsRef)
+    result = colsRef.v.length ? materializeAccumulators(accs, colsRef.v, cfg) : []
   }
-  if (!rows.length) return []
 
-  // ── Single-pass streaming GROUP BY ───────────────────────────────────────
-  const accs: Map<string, GroupAcc> = new Map()
-  const colsRef = { v: [] as string[] }
-  for (const row of rows) accumulateRow(row, cfg, accs, colsRef)
-  if (!colsRef.v.length) return []
-  return materializeAccumulators(accs, colsRef.v, cfg)
+  // ── Computed columns (applied after filter/groupby) ───────────────────────
+  if (cfg.computedColumns?.length) {
+    result = applyComputedColumns(result, cfg.computedColumns)
+  }
+
+  return result
 }
 
 /** Build BFS component key from a starting tableId */

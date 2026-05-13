@@ -16,6 +16,8 @@ import { Handle, Position } from '@vue-flow/core'
 import { Box, ChevronDown, ChevronUp, X, Code2 } from 'lucide-vue-next'
 import { useSqlBuilderStore } from '~/stores/sql-builder'
 
+const { t } = useI18n()
+
 const props = defineProps<{
   id: string
   data: Record<string, any>
@@ -120,7 +122,7 @@ function removeGroup() {
         v-else
         @dblclick.stop="startEdit"
         class="flex-1 text-[11px] font-bold font-mono text-violet-300 truncate cursor-text select-none"
-        title="ดับเบิลคลิกเพื่อแก้ชื่อ CTE"
+        :title="t('sqlbuilder_node_group_dblclick_rename')"
       >{{ data.label || 'cte_group' }}</span>
 
       <!-- Child count badge -->
@@ -152,7 +154,7 @@ function removeGroup() {
       >
         <Code2 class="size-5 text-violet-400/20" />
         <p class="text-[10px] font-mono text-violet-400/30">WITH {{ data.label || 'cte_name' }} AS (</p>
-        <p class="text-[9px] text-violet-400/25 mt-0.5">ลาก Table node มาวางที่นี่</p>
+        <p class="text-[9px] text-violet-400/25 mt-0.5">{{ t('sqlbuilder_node_group_drag_table') }}</p>
         <p class="text-[10px] font-mono text-violet-400/30">)</p>
       </div>
 
@@ -167,7 +169,7 @@ function removeGroup() {
     <div v-if="!isOpen"
       class="absolute inset-0 flex items-center justify-center pointer-events-none"
       style="padding-top: 40px">
-      <span class="text-[9px] text-violet-400/40 italic">{{ childNodes.length }} nodes (ยุบ)</span>
+      <span class="text-[9px] text-violet-400/40 italic">{{ t('sqlbuilder_node_group_collapsed', { n: childNodes.length }) }}</span>
     </div>
   </div>
 </template>

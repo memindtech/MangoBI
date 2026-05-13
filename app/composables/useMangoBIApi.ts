@@ -1,9 +1,9 @@
 /**
- * Composable for MangoBI save / load / delete via Planning backend.
- * Routes: Planning/MangoBI/<action>
+ * Composable for MangoBI save / load / delete via main backend.
+ * Routes: MangoBI/<action>
  */
 
-const BASE        = 'Planning/MangoBI'
+const BASE        = 'MangoBI'
 const BASE_PUBLIC = 'Planning/Public'
 
 // Module-level cache — shared across all composable instances within the same session.
@@ -18,11 +18,42 @@ function invalidateReport(id: string): void {
 }
 
 export interface BIListItem {
-  id:        string
-  name:      string
-  createdBy: string
-  createdAt: string
-  updatedAt: string | null
+  id:            string
+  name:          string
+  createdBy:     string
+  createdAt:     string
+  updatedAt:     string | null
+  columnMapping?: string   // JSON: ColumnMapEntry[]
+  isPublic?:     boolean
+}
+
+export interface ColumnMapEntry {
+  columnName:    string
+  dataType:      string
+  newColumnName: string
+}
+
+/** Apply columnMapping JSON rename to rows. Rows without a mapping entry pass through unchanged. */
+export function applyColumnMapping<T extends Record<string, unknown>>(
+  rows: T[],
+  columnMappingJson: string | null | undefined,
+): T[] {
+  if (!columnMappingJson) return rows
+  try {
+    const mapping: ColumnMapEntry[] = JSON.parse(columnMappingJson)
+    const renamed = mapping.filter(m => m.newColumnName && m.newColumnName !== m.columnName)
+    if (!renamed.length) return rows
+    return rows.map(row => {
+      const out: Record<string, unknown> = {}
+      for (const [k, v] of Object.entries(row)) {
+        const m = renamed.find(r => r.columnName === k)
+        out[m ? m.newColumnName : k] = v
+      }
+      return out
+    }) as T[]
+  } catch {
+    return rows
+  }
 }
 
 export function useMangoBIApi() {
@@ -70,7 +101,12 @@ export function useMangoBIApi() {
   /** Call on hover to warm the cache before the user clicks. */
   function prefetchReport(id: string): void {
     if (_reportCache.has(id) || _reportFlight.has(id)) return
-    loadReport(id).catch(() => {})
+    // Prefetch is best-effort — the user's real click will retry and show a
+    // proper error. We still log so "user clicked but nothing happened" has
+    // a breadcrumb in the console.
+    loadReport(id).catch(err => {
+      if (import.meta.dev) console.warn('[prefetchReport] failed', id, err)
+    })
   }
 
   async function saveReport(payload: {
@@ -90,10 +126,22 @@ export function useMangoBIApi() {
     return res?.data?.deleted === true
   }
 
+  async function refreshReportCache(reportId: string, datasetsJson: string): Promise<boolean> {
+    try {
+      const res: any = await $xt.postServerJson(`${BASE}/RefreshReportCache`, { reportId, datasetsJson })
+      return !!res?.data?.refreshedAt
+    } catch { return false }
+  }
+
   // ── DataModel ─────────────────────────────────────────────────────────────
 
   async function listDataModels(): Promise<BIListItem[]> {
     const res: any = await $xt.getServer(`${BASE}/GetDataModels`)
+    return res?.data ?? []
+  }
+
+  async function listPublicDataModels(): Promise<BIListItem[]> {
+    const res: any = await $xt.getServer(`${BASE}/GetDataModels?public=true`)
     return res?.data ?? []
   }
 
@@ -107,6 +155,7 @@ export function useMangoBIApi() {
     name:          string
     nodesJson:     string
     relationsJson: string
+    isPublic?:     boolean
   }): Promise<string | null> {
     const res: any = await $xt.postServerJson(`${BASE}/SaveDataModel`, payload)
     return res?.data?.id ?? res?.id ?? null
@@ -124,17 +173,24 @@ export function useMangoBIApi() {
     return res?.data ?? []
   }
 
+  async function listPublicSQLBuilders(): Promise<BIListItem[]> {
+    const res: any = await $xt.getServer(`${BASE}/GetSQLBuilders?public=true`)
+    return res?.data ?? []
+  }
+
   async function loadSQLBuilder(id: string): Promise<any> {
     const res: any = await $xt.getServer(`${BASE}/GetSQLBuilder?id=${id}`)
     return res?.data ?? null
   }
 
   async function saveSQLBuilder(payload: {
-    id?:       string
-    name:      string
-    nodesJson: string
-    edgesJson: string
-    sqlText:   string
+    id?:           string
+    name:          string
+    nodesJson:     string
+    edgesJson:     string
+    sqlText:       string
+    columnMapping?: string   // JSON: ColumnMapEntry[]
+    isPublic?:     boolean
   }): Promise<string | null> {
     const res: any = await $xt.postServerJson(`${BASE}/SaveSQLBuilder`, payload)
     return res?.data?.id ?? res?.id ?? null
@@ -147,17 +203,46 @@ export function useMangoBIApi() {
 
   // ── System ────────────────────────────────────────────────────────────────
 
-  async function updateStructure(): Promise<{ messages: string[] } | null> {
-    const res: any = await $xt.postServerJson(`${BASE}/UpdateStructure`, {})
+  // ── Execute Query ─────────────────────────────────────────────────────────────
+
+  /** Execute a SELECT/CTE SQL against Mango ERP DB — returns fresh rows + column metadata */
+  async function executeQuery(sqlText: string): Promise<{
+    rows: Record<string, unknown>[]
+    column_mapping_json?: string
+  } | null> {
+    try {
+      const res: any = await $xt.postServerJson(`${BASE}/ExecuteCustomSql`, { sql: sqlText })
+      if (res?.error) return null
+      // Nitro proxy wraps backend response: res.data = backend's { data: rows[] }
+      // so actual rows are at res.data.data — fall back to res.data if already array
+      const inner = res?.data
+      if (!inner) return null
+      if (Array.isArray(inner)) return { rows: inner }
+      const rows = Array.isArray(inner.data)
+        ? inner.data
+        : Array.isArray(inner.rows) ? inner.rows : null
+      if (!rows) return null
+      return { rows, column_mapping_json: inner.column_mapping_json }
+    } catch {
+      return null
+    }
+  }
+
+  async function updateStructure(
+    columnMappings?: ColumnMapEntry[],
+  ): Promise<{ messages: string[] } | null> {
+    const body = columnMappings?.length ? { columnMappings } : {}
+    const res: any = await $xt.postServerJson(`${BASE}/UpdateStructure`, body)
     return res?.data ?? null
   }
 
   return {
     loadPublicReport,
-    listReports, loadReport, saveReport, deleteReport,
+    listReports, loadReport, saveReport, deleteReport, refreshReportCache,
     prefetchReport, invalidateReport,
-    listDataModels, loadDataModel, saveDataModel, deleteDataModel,
-    listSQLBuilders, loadSQLBuilder, saveSQLBuilder, deleteSQLBuilder,
+    listDataModels, listPublicDataModels, loadDataModel, saveDataModel, deleteDataModel,
+    listSQLBuilders, listPublicSQLBuilders, loadSQLBuilder, saveSQLBuilder, deleteSQLBuilder,
+    executeQuery,
     updateStructure,
   }
 }
