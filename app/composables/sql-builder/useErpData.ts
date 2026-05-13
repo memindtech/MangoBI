@@ -191,6 +191,35 @@ export function useErpData() {
     }
   }
 
+  // ── Load full flat table list (Addspec_Table_ReadList) ──────────────
+  // Richer than `objects`: returns every DB table with table_name + remark +
+  // module, used by SQL Editor autocomplete. Idempotent — re-call only
+  // refreshes when called explicitly (no force flag yet).
+  async function loadAddspecTables(force = false): Promise<void> {
+    if (!force && store.addspecTables.length) return
+    if (store.addspecTablesLoading) return
+    store.addspecTablesLoading = true
+    try {
+      const res: any = await $fetch('/api/mango-schema/addspec-tables?module=&text=')
+      const rows: any[] = Array.isArray(res?.data) ? res.data : (Array.isArray(res) ? res : [])
+      store.addspecTables = rows
+        .filter(r => typeof r?.table_name === 'string' && r.table_name.length > 0)
+        .map(r => ({
+          table_name: r.table_name,
+          remark:     r.remark ?? null,
+          module:     r.module ?? null,
+          edituser:   r.edituser ?? null,
+          editdate:   r.editdate ?? null,
+        }))
+      store.addspecTablesLoadedAt = new Date()
+    } catch (err) {
+      console.error('[loadAddspecTables] failed', err)
+      // Leave existing list untouched so a transient failure doesn't wipe cache
+    } finally {
+      store.addspecTablesLoading = false
+    }
+  }
+
   // ── Manual sync (cache bust + re-fetch) ──────────────────────────────
   async function syncNow() {
     store.syncStatus = 'syncing'
@@ -242,7 +271,7 @@ export function useErpData() {
   }
 
   return {
-    loadModules, toggleModule, loadAllObjects, syncNow,
+    loadModules, toggleModule, loadAllObjects, loadAddspecTables, syncNow,
     loadTableColumns, loadTableColumnsEnriched, loadObjectDetail,
     filteredModules, filteredObjects, objDisplayName, objectTypeColor,
   }

@@ -105,6 +105,7 @@ async function doSave() {
       nodesJson:     JSON.stringify(nodesSlim),
       edgesJson:     JSON.stringify(edges.value),
       sqlText:       generatedSQL.value,
+      sourceSql:     store.sourceSql || undefined,
       columnMapping,
       isPublic:      finishIsPublic.value,
     })
