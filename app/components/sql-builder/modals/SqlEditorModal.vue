@@ -29,6 +29,8 @@ const AgGridVue = defineAsyncComponent(async () => {
   return Grid
 })
 
+const { t } = useI18n()
+
 const colorMode  = useColorMode()
 const isDark     = computed(() => colorMode.value === 'dark')
 const themeClass = computed(() => isDark.value ? 'ag-theme-quartz-dark' : 'ag-theme-quartz')
@@ -67,9 +69,9 @@ const previewColDefs = computed<ColDef[]>(() => {
 
 async function runPreview() {
   const sql = sqlText.value.trim()
-  if (!sql) { previewError.value = 'กรุณาพิมพ์ SQL ก่อน'; previewShown.value = true; return }
+  if (!sql) { previewError.value = t('sqlbuilder_editor_err_empty'); previewShown.value = true; return }
   if (!/^\s*(WITH|SELECT)\b/i.test(sql)) {
-    previewError.value = 'รองรับเฉพาะ SELECT / WITH (CTE) เท่านั้น'
+    previewError.value = t('sqlbuilder_editor_err_select_only')
     previewShown.value = true
     return
   }
@@ -79,12 +81,12 @@ async function runPreview() {
   try {
     const res = await api.executeQuery(sql)
     if (!res || !Array.isArray(res.rows)) {
-      previewError.value = 'Execute ล้มเหลว — backend ไม่ตอบ หรือ SQL ผิด'
+      previewError.value = t('sqlbuilder_editor_err_execute_failed')
       previewRows.value  = []
     } else {
       previewRows.value = res.rows
       previewRanAt.value = new Date()
-      if (!res.rows.length) previewError.value = '— ไม่มีข้อมูล (0 rows)'
+      if (!res.rows.length) previewError.value = t('sqlbuilder_editor_err_no_data')
     }
   } catch (e: any) {
     previewError.value = e?.message ?? 'Execute error'
@@ -125,9 +127,9 @@ function close() { store.showSqlEditor = false }
 // ── Apply ──────────────────────────────────────────────────────────────────
 function apply() {
   const sql = sqlText.value.trim()
-  if (!sql) { errorMsg.value = 'กรุณาพิมพ์ SQL ก่อน'; return }
+  if (!sql) { errorMsg.value = t('sqlbuilder_editor_err_empty'); return }
   if (!/^\s*(WITH|SELECT)\b/i.test(sql)) {
-    errorMsg.value = 'รองรับเฉพาะ SELECT / WITH (CTE) เท่านั้น'
+    errorMsg.value = t('sqlbuilder_editor_err_select_only')
     return
   }
   errorMsg.value = ''
@@ -559,9 +561,9 @@ const charCount = computed(() => sqlText.value.length)
               <Code2 class="size-4 text-sky-500" />
             </div>
             <div class="flex-1 min-w-0">
-              <p class="text-sm font-bold">SQL Editor</p>
+              <p class="text-sm font-bold">{{ t('sqlbuilder_editor_title') }}</p>
               <p class="text-[11px] text-muted-foreground mt-0.5">
-                เขียน SQL เอง — Tab / Enter เพื่อ autocomplete, Ctrl+Space เปิด suggestions, Shift+Enter ขึ้นบรรทัด
+                {{ t('sqlbuilder_editor_subtitle') }}
               </p>
             </div>
             <button @click="close"
@@ -583,7 +585,7 @@ const charCount = computed(() => sqlText.value.length)
                 @blur="onBlur"
                 @click="dropdown.show = false"
                 spellcheck="false"
-                placeholder="-- พิมพ์ SQL ที่นี่...&#10;-- ตัวอย่าง:&#10;WITH cte_demo AS (&#10;  SELECT a.maincode, a.projno&#10;  FROM bd_proj_h a&#10;  WHERE a.maincode = 'MG1'&#10;)&#10;SELECT * FROM cte_demo"
+                :placeholder="t('sqlbuilder_editor_placeholder')"
                 :class="['w-full font-mono text-[12.5px] leading-[1.5] px-4 py-3 bg-background resize-none focus:outline-none text-foreground min-h-0',
                          previewShown ? 'flex-[1_1_45%]' : 'flex-1']"
                 style="font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace; tab-size: 2;"
@@ -597,13 +599,12 @@ const charCount = computed(() => sqlText.value.length)
                 <!-- Preview header -->
                 <div class="flex items-center gap-2 px-3 py-1.5 border-b bg-emerald-500/5 shrink-0">
                   <TableIcon class="size-3.5 text-emerald-600" />
-                  <span class="text-xs font-semibold text-emerald-700 dark:text-emerald-400">Result Preview</span>
+                  <span class="text-xs font-semibold text-emerald-700 dark:text-emerald-400">{{ t('sqlbuilder_editor_preview_title') }}</span>
                   <span v-if="previewLoading" class="flex items-center gap-1 text-[10px] text-muted-foreground">
-                    <Loader2 class="size-3 animate-spin" /> กำลังดึงข้อมูล…
+                    <Loader2 class="size-3 animate-spin" /> {{ t('sqlbuilder_editor_preview_loading') }}
                   </span>
                   <span v-else-if="previewRows.length" class="text-[10px] font-mono text-muted-foreground">
-                    {{ previewRows.length.toLocaleString() }} rows ·
-                    {{ previewColDefs.length }} cols
+                    {{ t('sqlbuilder_editor_preview_stats', { rows: previewRows.length.toLocaleString(), cols: previewColDefs.length }) }}
                     <span v-if="previewRanAt" class="opacity-60">
                       · {{ previewRanAt.toLocaleTimeString() }}
                     </span>
@@ -613,11 +614,11 @@ const charCount = computed(() => sqlText.value.length)
                     class="ml-auto flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-emerald-500/40 text-emerald-600 hover:bg-emerald-500/10 transition-colors disabled:opacity-40">
                     <Loader2 v-if="previewLoading" class="size-3 animate-spin" />
                     <Play v-else class="size-3" />
-                    Re-run
+                    {{ t('sqlbuilder_editor_preview_rerun') }}
                   </button>
                   <button @click="closePreview"
                     class="size-5 flex items-center justify-center rounded hover:bg-accent text-muted-foreground transition-colors"
-                    title="ซ่อน preview">
+                    :title="t('sqlbuilder_editor_preview_hide')">
                     <ChevronDown class="size-3.5" />
                   </button>
                 </div>
@@ -627,7 +628,7 @@ const charCount = computed(() => sqlText.value.length)
                   <div v-if="previewLoading"
                     class="absolute inset-0 flex items-center justify-center gap-2 bg-background/70 backdrop-blur-sm z-10">
                     <Loader2 class="size-4 animate-spin text-emerald-500" />
-                    <span class="text-xs text-muted-foreground">กำลัง execute query…</span>
+                    <span class="text-xs text-muted-foreground">{{ t('sqlbuilder_editor_preview_executing') }}</span>
                   </div>
 
                   <div v-if="previewError && !previewRows.length"
@@ -635,7 +636,7 @@ const charCount = computed(() => sqlText.value.length)
                     <AlertCircle class="size-6 text-rose-500" />
                     <p class="text-xs font-medium text-rose-500">{{ previewError }}</p>
                     <p class="text-[10px] text-muted-foreground/70">
-                      ตรวจสอบ syntax + table name + JOIN condition แล้วลองใหม่
+                      {{ t('sqlbuilder_editor_err_check_syntax') }}
                     </p>
                   </div>
 
@@ -664,17 +665,17 @@ const charCount = computed(() => sqlText.value.length)
 
               <!-- Footer / status bar -->
               <div class="flex items-center gap-3 px-4 py-2 border-t bg-muted/20 text-[10px] text-muted-foreground shrink-0">
-                <span class="font-mono">{{ lineCount }} lines · {{ charCount }} chars</span>
+                <span class="font-mono">{{ t('sqlbuilder_editor_stats_lines', { lines: lineCount, chars: charCount }) }}</span>
                 <span v-if="errorMsg" class="ml-auto text-rose-500 font-medium">{{ errorMsg }}</span>
                 <span v-else-if="sourceSql && sqlText === sourceSql" class="ml-auto text-emerald-500">
-                  (โหลด SQL ต้นทางที่บันทึกไว้)
+                  {{ t('sqlbuilder_editor_source_loaded') }}
                 </span>
                 <span v-else class="ml-auto" />
                 <span class="font-mono opacity-70 flex items-center gap-1">
                   <Loader2 v-if="store.addspecTablesLoading" class="size-3 animate-spin" />
-                  {{ allTables.length }} tables
-                  <span v-if="store.addspecTables.length" class="text-emerald-500" title="โหลดจาก Addspec_Table_ReadList (DB ทั้งหมด)">·full</span>
-                  <span v-else-if="store.modules.length" class="text-amber-500" title="ใช้ objects fallback (เฉพาะที่ register)">·obj</span>
+                  {{ t('sqlbuilder_editor_tables_count', { n: allTables.length }) }}
+                  <span v-if="store.addspecTables.length" class="text-emerald-500" :title="t('sqlbuilder_editor_tables_full_title')">·full</span>
+                  <span v-else-if="store.modules.length" class="text-amber-500" :title="t('sqlbuilder_editor_tables_obj_title')">·obj</span>
                 </span>
               </div>
             </div>
@@ -683,7 +684,7 @@ const charCount = computed(() => sqlText.value.length)
             <aside class="flex flex-col min-h-0 bg-muted/10">
               <div class="px-3 py-2 border-b shrink-0">
                 <p class="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/70 flex items-center gap-1.5">
-                  <Sparkles class="size-3" /> Snippets
+                  <Sparkles class="size-3" /> {{ t('sqlbuilder_editor_snippets_label') }}
                 </p>
               </div>
               <div class="flex-1 overflow-y-auto p-2 flex flex-col gap-1.5 min-h-0">
@@ -700,15 +701,25 @@ const charCount = computed(() => sqlText.value.length)
 
               <div class="px-3 py-2 border-t border-b shrink-0">
                 <p class="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/70 flex items-center gap-1.5">
-                  <FileText class="size-3" /> Tips
+                  <FileText class="size-3" /> {{ t('sqlbuilder_editor_tips_label') }}
                 </p>
               </div>
               <div class="p-3 text-[10px] text-muted-foreground/80 leading-relaxed shrink-0">
-                <p>• พิมพ์ <code class="font-mono text-sky-500">alias.</code> เพื่อดู column ของตารางนั้น</p>
-                <p>• กด <kbd class="px-1 py-0.5 rounded border bg-background text-foreground text-[9px]">Tab</kbd> รับ suggestion</p>
-                <p>• กด <kbd class="px-1 py-0.5 rounded border bg-background text-foreground text-[9px]">Ctrl+Space</kbd> เปิด popup</p>
-                <p>• <span class="text-emerald-500 font-semibold">Run</span> → ดูข้อมูลจริง (ไม่กระทบ canvas)</p>
-                <p>• <span class="text-sky-500 font-semibold">Apply</span> → reverse-parse → canvas nodes</p>
+                <p>• <i18n-t keypath="sqlbuilder_editor_tip_dot" tag="span">
+                  <template #code><code class="font-mono text-sky-500">alias.</code></template>
+                </i18n-t></p>
+                <p>• <i18n-t keypath="sqlbuilder_editor_tip_tab" tag="span">
+                  <template #kbd><kbd class="px-1 py-0.5 rounded border bg-background text-foreground text-[9px]">Tab</kbd></template>
+                </i18n-t></p>
+                <p>• <i18n-t keypath="sqlbuilder_editor_tip_ctrl_space" tag="span">
+                  <template #kbd><kbd class="px-1 py-0.5 rounded border bg-background text-foreground text-[9px]">Ctrl+Space</kbd></template>
+                </i18n-t></p>
+                <p>• <i18n-t keypath="sqlbuilder_editor_tip_run" tag="span">
+                  <template #label><span class="text-emerald-500 font-semibold">Run</span></template>
+                </i18n-t></p>
+                <p>• <i18n-t keypath="sqlbuilder_editor_tip_apply" tag="span">
+                  <template #label><span class="text-sky-500 font-semibold">Apply</span></template>
+                </i18n-t></p>
               </div>
             </aside>
           </div>
@@ -717,26 +728,26 @@ const charCount = computed(() => sqlText.value.length)
           <div class="flex items-center justify-between gap-3 px-5 py-3.5 border-t bg-muted/10 shrink-0">
             <button @click="clearEditor"
               class="text-xs px-3 py-2 text-muted-foreground hover:text-destructive transition-colors">
-              ล้างทั้งหมด
+              {{ t('sqlbuilder_editor_clear_all') }}
             </button>
             <div class="flex items-center gap-2">
               <button @click="close"
                 class="text-xs px-4 py-2 border rounded-lg hover:bg-accent transition-colors text-muted-foreground">
-                ยกเลิก
+                {{ t('sqlbuilder_editor_cancel') }}
               </button>
               <button @click="runPreview"
                 :disabled="!sqlText.trim() || previewLoading"
                 class="flex items-center gap-1.5 text-xs px-4 py-2 border border-emerald-500/50 text-emerald-600 hover:bg-emerald-500/10 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg font-semibold transition-colors"
-                title="Execute SQL → ดู raw data (ไม่กระทบ canvas)">
+                :title="t('sqlbuilder_editor_run_preview_title')">
                 <Loader2 v-if="previewLoading" class="size-3.5 animate-spin" />
                 <TableIcon v-else class="size-3.5" />
-                Run Preview
+                {{ t('sqlbuilder_editor_run_preview') }}
               </button>
               <button @click="apply"
                 :disabled="!sqlText.trim()"
                 class="flex items-center gap-1.5 text-xs px-5 py-2 bg-sky-500 hover:bg-sky-600 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg font-semibold transition-colors">
                 <Play class="size-3.5" />
-                Apply &amp; Rebuild Canvas
+                {{ t('sqlbuilder_editor_apply') }}
               </button>
             </div>
           </div>
@@ -782,9 +793,9 @@ const charCount = computed(() => sqlText.value.length)
           </button>
         </div>
         <div class="px-2 py-1 border-t bg-muted/30 text-[9px] text-muted-foreground/70 font-mono flex items-center gap-2 shrink-0">
-          <kbd class="px-1 rounded border bg-background">↑↓</kbd> เลือก
-          <kbd class="px-1 rounded border bg-background">Tab/Enter</kbd> รับ
-          <kbd class="px-1 rounded border bg-background">Esc</kbd> ปิด
+          <kbd class="px-1 rounded border bg-background">↑↓</kbd> {{ t('sqlbuilder_editor_ac_select') }}
+          <kbd class="px-1 rounded border bg-background">Tab/Enter</kbd> {{ t('sqlbuilder_editor_ac_accept') }}
+          <kbd class="px-1 rounded border bg-background">Esc</kbd> {{ t('sqlbuilder_editor_ac_close') }}
         </div>
       </div>
     </Transition>

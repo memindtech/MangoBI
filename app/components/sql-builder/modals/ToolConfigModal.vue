@@ -14,6 +14,7 @@ import { useSqlBuilderStore } from '~/stores/sql-builder'
 import { useToolNodes } from '~/composables/sql-builder/useToolNodes'
 import { useSqlGenerator } from '~/composables/sql-builder/useSqlGenerator'
 
+const { t } = useI18n()
 const store = useSqlBuilderStore()
 const tn = useToolNodes()
 const { generateSQL } = useSqlGenerator()
@@ -2613,12 +2614,12 @@ const finishBtnStyle = computed(() => {
                   <button @click="viewMode = 'all'"
                     :class="['flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md transition-colors',
                       viewMode === 'all' ? 'bg-orange-500 text-white' : 'text-muted-foreground hover:text-foreground']">
-                    All <span :class="['text-[9px] font-mono px-1 rounded', viewMode === 'all' ? 'bg-white/20' : 'bg-muted/60 text-muted-foreground/70']">{{ upstreamCols.length }}</span>
+                    {{ t('sqlbuilder_view_all') }} <span :class="['text-[9px] font-mono px-1 rounded', viewMode === 'all' ? 'bg-white/20' : 'bg-muted/60 text-muted-foreground/70']">{{ upstreamCols.length }}</span>
                   </button>
                   <button @click="viewMode = 'selected'"
                     :class="['flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md transition-colors',
                       viewMode === 'selected' ? 'bg-orange-500 text-white' : 'text-muted-foreground hover:text-foreground']">
-                    Selected <span :class="['text-[9px] font-mono px-1 rounded', viewMode === 'selected' ? 'bg-white/20' : 'bg-orange-500/15 text-orange-500']">{{ groupColCount }}</span>
+                    {{ t('sqlbuilder_view_selected') }} <span :class="['text-[9px] font-mono px-1 rounded', viewMode === 'selected' ? 'bg-white/20' : 'bg-orange-500/15 text-orange-500']">{{ groupColCount }}</span>
                   </button>
                 </div>
 
@@ -2664,7 +2665,7 @@ const finishBtnStyle = computed(() => {
                   </template>
                   <div v-if="filteredGroupedCols.length === 0"
                     class="px-3 py-3 text-[10px] text-muted-foreground/60 italic text-center">
-                    <template v-if="viewMode === 'selected' && !groupColCount">ยังไม่ได้เลือก column ใน GROUP BY</template>
+                    <template v-if="viewMode === 'selected' && !groupColCount">{{ t('sqlbuilder_view_selected_empty_groupby') }}</template>
                     <template v-else-if="colSearch">ไม่พบ column ที่ตรงกับ "{{ colSearch }}"</template>
                     <template v-else>กำลังโหลด columns...</template>
                   </div>
@@ -2931,12 +2932,12 @@ const finishBtnStyle = computed(() => {
                 <button @click="viewMode = 'all'"
                   :class="['flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md transition-colors',
                     viewMode === 'all' ? 'bg-green-500 text-white' : 'text-muted-foreground hover:text-foreground']">
-                  All <span :class="['text-[9px] font-mono px-1 rounded', viewMode === 'all' ? 'bg-white/20' : 'bg-muted/60 text-muted-foreground/70']">{{ upstreamCols.length }}</span>
+                  {{ t('sqlbuilder_view_all') }} <span :class="['text-[9px] font-mono px-1 rounded', viewMode === 'all' ? 'bg-white/20' : 'bg-muted/60 text-muted-foreground/70']">{{ upstreamCols.length }}</span>
                 </button>
                 <button @click="viewMode = 'selected'"
                   :class="['flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md transition-colors',
                     viewMode === 'selected' ? 'bg-green-500 text-white' : 'text-muted-foreground hover:text-foreground']">
-                  Selected <span :class="['text-[9px] font-mono px-1 rounded', viewMode === 'selected' ? 'bg-white/20' : 'bg-green-500/15 text-green-600']">{{ sortItemCount }}</span>
+                  {{ t('sqlbuilder_view_selected') }} <span :class="['text-[9px] font-mono px-1 rounded', viewMode === 'selected' ? 'bg-white/20' : 'bg-green-500/15 text-green-600']">{{ sortItemCount }}</span>
                 </button>
               </div>
 
@@ -2988,7 +2989,7 @@ const finishBtnStyle = computed(() => {
                 </template>
                 <div v-if="filteredGroupedSortCols.length === 0"
                   class="px-3 py-3 text-[10px] text-muted-foreground/60 italic text-center">
-                  <template v-if="viewMode === 'selected' && !sortItemCount">ยังไม่ได้เลือก column ใน ORDER BY</template>
+                  <template v-if="viewMode === 'selected' && !sortItemCount">{{ t('sqlbuilder_view_selected_empty_orderby') }}</template>
                   <template v-else-if="sortColSearch">ไม่พบ column ที่ตรงกับ "{{ sortColSearch }}"</template>
                   <template v-else>กำลังโหลด columns...</template>
                 </div>
@@ -3913,12 +3914,12 @@ const finishBtnStyle = computed(() => {
                     <button @click="viewMode = 'all'"
                       :class="['flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md transition-colors',
                         viewMode === 'all' ? 'bg-indigo-500 text-white' : 'text-muted-foreground hover:text-foreground']">
-                      All <span :class="['text-[9px] font-mono px-1 rounded', viewMode === 'all' ? 'bg-white/20' : 'bg-muted/60 text-muted-foreground/70']">{{ upstreamCols.length }}</span>
+                      {{ t('sqlbuilder_view_all') }} <span :class="['text-[9px] font-mono px-1 rounded', viewMode === 'all' ? 'bg-white/20' : 'bg-muted/60 text-muted-foreground/70']">{{ upstreamCols.length }}</span>
                     </button>
                     <button @click="viewMode = 'selected'"
                       :class="['flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md transition-colors',
                         viewMode === 'selected' ? 'bg-indigo-500 text-white' : 'text-muted-foreground hover:text-foreground']">
-                      Selected <span :class="['text-[9px] font-mono px-1 rounded', viewMode === 'selected' ? 'bg-white/20' : 'bg-indigo-500/15 text-indigo-500']">{{ (store.modalNode.data.selectItems ?? []).length }}</span>
+                      {{ t('sqlbuilder_view_selected') }} <span :class="['text-[9px] font-mono px-1 rounded', viewMode === 'selected' ? 'bg-white/20' : 'bg-indigo-500/15 text-indigo-500']">{{ (store.modalNode.data.selectItems ?? []).length }}</span>
                     </button>
                   </div>
 
@@ -3964,7 +3965,7 @@ const finishBtnStyle = computed(() => {
                     </template>
                     <div v-if="!filteredSubqGroupedCols.length"
                       class="px-3 py-3 text-[10px] text-muted-foreground/60 italic text-center">
-                      <template v-if="viewMode === 'selected' && !(store.modalNode.data.selectItems ?? []).length">ยังไม่ได้เลือก column ใน SELECT</template>
+                      <template v-if="viewMode === 'selected' && !(store.modalNode.data.selectItems ?? []).length">{{ t('sqlbuilder_view_selected_empty_subquery') }}</template>
                       <template v-else-if="subqColSearch">ไม่พบ column ที่ตรงกับ "{{ subqColSearch }}"</template>
                       <template v-else>กำลังโหลด columns...</template>
                     </div>

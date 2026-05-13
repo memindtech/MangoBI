@@ -26,6 +26,7 @@ import { useDragDrop } from '~/composables/sql-builder/useDragDrop'
 import { useMangoBIApi } from '~/composables/useMangoBIApi'
 import type { BIListItem } from '~/composables/useMangoBIApi'
 
+const { t } = useI18n()
 const store = useSqlBuilderStore()
 const { sendToDataModel, resetCanvas } = useFlowEvents()
 const dragDrop = useDragDrop()
@@ -1320,10 +1321,10 @@ function nodeStats(nodes: any[]) {
       <!-- SQL Editor (free-form Navicat-like editor with autocomplete) -->
       <button @click="store.showSqlEditor = true"
         class="flex items-center gap-1 text-xs px-2 py-1.5 border rounded-lg hover:bg-accent transition-colors"
-        title="เขียน SQL เอง + autocomplete → Reverse-parse กลับเป็น nodes">
+        :title="t('sqlbuilder_editor_button_title')">
         <FileCode2 class="size-3.5" />
-        <span class="hidden sm:inline">SQL Editor</span>
-        <span v-if="store.sourceSql" class="size-1.5 rounded-full bg-emerald-500" title="มี source SQL บันทึกไว้" />
+        <span class="hidden sm:inline">{{ t('sqlbuilder_editor_button') }}</span>
+        <span v-if="store.sourceSql" class="size-1.5 rounded-full bg-emerald-500" :title="t('sqlbuilder_editor_source_saved')" />
       </button>
 
       <!-- JSON Export -->
