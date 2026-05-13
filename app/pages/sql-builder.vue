@@ -134,6 +134,7 @@ function onAiAction(action: AiCanvasAction) {
     <SqlBuilderModalsFilterModal />
     <SqlBuilderModalsGroupSelectModal />
     <SqlBuilderModalsFinishModal />
+    <SqlBuilderModalsSqlEditorModal />
 
     <!-- AI Panel -->
     <AiPanel

@@ -4,6 +4,7 @@ import type { FilterCondition, VisibleCol } from '~/types/sql-builder'
 import { getFilterType, getColTypeBadgeSolid } from '~/types/sql-builder'
 import { useSqlBuilderStore } from '~/stores/sql-builder'
 
+const { t } = useI18n()
 const store = useSqlBuilderStore()
 
 // ── Column groups (current node + all directly connected table nodes) ─────────
@@ -388,7 +389,7 @@ function close() { store.filterNodeId = null }
                           : 'text-muted-foreground hover:text-foreground',
                       ]"
                     >
-                      All
+                      {{ t('sqlbuilder_view_all') }}
                       <span :class="[
                         'text-[10px] font-mono px-1 rounded',
                         viewMode === 'all' ? 'bg-white/20 text-white' : 'bg-muted/60 text-muted-foreground/70',
@@ -403,7 +404,7 @@ function close() { store.filterNodeId = null }
                           : 'text-muted-foreground hover:text-foreground',
                       ]"
                     >
-                      Selected
+                      {{ t('sqlbuilder_view_selected') }}
                       <span :class="[
                         'text-[10px] font-mono px-1 rounded',
                         viewMode === 'selected' ? 'bg-white/20 text-white' : 'bg-sky-500/15 text-sky-500',
@@ -414,7 +415,7 @@ function close() { store.filterNodeId = null }
                     v-if="viewMode === 'selected'"
                     class="text-[10px] text-muted-foreground/70 truncate"
                   >
-                    แสดงเฉพาะ field ที่เลือกแล้ว — คลิก ✓ เพื่อเอาออก
+                    {{ t('sqlbuilder_view_selected_hint') }}
                   </p>
                 </div>
 
@@ -457,13 +458,16 @@ function close() { store.filterNodeId = null }
                     <Search class="size-4 text-muted-foreground/50" />
                   </div>
                   <p class="text-xs text-muted-foreground/80 font-medium">
-                    <template v-if="viewMode === 'selected' && !totalSelected">ยังไม่ได้เลือก field ใดๆ</template>
-                    <template v-else-if="colSearch">ไม่พบ "{{ colSearch }}"</template>
-                    <template v-else>ไม่พบ field</template>
+                    <template v-if="viewMode === 'selected' && !totalSelected">{{ t('sqlbuilder_view_selected_empty_fields') }}</template>
+                    <template v-else-if="colSearch">{{ t('sqlbuilder_view_not_found', { query: colSearch }) }}</template>
+                    <template v-else>{{ t('sqlbuilder_view_selected_empty_fields') }}</template>
                   </p>
                   <p v-if="viewMode === 'selected' && !totalSelected" class="text-[10px] text-muted-foreground/55 leading-relaxed max-w-[260px]">
-                    สลับไป <button @click="viewMode = 'all'" class="text-sky-500 font-semibold hover:underline">All</button>
-                    เพื่อเลือก column ที่ต้องการ SELECT
+                    <i18n-t keypath="sqlbuilder_view_switch_to_all_hint" tag="span">
+                      <template #label>
+                        <button @click="viewMode = 'all'" class="text-sky-500 font-semibold hover:underline">{{ t('sqlbuilder_view_all') }}</button>
+                      </template>
+                    </i18n-t>
                   </p>
                 </div>
 
