@@ -3,6 +3,7 @@ import { Bot, User, Copy, Check, Zap, CheckCircle2 } from 'lucide-vue-next'
 import type { AiMessage } from '~/stores/ai-chat'
 import { parseAiAction, describeAction, type AiCanvasAction } from '~/composables/sql-builder/useAiActions'
 
+const { t } = useI18n()
 const props = defineProps<{ message: AiMessage }>()
 const emit  = defineEmits<{ 'apply-action': [action: AiCanvasAction] }>()
 
@@ -114,7 +115,7 @@ async function copyText() {
             >
               <CheckCircle2 v-if="appliedActions.has(seg.raw)" class="size-3.5" />
               <Zap v-else class="size-3.5" />
-              {{ appliedActions.has(seg.raw) ? 'Applied แล้ว' : 'Canvas Action' }}
+              {{ appliedActions.has(seg.raw) ? t('sqlbuilder_ai_message_applied') : 'Canvas Action' }}
             </div>
             <!-- Card body -->
             <div class="px-3 py-2 flex items-start justify-between gap-2">
@@ -147,7 +148,7 @@ async function copyText() {
         class="absolute -top-2 -right-2 opacity-0 group-hover:opacity-100 transition-opacity
                size-6 rounded-full bg-background border shadow-sm
                flex items-center justify-center text-muted-foreground hover:text-foreground"
-        title="คัดลอก"
+        :title="t('sqlbuilder_ai_message_copy')"
       >
         <Check v-if="copied" class="size-3 text-green-500" />
         <Copy  v-else         class="size-3" />

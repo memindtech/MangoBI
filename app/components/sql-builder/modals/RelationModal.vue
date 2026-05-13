@@ -4,6 +4,7 @@ import { JOIN_TYPES, JOIN_EDGE_COLORS, getEdgeStyle, getColTypeBadge } from '~/t
 import type { JoinType, EdgeMapping } from '~/types/sql-builder'
 import { useSqlBuilderStore } from '~/stores/sql-builder'
 
+const { t } = useI18n()
 const store = useSqlBuilderStore()
 
 const edge       = computed(() => store.edges.find((e: any) => e.id === store.relationEdgeId) as any)
@@ -105,22 +106,22 @@ const JOIN_DASH: Record<JoinType, string> = {
   'CROSS JOIN': '4 4',
 }
 
-const JOIN_DESC: Record<JoinType, string> = {
-  'INNER JOIN': 'เฉพาะแถวที่ตรงกันทั้งสองตาราง',
-  'LEFT JOIN':  'ทุกแถวจากตารางซ้าย + แถวที่ตรงกันจากขวา',
-  'RIGHT JOIN': 'ทุกแถวจากตารางขวา + แถวที่ตรงกันจากซ้าย',
-  'FULL JOIN':  'ทุกแถวจากทั้งสองตาราง',
-  'CROSS JOIN': 'ผลคูณคาร์ทีเชียนของสองตาราง',
-}
+const JOIN_DESC = computed((): Record<JoinType, string> => ({
+  'INNER JOIN': t('sqlbuilder_relation_desc_inner'),
+  'LEFT JOIN':  t('sqlbuilder_relation_desc_left'),
+  'RIGHT JOIN': t('sqlbuilder_relation_desc_right'),
+  'FULL JOIN':  t('sqlbuilder_relation_desc_full'),
+  'CROSS JOIN': t('sqlbuilder_relation_desc_cross'),
+}))
 
-// C5: concrete examples using ลูกค้า/ออเดอร์ so non-tech users can picture it.
-const JOIN_EXAMPLE: Record<JoinType, string> = {
-  'INNER JOIN': 'เช่น: ลูกค้าที่มีออเดอร์เท่านั้น',
-  'LEFT JOIN':  'เช่น: ลูกค้าทั้งหมด + ออเดอร์ (ถ้ามี)',
-  'RIGHT JOIN': 'เช่น: ออเดอร์ทั้งหมด + ลูกค้า (ถ้ามี)',
-  'FULL JOIN':  'เช่น: ลูกค้าทุกคน + ออเดอร์ทุกใบ (แม้ไม่ตรงกัน)',
-  'CROSS JOIN': 'เช่น: ลูกค้าทุกคน × ตัวเลือกสินค้าทุกตัว (ใช้ระวัง แถวเยอะมาก)',
-}
+// C5: concrete examples using customer/order so non-tech users can picture it.
+const JOIN_EXAMPLE = computed((): Record<JoinType, string> => ({
+  'INNER JOIN': t('sqlbuilder_relation_ex_inner'),
+  'LEFT JOIN':  t('sqlbuilder_relation_ex_left'),
+  'RIGHT JOIN': t('sqlbuilder_relation_ex_right'),
+  'FULL JOIN':  t('sqlbuilder_relation_ex_full'),
+  'CROSS JOIN': t('sqlbuilder_relation_ex_cross'),
+}))
 
 function addMapping() {
   mappings.value.push({ _id: ++mappingIdSeq, source: '', target: '', operator: '=' })
@@ -230,7 +231,7 @@ function colDetail(details: typeof sourceDetails.value, colName: string) {
           <span class="text-[9px] text-muted-foreground/40 font-mono shrink-0">{{ c.column_type }}</span>
         </button>
         <div v-if="!activeDetails.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">
-          ไม่พบ columns
+          {{ t('sqlbuilder_common_no_columns') }}
         </div>
       </div>
     </div>
@@ -253,7 +254,7 @@ function colDetail(details: typeof sourceDetails.value, colName: string) {
               <GitMerge class="size-4.5" :style="{ color: JOIN_EDGE_COLORS[joinType] }" />
             </div>
             <div class="flex-1 min-w-0">
-              <p class="text-sm font-bold">ตั้งค่าความสัมพันธ์ JOIN</p>
+              <p class="text-sm font-bold">{{ t('sqlbuilder_relation_title') }}</p>
               <p class="text-[11px] text-muted-foreground font-mono mt-0.5 truncate">
                 <span class="text-sky-500 font-semibold">{{ sourceNode?.data?.label ?? sourceNode?.id }}</span>
                 <span class="mx-2 text-muted-foreground/40">→</span>
@@ -271,7 +272,7 @@ function colDetail(details: typeof sourceDetails.value, colName: string) {
 
             <!-- JOIN type selector -->
             <div>
-              <p class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-3">ประเภท JOIN</p>
+              <p class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-3">{{ t('sqlbuilder_relation_type') }}</p>
               <div class="grid grid-cols-5 gap-2">
                 <button
                   v-for="jt in JOIN_TYPES" :key="jt"
@@ -325,7 +326,7 @@ function colDetail(details: typeof sourceDetails.value, colName: string) {
             <div>
               <div class="flex items-center justify-between mb-2.5">
                 <p class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
-                  เงื่อนไข ON
+                  {{ t('sqlbuilder_relation_on') }}
                   <span v-if="mappings.length"
                     class="ml-1.5 px-1.5 py-0.5 rounded-full bg-sky-500/15 text-sky-500 text-[9px] font-bold">
                     {{ mappings.length }}
@@ -338,7 +339,7 @@ function colDetail(details: typeof sourceDetails.value, colName: string) {
                 <button
                   @click="addMapping"
                   :disabled="isLoadingDetails"
-                  :title="isLoadingDetails ? 'รอโหลด column ก่อน' : ''"
+                  :title="isLoadingDetails ? t('sqlbuilder_relation_wait_cols') : ''"
                   :class="[
                     'flex items-center gap-1 text-xs font-semibold transition-colors',
                     isLoadingDetails
@@ -346,7 +347,7 @@ function colDetail(details: typeof sourceDetails.value, colName: string) {
                       : 'text-sky-500 hover:text-sky-400',
                   ]"
                 >
-                  <Plus class="size-3" /> เพิ่มเงื่อนไข
+                  <Plus class="size-3" /> {{ t('sqlbuilder_relation_add') }}
                 </button>
               </div>
 
@@ -354,13 +355,13 @@ function colDetail(details: typeof sourceDetails.value, colName: string) {
               <div v-if="isLoadingDetails && !mappings.length"
                 class="flex items-center justify-center gap-2 py-6 border border-dashed rounded-xl bg-muted/10">
                 <div class="size-3.5 rounded-full border-2 border-muted-foreground/20 border-t-sky-400 animate-spin" />
-                <span class="text-xs text-muted-foreground">กำลังโหลด columns เพื่อ auto-detect…</span>
+                <span class="text-xs text-muted-foreground">{{ t('sqlbuilder_relation_loading') }}</span>
               </div>
 
               <div v-else-if="!mappings.length"
                 class="text-xs text-muted-foreground/50 text-center py-5 border border-dashed rounded-xl bg-muted/10 italic">
-                ไม่พบ column ที่ตรงกัน<br/>
-                <span class="text-[10px]">คลิก "+ เพิ่มเงื่อนไข" เพื่อระบุ column ที่ใช้ join</span>
+                {{ t('sqlbuilder_relation_no_match') }}<br/>
+                <span class="text-[10px]">{{ t('sqlbuilder_relation_no_match_hint') }}</span>
               </div>
 
               <div class="flex flex-col gap-2">
@@ -369,7 +370,7 @@ function colDetail(details: typeof sourceDetails.value, colName: string) {
                   class="rounded-xl border bg-muted/10 p-3 flex flex-col gap-2"
                 >
                   <div class="flex items-center justify-between">
-                    <span class="text-[10px] font-semibold text-muted-foreground">เงื่อนไขที่ {{ i + 1 }}</span>
+                    <span class="text-[10px] font-semibold text-muted-foreground">{{ t('sqlbuilder_relation_condition_n', { n: i + 1 }) }}</span>
                     <button @click="removeMapping(m._id)"
                       class="size-5 flex items-center justify-center rounded hover:text-destructive text-muted-foreground transition-colors">
                       <X class="size-3.5" />
@@ -458,17 +459,17 @@ function colDetail(details: typeof sourceDetails.value, colName: string) {
           <div class="flex items-center justify-between gap-2 px-5 py-3.5 border-t bg-muted/10 shrink-0">
             <button @click="deleteEdge"
               class="text-xs px-3 py-2 border border-destructive/40 text-destructive hover:bg-destructive/10 rounded-lg transition-colors flex items-center gap-1.5 font-semibold">
-              <Trash2 class="size-3.5" /> ลบเส้นเชื่อม
+              <Trash2 class="size-3.5" /> {{ t('sqlbuilder_relation_delete') }}
             </button>
             <div class="flex items-center gap-2">
               <button @click="close"
                 class="text-xs px-4 py-2 border rounded-lg hover:bg-accent transition-colors">
-                ยกเลิก
+                {{ t('sqlbuilder_common_cancel') }}
               </button>
               <button @click="save"
                 class="text-xs px-5 py-2 rounded-lg font-semibold text-white transition-colors flex items-center gap-1.5"
                 :style="{ backgroundColor: JOIN_EDGE_COLORS[joinType] }">
-                <Link2 class="size-3.5" /> บันทึก {{ joinType }}
+                <Link2 class="size-3.5" /> {{ t('sqlbuilder_relation_save', { join: joinType }) }}
               </button>
             </div>
           </div>

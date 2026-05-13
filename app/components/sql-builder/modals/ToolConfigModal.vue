@@ -14,6 +14,7 @@ import { useSqlBuilderStore } from '~/stores/sql-builder'
 import { useToolNodes } from '~/composables/sql-builder/useToolNodes'
 import { useSqlGenerator } from '~/composables/sql-builder/useSqlGenerator'
 
+const { t } = useI18n()
 const store = useSqlBuilderStore()
 const tn = useToolNodes()
 const { generateSQL } = useSqlGenerator()
@@ -881,14 +882,14 @@ const unionReadiness = computed(() => {
   const nullRows  = unionMappingHasAllNullRows.value.length
   const mismatch  = unionAllSourceCols.value.some(c => c.hasMismatch && isColumnMapped(c.name))
   if (srcCount === 0)
-    return { level: 'error', msg: 'ยังไม่มี source เชื่อมต่อ — กลับไป Step 1' }
+    return { level: 'error', msg: t('sqlbuilder_tool_config_union_err_no_source') }
   if (colCount === 0)
-    return { level: 'info',  msg: `เชื่อม ${srcCount} source แล้ว — กด Auto Group หรือเพิ่ม column` }
+    return { level: 'info',  msg: t('sqlbuilder_tool_config_union_info_connected', { n: srcCount }) }
   if (nullRows > 0)
-    return { level: 'error', msg: `${nullRows} column ไม่มี source ส่งข้อมูลเลย (ทุก source = NULL)` }
+    return { level: 'error', msg: t('sqlbuilder_tool_config_union_err_nullcols', { n: nullRows }) }
   if (mismatch)
-    return { level: 'warn',  msg: `พร้อมทำ UNION — ${unionColMapping.value.length} cols (มี type mismatch บางส่วน)` }
-  return   { level: 'ok',   msg: `พร้อมทำ UNION — ${colCount} cols ครบถ้วน ไม่มี mismatch` }
+    return { level: 'warn',  msg: t('sqlbuilder_tool_config_union_warn_mismatch', { n: unionColMapping.value.length }) }
+  return   { level: 'ok',   msg: t('sqlbuilder_tool_config_union_ok_ready', { n: colCount }) }
 })
 
 function groupColsByTable(cols: VisibleCol[]): { tableLabel: string; cols: VisibleCol[] }[] {
@@ -907,13 +908,13 @@ const showStep2SrcDropdown   = ref(false)
 const showUnionSqlPreview    = ref(true)
 const unionViewMode          = ref<'output' | 'mapping'>('output')
 const unionStep             = ref(1)
-const UNION_STEPS = [
-  { id: 1, label: 'เลือกข้อมูล'   },
-  { id: 2, label: 'เลือก Columns' },
-  { id: 3, label: 'ตั้งค่า'        },
-  { id: 4, label: 'เงื่อนไข'       },
-  { id: 5, label: 'ตรวจสอบ SQL'  },
-]
+const UNION_STEPS = computed(() => [
+  { id: 1, label: t('sqlbuilder_tool_config_union_step1') },
+  { id: 2, label: t('sqlbuilder_tool_config_union_step2') },
+  { id: 3, label: t('sqlbuilder_tool_config_union_step3') },
+  { id: 4, label: t('sqlbuilder_tool_config_union_step4') },
+  { id: 5, label: t('sqlbuilder_tool_config_union_step5') },
+])
 
 const availableUnconnectedSources = computed(() =>
   allUnionSourcesRich.value.filter(src => !isUnionSourceConnected(src.id))
@@ -1329,13 +1330,13 @@ const calcItems = computed(() =>
 )
 const calcItemCount = computed(() => calcItems.value.filter(c => c.col && c.op).length)
 
-const CALC_OPS = [
-  { id: 'multiply', label: '×',        group: 'math',   needsValue: true,  ph: 'เช่น 1.07' },
-  { id: 'add',      label: '+',        group: 'math',   needsValue: true,  ph: 'เช่น 100'  },
-  { id: 'subtract', label: '−',        group: 'math',   needsValue: true,  ph: 'เช่น 50'   },
-  { id: 'divide',   label: '÷',        group: 'math',   needsValue: true,  ph: 'เช่น 100'  },
-  { id: 'isnull',   label: 'ISNULL',   group: 'null',   needsValue: true,  ph: 'ค่า default' },
-  { id: 'coalesce', label: 'COALESCE', group: 'null',   needsValue: true,  ph: 'ค่า fallback' },
+const CALC_OPS = computed(() => [
+  { id: 'multiply', label: '×',        group: 'math',   needsValue: true,  ph: t('sqlbuilder_tool_config_calc_ph_multiply') },
+  { id: 'add',      label: '+',        group: 'math',   needsValue: true,  ph: t('sqlbuilder_tool_config_calc_ph_add')  },
+  { id: 'subtract', label: '−',        group: 'math',   needsValue: true,  ph: t('sqlbuilder_tool_config_calc_ph_subtract')   },
+  { id: 'divide',   label: '÷',        group: 'math',   needsValue: true,  ph: t('sqlbuilder_tool_config_calc_ph_divide')  },
+  { id: 'isnull',   label: 'ISNULL',   group: 'null',   needsValue: true,  ph: t('sqlbuilder_tool_config_calc_ph_isnull') },
+  { id: 'coalesce', label: 'COALESCE', group: 'null',   needsValue: true,  ph: t('sqlbuilder_tool_config_calc_ph_coalesce') },
   { id: 'cast_int', label: 'AS INT',   group: 'cast',   needsValue: false, ph: '' },
   { id: 'cast_text',label: 'AS TEXT',  group: 'cast',   needsValue: false, ph: '' },
   { id: 'cast_dec', label: 'AS DEC',   group: 'cast',   needsValue: false, ph: '' },
@@ -1345,7 +1346,7 @@ const CALC_OPS = [
   { id: 'year',     label: 'YEAR',     group: 'date',   needsValue: false, ph: '' },
   { id: 'month',    label: 'MONTH',    group: 'date',   needsValue: false, ph: '' },
   { id: 'day',      label: 'DAY',      group: 'date',   needsValue: false, ph: '' },
-] as const
+])
 
 // Colors per group — active (selected) vs hover
 const OP_ACTIVE: Record<string, string> = {
@@ -1363,7 +1364,7 @@ const OP_HOVER: Record<string, string> = {
   date:   'border-border text-muted-foreground hover:border-cyan-400/60 hover:text-cyan-500 hover:bg-cyan-500/8',
 }
 
-function opClass(itemOp: string, op: typeof CALC_OPS[number]) {
+function opClass(itemOp: string, op: { id: string; group: string }) {
   const isActive = itemOp === op.id
   return isActive ? OP_ACTIVE[op.group] : OP_HOVER[op.group]
 }
@@ -1391,11 +1392,11 @@ function calcExprPreview(op: string, col: string, val: string): string {
 }
 
 function calcNeedsValue(op: string): boolean {
-  return CALC_OPS.find(o => o.id === op)?.needsValue ?? false
+  return CALC_OPS.value.find(o => o.id === op)?.needsValue ?? false
 }
 
 function calcValuePlaceholder(op: string): string {
-  return CALC_OPS.find(o => o.id === op)?.ph ?? ''
+  return CALC_OPS.value.find(o => o.id === op)?.ph ?? ''
 }
 
 // Helper: format condition value for SQL preview (mirrors formatCondClause in useSqlGenerator)
@@ -1745,7 +1746,7 @@ const finishBtnStyle = computed(() => {
             </div>
           </button>
         </template>
-        <div v-if="!groupedUpstreamCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">ไม่พบ columns — เชื่อมต่อ table node ก่อน</div>
+        <div v-if="!groupedUpstreamCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">{{ t('sqlbuilder_tool_config_no_upstream_general') }}</div>
       </div>
     </div>
   </Teleport>
@@ -1775,7 +1776,7 @@ const finishBtnStyle = computed(() => {
             <span v-if="c.remark" class="text-[9px] text-muted-foreground/55 truncate">{{ c.remark }}</span>
           </div>
         </button>
-        <div v-if="!unionOutputCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">กำหนด Output Columns ก่อน</div>
+        <div v-if="!unionOutputCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">{{ t('sqlbuilder_tool_config_define_output_first') }}</div>
       </div>
     </div>
   </Teleport>
@@ -1848,7 +1849,7 @@ const finishBtnStyle = computed(() => {
             <span v-if="c.remark" class="text-[9px] text-muted-foreground/55 truncate">{{ c.remark }}</span>
           </div>
         </button>
-        <div v-if="!upstreamCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">เชื่อมต่อ table node เข้ากับ CTE node ก่อน</div>
+        <div v-if="!upstreamCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">{{ t('sqlbuilder_tool_config_no_upstream_cte') }}</div>
       </div>
     </div>
   </Teleport>
@@ -1885,7 +1886,7 @@ const finishBtnStyle = computed(() => {
             </div>
           </button>
         </template>
-        <div v-if="!groupedUpstreamCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">ไม่พบ columns — เชื่อมต่อ table node ก่อน</div>
+        <div v-if="!groupedUpstreamCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">{{ t('sqlbuilder_tool_config_no_upstream_general') }}</div>
       </div>
     </div>
   </Teleport>
@@ -1922,7 +1923,7 @@ const finishBtnStyle = computed(() => {
             </div>
           </button>
         </template>
-        <div v-if="!groupedUpstreamCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">ไม่พบ columns — เชื่อมต่อ table node ก่อน</div>
+        <div v-if="!groupedUpstreamCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">{{ t('sqlbuilder_tool_config_no_upstream_general') }}</div>
       </div>
     </div>
   </Teleport>
@@ -1959,7 +1960,7 @@ const finishBtnStyle = computed(() => {
             </div>
           </button>
         </template>
-        <div v-if="!groupedUpstreamCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">ไม่พบ columns — เชื่อมต่อ table node ก่อน</div>
+        <div v-if="!groupedUpstreamCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">{{ t('sqlbuilder_tool_config_no_upstream_general') }}</div>
       </div>
     </div>
   </Teleport>
@@ -1990,7 +1991,7 @@ const finishBtnStyle = computed(() => {
             <span v-if="c.remark && c.remark !== c.name" class="text-[9px] text-muted-foreground/55 truncate">{{ c.remark }}</span>
           </div>
         </button>
-        <div v-if="!havingCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">เพิ่ม Aggregation ก่อน</div>
+        <div v-if="!havingCols.length" class="px-3 py-2 text-[10px] text-muted-foreground italic">{{ t('sqlbuilder_tool_config_need_aggregation') }}</div>
       </div>
     </div>
   </Teleport>
@@ -2027,12 +2028,12 @@ const finishBtnStyle = computed(() => {
                 <input
                   :value="store.modalNode?.data?.name ?? ''"
                   @input="tn.setModalData({ name: ($event.target as HTMLInputElement).value })"
-                  :placeholder="store.modalNode?.data?.name ? '' : 'ตั้งชื่อ CTE...'"
+                  :placeholder="store.modalNode?.data?.name ? '' : t('sqlbuilder_tool_config_cte_name_ph')"
                   spellcheck="false"
                   class="flex-1 min-w-0 bg-transparent text-sm font-semibold text-yellow-400/90 placeholder:text-muted-foreground/30 placeholder:font-normal focus:outline-none border-b border-transparent focus:border-yellow-500/40 transition-colors pb-px"
                 />
               </div>
-              <p class="text-[9px] text-muted-foreground/40 mt-0.5">ชื่อ CTE สำหรับ SQL query · คลิกเพื่อแก้ไข</p>
+              <p class="text-[9px] text-muted-foreground/40 mt-0.5">{{ t('sqlbuilder_tool_config_union_cte_name_desc') }}</p>
             </template>
             <template v-else>
               <!-- CTE: show editable name inline -->
@@ -2043,29 +2044,29 @@ const finishBtnStyle = computed(() => {
                   <input
                     :value="store.modalNode?.data?.name ?? ''"
                     @input="tn.setModalData({ name: ($event.target as HTMLInputElement).value })"
-                    placeholder="ตั้งชื่อ CTE..."
+                    :placeholder="t('sqlbuilder_tool_config_cte_name_ph')"
                     spellcheck="false"
                     class="flex-1 min-w-0 bg-transparent text-sm font-semibold text-violet-400/90 placeholder:text-muted-foreground/30 placeholder:font-normal focus:outline-none border-b border-transparent focus:border-violet-500/40 transition-colors pb-px"
                   />
                 </div>
-                <p class="text-[9px] text-muted-foreground/40 mt-0.5">ชื่อ CTE ใน SQL · คลิกเพื่อแก้ไข</p>
+                <p class="text-[9px] text-muted-foreground/40 mt-0.5">{{ t('sqlbuilder_tool_config_cte_name_desc') }}</p>
               </template>
               <template v-else>
                 <span :class="['font-bold text-sm', meta.color]">{{ meta.label }}</span>
               <p v-if="nodeType === 'group'" class="text-[10px] text-muted-foreground mt-0.5">
-                เลือก fields สำหรับ GROUP BY และกำหนด Aggregate Functions
+                {{ t('sqlbuilder_tool_config_group_subtitle') }}
               </p>
               <p v-else-if="nodeType === 'sort'" class="text-[10px] text-muted-foreground mt-0.5">
-                เลือก columns และกำหนดทิศทางการเรียงลำดับ (ASC / DESC)
+                {{ t('sqlbuilder_tool_config_sort_subtitle') }}
               </p>
               <p v-else-if="nodeType === 'calc'" class="text-[10px] text-muted-foreground mt-0.5">
-                สร้าง calculated columns ด้วย SQL expressions
+                {{ t('sqlbuilder_tool_config_calc_subtitle') }}
               </p>
               <p v-else-if="nodeType === 'where'" class="text-[10px] text-muted-foreground mt-0.5">
-                เพิ่ม conditions เพื่อกรองข้อมูลใน WHERE clause
+                {{ t('sqlbuilder_tool_config_where_subtitle') }}
               </p>
               <p v-else-if="nodeType === 'subquery'" class="text-[10px] text-muted-foreground mt-0.5">
-                Derived table · SQL body ถูก embed ใน WITH clause โดยตรง
+                {{ t('sqlbuilder_tool_config_subquery_subtitle') }}
               </p>
               </template><!-- /else nodeType -->
             </template><!-- /else not union -->
@@ -2094,7 +2095,7 @@ const finishBtnStyle = computed(() => {
               <div class="flex items-center justify-between">
                 <div>
                   <p class="text-xs font-bold text-violet-500">SELECT Columns</p>
-                  <p class="text-[10px] text-muted-foreground mt-0.5">ไม่เลือก = SELECT * (ทุก columns)</p>
+                  <p class="text-[10px] text-muted-foreground mt-0.5">{{ t('sqlbuilder_tool_config_select_all_hint') }}</p>
                 </div>
                 <div class="flex items-center gap-2">
                   <span class="text-[10px] font-semibold text-violet-500 bg-violet-500/10 px-2 py-0.5 rounded-full">
@@ -2103,7 +2104,7 @@ const finishBtnStyle = computed(() => {
                 </div>
                 <div class="flex gap-1">
                   <button @click="cteGroupedCols.forEach(g => selectAllFromCteGroup(g))"
-                    class="text-[10px] px-2.5 py-1 rounded-lg border border-violet-500/30 text-violet-400 hover:bg-violet-500/10 transition-colors font-medium">ทั้งหมด</button>
+                    class="text-[10px] px-2.5 py-1 rounded-lg border border-violet-500/30 text-violet-400 hover:bg-violet-500/10 transition-colors font-medium">{{ t('sqlbuilder_common_all') }}</button>
                   <button @click="tn.clearCteCols()"
                     class="text-[10px] text-muted-foreground hover:underline">SELECT *</button>
                 </div>
@@ -2112,7 +2113,7 @@ const finishBtnStyle = computed(() => {
               <!-- Search -->
               <div class="relative">
                 <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground/50" />
-                <input v-model="cteColSearch" placeholder="ค้นหา column..."
+                <input v-model="cteColSearch" :placeholder="t('sqlbuilder_common_search_column')"
                   class="w-full text-xs border rounded-lg pl-7 pr-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-violet-400/50 font-mono" />
               </div>
 
@@ -2160,9 +2161,9 @@ const finishBtnStyle = computed(() => {
                     <span v-else class="text-[8px] font-bold px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-400 font-mono">TABLE</span>
                     <span class="font-mono text-[11px] font-semibold text-foreground/90 flex-1 truncate">{{ activeCteGroup.sourceLabel }}</span>
                     <button @click="selectAllFromCteGroup(activeCteGroup)"
-                      class="text-[9px] text-violet-400 hover:underline shrink-0 font-medium">ทั้งหมด</button>
+                      class="text-[9px] text-violet-400 hover:underline shrink-0 font-medium">{{ t('sqlbuilder_common_all') }}</button>
                     <button @click="clearAllFromCteGroup(activeCteGroup)"
-                      class="text-[9px] text-muted-foreground hover:underline shrink-0">ล้าง</button>
+                      class="text-[9px] text-muted-foreground hover:underline shrink-0">{{ t('sqlbuilder_common_clear') }}</button>
                   </div>
 
                   <!-- Search -->
@@ -2171,19 +2172,19 @@ const finishBtnStyle = computed(() => {
                     <input
                       v-model="cteColSearch"
                       class="w-full h-8 pl-7 pr-3 bg-transparent text-[11px] focus:outline-none"
-                      placeholder="ค้นหา column…"
+                      :placeholder="t('sqlbuilder_common_search_column')"
                     />
                   </div>
 
                   <!-- No columns -->
                   <div v-if="!activeCteGroup?.cols.length" class="flex-1 flex items-center justify-center text-[10px] text-muted-foreground/50 italic">
-                    ไม่มีข้อมูล column
+                    {{ t('sqlbuilder_tool_config_no_col_data') }}
                   </div>
 
                   <!-- Column list -->
                   <div v-else class="flex-1 overflow-y-auto">
                     <p v-if="!filteredActiveCols.length && cteColSearch" class="text-[10px] text-muted-foreground/60 italic px-3 py-3">
-                      ไม่พบ "{{ cteColSearch }}"
+                      {{ t('sqlbuilder_tool_config_search_not_found', { q: cteColSearch }) }}
                     </p>
                     <button
                       v-for="c in filteredActiveCols" :key="c.name"
@@ -2231,7 +2232,7 @@ const finishBtnStyle = computed(() => {
 
               <!-- Footer hint -->
               <p v-if="!(store.modalNode?.data?.selectedCols ?? []).length" class="text-[10px] text-muted-foreground/50 italic shrink-0">
-                ไม่เลือก = SELECT * (ทุก columns)
+                {{ t('sqlbuilder_tool_config_select_all_hint') }}
               </p>
             </div>
 
@@ -2250,7 +2251,7 @@ const finishBtnStyle = computed(() => {
                   </label>
                   <button @click="tn.addCteCondition()"
                     class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-rose-500/30 text-rose-400 hover:bg-rose-500/10 transition-colors">
-                    <Plus class="size-2.5" /> เพิ่ม
+                    <Plus class="size-2.5" /> {{ t('sqlbuilder_common_add') }}
                   </button>
                 </div>
 
@@ -2280,7 +2281,7 @@ const finishBtnStyle = computed(() => {
                           <p v-if="upstreamCols.find(c => c.name === cond.column)?.remark" class="font-mono text-[9px] text-muted-foreground/60 truncate">{{ cond.column }}</p>
                         </div>
                       </template>
-                      <span v-else class="text-muted-foreground text-[11px] flex-1">— เลือก Column —</span>
+                      <span v-else class="text-muted-foreground text-[11px] flex-1">{{ t('sqlbuilder_common_select_column') }}</span>
                       <ChevronDown :class="['size-3 shrink-0 text-muted-foreground transition-transform', openCteCondColIdx === +i ? 'rotate-180' : '']" />
                     </button>
                     <div class="flex flex-col gap-1.5">
@@ -2291,7 +2292,7 @@ const finishBtnStyle = computed(() => {
                       </div>
                     </div>
                     <div v-if="cond.operator && !['IS NULL', 'IS NOT NULL'].includes(cond.operator)" class="flex items-center gap-2">
-                      <label class="text-[10px] font-semibold text-muted-foreground w-8 shrink-0">ค่า</label>
+                      <label class="text-[10px] font-semibold text-muted-foreground w-8 shrink-0">{{ t('sqlbuilder_common_value') }}</label>
                       <div v-if="isDateCol(cond.column)" class="flex-1 relative flex items-center">
                         <input :ref="(el) => setCteDateRef(Number(i), el)" type="date" :value="cond.value"
                           @input="tn.setCteCondition(+i, { value: ($event.target as HTMLInputElement).value })"
@@ -2304,7 +2305,7 @@ const finishBtnStyle = computed(() => {
                       </div>
                       <input v-else :value="cond.value"
                         @input="tn.setCteCondition(+i, { value: ($event.target as HTMLInputElement).value })"
-                        :placeholder="cond.operator === 'LIKE' ? 'เช่น %keyword%' : cond.operator === 'IN' ? 'เช่น 1,2,3' : 'ค่าที่ต้องการ'"
+                        :placeholder="cond.operator === 'LIKE' ? t('sqlbuilder_tool_config_ph_like') : cond.operator === 'IN' ? t('sqlbuilder_tool_config_ph_in') : t('sqlbuilder_tool_config_ph_value')"
                         class="flex-1 text-xs border rounded-lg px-2.5 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-rose-400/50 font-mono"
                         :class="cond.value ? 'border-rose-400/40' : ''" />
                     </div>
@@ -2315,7 +2316,7 @@ const finishBtnStyle = computed(() => {
                     </div>
                   </div>
                 </div>
-                <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">ไม่มี filter = ดึงข้อมูลทั้งหมด</p>
+                <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">{{ t('sqlbuilder_tool_config_no_filter_all') }}</p>
               </div>
 
               <!-- SQL Preview -->
@@ -2341,7 +2342,7 @@ const finishBtnStyle = computed(() => {
               <div class="flex items-center justify-between">
                 <div>
                   <p class="text-xs font-bold text-teal-500">Calculated Columns</p>
-                  <p class="text-[10px] text-muted-foreground mt-0.5">สร้าง calculated columns ด้วย SQL expressions</p>
+                  <p class="text-[10px] text-muted-foreground mt-0.5">{{ t('sqlbuilder_tool_config_calc_subtitle') }}</p>
                 </div>
                 <span class="text-[10px] font-semibold text-teal-500 bg-teal-500/10 px-2 py-0.5 rounded-full">
                   {{ calcItemCount }}
@@ -2385,13 +2386,13 @@ const finishBtnStyle = computed(() => {
                           <p v-if="upstreamCols.find(c => c.name === item.col)?.remark" class="font-mono text-[9px] text-muted-foreground/60 truncate">{{ item.col }}</p>
                         </div>
                       </template>
-                      <span v-else class="text-muted-foreground text-[11px] flex-1">— เลือก Column —</span>
+                      <span v-else class="text-muted-foreground text-[11px] flex-1">{{ t('sqlbuilder_common_select_column') }}</span>
                       <ChevronDown :class="['size-3 shrink-0 text-muted-foreground transition-transform', openCalcColIdx === Number(i) ? 'rotate-180' : '']" />
                     </button>
                     <input
                       :value="item.alias"
                       @input="tn.setCalcItem(Number(i), { alias: ($event.target as HTMLInputElement).value })"
-                      placeholder="ชื่อ output"
+                      :placeholder="t('sqlbuilder_tool_config_alias_ph')"
                       class="w-28 text-xs border rounded-lg px-2.5 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-teal-400/50 font-mono"
                       :class="item.alias ? 'border-teal-400/40' : ''"
                     />
@@ -2399,7 +2400,7 @@ const finishBtnStyle = computed(() => {
 
                   <!-- Operation pills grouped by category -->
                   <div class="flex flex-col gap-1.5">
-                    <p class="text-[10px] font-semibold text-muted-foreground">การคำนวณ</p>
+                    <p class="text-[10px] font-semibold text-muted-foreground">{{ t('sqlbuilder_tool_config_calc_label') }}</p>
                     <div class="flex flex-wrap gap-1">
                       <span class="text-[9px] text-muted-foreground/50 self-center w-12 shrink-0">Math</span>
                       <button v-for="op in CALC_OPS.filter(o => o.group === 'math')" :key="op.id"
@@ -2434,7 +2435,7 @@ const finishBtnStyle = computed(() => {
 
                   <!-- Value input -->
                   <div v-if="item.op && calcNeedsValue(item.op)" class="flex items-center gap-2">
-                    <label class="text-[10px] font-semibold text-muted-foreground w-12 shrink-0">ค่า</label>
+                    <label class="text-[10px] font-semibold text-muted-foreground w-12 shrink-0">{{ t('sqlbuilder_common_value') }}</label>
                     <input
                       :value="item.value"
                       @input="tn.setCalcItem(Number(i), { value: ($event.target as HTMLInputElement).value })"
@@ -2457,7 +2458,7 @@ const finishBtnStyle = computed(() => {
 
               <button @click="tn.addCalcItem"
                 class="text-xs w-full py-2 rounded-xl border border-dashed border-teal-500/40 text-teal-600 hover:bg-teal-500/10 font-semibold transition-colors flex items-center justify-center gap-1.5">
-                <Plus class="size-3.5" /> เพิ่ม Calculated Column
+                <Plus class="size-3.5" /> {{ t('sqlbuilder_tool_config_add_calc_column') }}
               </button>
             </div><!-- /LEFT -->
 
@@ -2475,7 +2476,7 @@ const finishBtnStyle = computed(() => {
                   </label>
                   <button @click="tn.addCalcFilter()"
                     class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-rose-500/30 text-rose-400 hover:bg-rose-500/10 transition-colors">
-                    <Plus class="size-2.5" /> เพิ่ม
+                    <Plus class="size-2.5" /> {{ t('sqlbuilder_common_add') }}
                   </button>
                 </div>
 
@@ -2515,7 +2516,7 @@ const finishBtnStyle = computed(() => {
                           <p v-if="upstreamCols.find(c => c.name === f.column)?.remark" class="font-mono text-[9px] text-muted-foreground/60 truncate">{{ f.column }}</p>
                         </div>
                       </template>
-                      <span v-else class="text-muted-foreground text-[11px] flex-1">— เลือก Column —</span>
+                      <span v-else class="text-muted-foreground text-[11px] flex-1">{{ t('sqlbuilder_common_select_column') }}</span>
                       <ChevronDown :class="['size-3 shrink-0 text-muted-foreground transition-transform', openCalcFilterColIdx === Number(i) ? 'rotate-180' : '']" />
                     </button>
 
@@ -2530,7 +2531,7 @@ const finishBtnStyle = computed(() => {
 
                     <!-- Value input -->
                     <div v-if="f.operator && !['IS NULL', 'IS NOT NULL'].includes(f.operator)" class="flex items-center gap-2">
-                      <label class="text-[10px] font-semibold text-muted-foreground w-8 shrink-0">ค่า</label>
+                      <label class="text-[10px] font-semibold text-muted-foreground w-8 shrink-0">{{ t('sqlbuilder_common_value') }}</label>
                       <div v-if="isDateCol(f.column)" class="flex-1 relative flex items-center">
                         <input
                           :ref="(el) => setCalcFilterDateRef(Number(i), el)"
@@ -2546,7 +2547,7 @@ const finishBtnStyle = computed(() => {
                       </div>
                       <input v-else :value="f.value"
                         @input="tn.setCalcFilter(Number(i), { value: ($event.target as HTMLInputElement).value })"
-                        :placeholder="f.operator === 'LIKE' ? 'เช่น %keyword%' : f.operator === 'IN' ? 'เช่น 1,2,3' : 'ค่าที่ต้องการ'"
+                        :placeholder="f.operator === 'LIKE' ? t('sqlbuilder_tool_config_ph_like') : f.operator === 'IN' ? t('sqlbuilder_tool_config_ph_in') : t('sqlbuilder_tool_config_ph_value')"
                         class="flex-1 text-xs border rounded-lg px-2.5 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-rose-400/50 font-mono"
                         :class="f.value ? 'border-rose-400/40' : ''"
                       />
@@ -2560,7 +2561,7 @@ const finishBtnStyle = computed(() => {
                     </div>
                   </div>
                 </div>
-                <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">ไม่มี filter = นำข้อมูลทั้งหมดมาคำนวณ</p>
+                <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">{{ t('sqlbuilder_tool_config_no_filter_calc') }}</p>
               </div>
 
               <!-- SQL Preview -->
@@ -2587,17 +2588,17 @@ const finishBtnStyle = computed(() => {
                 <div class="flex items-center justify-between">
                   <div>
                     <p class="text-xs font-bold text-orange-500">GROUP BY Fields</p>
-                    <p class="text-[10px] text-muted-foreground mt-0.5">เลือก columns ที่จะใช้ใน GROUP BY clause</p>
+                    <p class="text-[10px] text-muted-foreground mt-0.5">{{ t('sqlbuilder_tool_config_group_fields_desc') }}</p>
                   </div>
                   <div class="flex items-center gap-2">
                     <span class="text-[10px] font-semibold text-orange-500 bg-orange-500/10 px-2 py-0.5 rounded-full">
                       {{ groupColCount }}/{{ upstreamCols.length }}
                     </span>
                     <button @click="selectAllGroupCols"
-                      class="text-[10px] text-orange-500 hover:underline font-semibold">ทั้งหมด</button>
+                      class="text-[10px] text-orange-500 hover:underline font-semibold">{{ t('sqlbuilder_common_all') }}</button>
                     <span class="text-muted-foreground text-[10px]">/</span>
                     <button @click="clearGroupCols"
-                      class="text-[10px] text-muted-foreground hover:underline">ล้าง</button>
+                      class="text-[10px] text-muted-foreground hover:underline">{{ t('sqlbuilder_common_clear') }}</button>
                   </div>
                 </div>
 
@@ -2605,7 +2606,9 @@ const finishBtnStyle = computed(() => {
                 <div v-if="upstreamCols.length > 0 && groupColCount >= upstreamCols.length"
                   class="flex items-start gap-2 px-3 py-2 rounded-lg bg-rose-500/10 border border-rose-400/30 text-[10px] text-rose-400">
                   <span class="shrink-0 font-bold mt-0.5">⚠</span>
-                  <span>เลือกทุก column ไม่มีประโยชน์ — กด <button @click="clearGroupCols" class="font-bold underline">ล้าง</button> แล้วเลือกเฉพาะ column ที่ต้องการ GROUP BY จริงๆ</span>
+                  <i18n-t keypath="sqlbuilder_tool_config_group_warn_all" tag="span">
+                    <template #clear><button @click="clearGroupCols" class="font-bold underline">{{ t('sqlbuilder_common_clear') }}</button></template>
+                  </i18n-t>
                 </div>
 
                 <!-- View mode toggle (All / Selected) -->
@@ -2613,24 +2616,24 @@ const finishBtnStyle = computed(() => {
                   <button @click="viewMode = 'all'"
                     :class="['flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md transition-colors',
                       viewMode === 'all' ? 'bg-orange-500 text-white' : 'text-muted-foreground hover:text-foreground']">
-                    All <span :class="['text-[9px] font-mono px-1 rounded', viewMode === 'all' ? 'bg-white/20' : 'bg-muted/60 text-muted-foreground/70']">{{ upstreamCols.length }}</span>
+                    {{ t('sqlbuilder_view_all') }} <span :class="['text-[9px] font-mono px-1 rounded', viewMode === 'all' ? 'bg-white/20' : 'bg-muted/60 text-muted-foreground/70']">{{ upstreamCols.length }}</span>
                   </button>
                   <button @click="viewMode = 'selected'"
                     :class="['flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md transition-colors',
                       viewMode === 'selected' ? 'bg-orange-500 text-white' : 'text-muted-foreground hover:text-foreground']">
-                    Selected <span :class="['text-[9px] font-mono px-1 rounded', viewMode === 'selected' ? 'bg-white/20' : 'bg-orange-500/15 text-orange-500']">{{ groupColCount }}</span>
+                    {{ t('sqlbuilder_view_selected') }} <span :class="['text-[9px] font-mono px-1 rounded', viewMode === 'selected' ? 'bg-white/20' : 'bg-orange-500/15 text-orange-500']">{{ groupColCount }}</span>
                   </button>
                 </div>
 
                 <div class="relative">
                   <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground/50" />
-                  <input v-model="colSearch" placeholder="ค้นหา column..."
+                  <input v-model="colSearch" :placeholder="t('sqlbuilder_common_search_column')"
                     class="w-full text-xs border rounded-lg pl-7 pr-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-orange-400/50 font-mono" />
                 </div>
 
                 <div v-if="!upstreamCols.length"
                   class="flex items-center gap-2 px-3 py-3 rounded-lg bg-muted/30 text-[10px] text-muted-foreground italic">
-                  ยังไม่มี columns — เชื่อมต่อ table node เข้ากับ GROUP BY node ก่อน
+                  {{ t('sqlbuilder_tool_config_no_upstream_group') }}
                 </div>
 
                 <div v-else class="border rounded-lg overflow-hidden max-h-[300px] overflow-y-auto">
@@ -2664,9 +2667,9 @@ const finishBtnStyle = computed(() => {
                   </template>
                   <div v-if="filteredGroupedCols.length === 0"
                     class="px-3 py-3 text-[10px] text-muted-foreground/60 italic text-center">
-                    <template v-if="viewMode === 'selected' && !groupColCount">ยังไม่ได้เลือก column ใน GROUP BY</template>
-                    <template v-else-if="colSearch">ไม่พบ column ที่ตรงกับ "{{ colSearch }}"</template>
-                    <template v-else>กำลังโหลด columns...</template>
+                    <template v-if="viewMode === 'selected' && !groupColCount">{{ t('sqlbuilder_view_selected_empty_groupby') }}</template>
+                    <template v-else-if="colSearch">{{ t('sqlbuilder_tool_config_loading_match', { q: colSearch }) }}</template>
+                    <template v-else>{{ t('sqlbuilder_tool_config_loading_cols') }}</template>
                   </div>
                 </div>
               </div>
@@ -2712,7 +2715,7 @@ const finishBtnStyle = computed(() => {
                             <p v-if="upstreamCols.find(c => c.name === agg.col)?.remark" class="font-mono text-[9px] text-muted-foreground/60 truncate">{{ agg.col }}</p>
                           </div>
                         </template>
-                        <span v-else class="text-muted-foreground text-[11px] flex-1">— เลือก Column —</span>
+                        <span v-else class="text-muted-foreground text-[11px] flex-1">{{ t('sqlbuilder_common_select_column') }}</span>
                         <ChevronDown :class="['size-3 shrink-0 text-muted-foreground transition-transform', openAggColIdx === Number(i) ? 'rotate-180' : '']" />
                       </button>
                       <input :value="agg.alias" @input="tn.setAgg(Number(i), { alias: ($event.target as HTMLInputElement).value })"
@@ -2725,7 +2728,7 @@ const finishBtnStyle = computed(() => {
 
                 <button @click="tn.addAgg"
                   class="text-xs w-full py-2 rounded-xl border border-dashed border-orange-500/40 text-orange-600 hover:bg-orange-500/8 font-semibold transition-colors flex items-center justify-center gap-1.5">
-                  <Plus class="size-3.5" /> เพิ่ม Aggregation
+                  <Plus class="size-3.5" /> {{ t('sqlbuilder_tool_config_add_aggregation') }}
                 </button>
               </div>
 
@@ -2743,7 +2746,7 @@ const finishBtnStyle = computed(() => {
                   </label>
                   <button @click="tn.addGroupFilter()"
                     class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-amber-500/30 text-amber-500 hover:bg-amber-500/10 transition-colors">
-                    <Plus class="size-2.5" /> เพิ่ม
+                    <Plus class="size-2.5" /> {{ t('sqlbuilder_common_add') }}
                   </button>
                 </div>
 
@@ -2771,7 +2774,7 @@ const finishBtnStyle = computed(() => {
                         </span>
                         <span class="font-mono text-[11px] flex-1 truncate">{{ f.column }}</span>
                       </template>
-                      <span v-else class="text-muted-foreground text-[11px] flex-1">— เลือก Aggregate / Column —</span>
+                      <span v-else class="text-muted-foreground text-[11px] flex-1">{{ t('sqlbuilder_tool_config_select_agg_or_col') }}</span>
                       <ChevronDown :class="['size-3 shrink-0 text-muted-foreground transition-transform', openGroupFilterColIdx === Number(i) ? 'rotate-180' : '']" />
                     </button>
                     <div class="flex flex-col gap-1.5">
@@ -2781,7 +2784,7 @@ const finishBtnStyle = computed(() => {
                       </div>
                     </div>
                     <div v-if="f.operator && !['IS NULL', 'IS NOT NULL'].includes(f.operator)" class="flex items-center gap-2">
-                      <label class="text-[10px] font-semibold text-muted-foreground w-8 shrink-0">ค่า</label>
+                      <label class="text-[10px] font-semibold text-muted-foreground w-8 shrink-0">{{ t('sqlbuilder_common_value') }}</label>
                       <div v-if="isDateCol(f.column)" class="flex-1 relative flex items-center">
                         <input :ref="(el) => setGroupFilterDateRef(Number(i), el)" type="date" :value="f.value"
                           @input="tn.setGroupFilter(Number(i), { value: ($event.target as HTMLInputElement).value })"
@@ -2793,7 +2796,7 @@ const finishBtnStyle = computed(() => {
                         </button>
                       </div>
                       <input v-else :value="f.value" @input="tn.setGroupFilter(Number(i), { value: ($event.target as HTMLInputElement).value })"
-                        :placeholder="f.operator === 'LIKE' ? 'เช่น %keyword%' : f.operator === 'IN' ? 'เช่น 1,2,3' : 'ค่าที่ต้องการ'"
+                        :placeholder="f.operator === 'LIKE' ? t('sqlbuilder_tool_config_ph_like') : f.operator === 'IN' ? t('sqlbuilder_tool_config_ph_in') : t('sqlbuilder_tool_config_ph_value')"
                         class="flex-1 text-xs border rounded-lg px-2.5 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-amber-400/50 font-mono"
                         :class="f.value ? 'border-amber-400/40' : ''" />
                     </div>
@@ -2804,7 +2807,7 @@ const finishBtnStyle = computed(() => {
                     </div>
                   </div>
                 </div>
-                <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">ไม่มี HAVING</p>
+                <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">{{ t('sqlbuilder_tool_config_no_having') }}</p>
               </div>
 
               <!-- WHERE Pre-filter -->
@@ -2816,7 +2819,7 @@ const finishBtnStyle = computed(() => {
                   </label>
                   <button @click="tn.addWhereCondition()"
                     class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-rose-500/30 text-rose-400 hover:bg-rose-500/10 transition-colors">
-                    <Plus class="size-2.5" /> เพิ่ม
+                    <Plus class="size-2.5" /> {{ t('sqlbuilder_common_add') }}
                   </button>
                 </div>
 
@@ -2847,7 +2850,7 @@ const finishBtnStyle = computed(() => {
                           <p v-if="upstreamCols.find(c => c.name === cond.column)?.remark" class="font-mono text-[9px] text-muted-foreground/60 truncate">{{ cond.column }}</p>
                         </div>
                       </template>
-                      <span v-else class="text-muted-foreground text-[11px] flex-1">— เลือก Column —</span>
+                      <span v-else class="text-muted-foreground text-[11px] flex-1">{{ t('sqlbuilder_common_select_column') }}</span>
                       <ChevronDown :class="['size-3 shrink-0 text-muted-foreground transition-transform', openWhereColIdx === Number(i) ? 'rotate-180' : '']" />
                     </button>
                     <div class="flex flex-col gap-1.5">
@@ -2857,7 +2860,7 @@ const finishBtnStyle = computed(() => {
                       </div>
                     </div>
                     <div v-if="cond.operator && !['IS NULL', 'IS NOT NULL'].includes(cond.operator)" class="flex items-center gap-2">
-                      <label class="text-[10px] font-semibold text-muted-foreground w-8 shrink-0">ค่า</label>
+                      <label class="text-[10px] font-semibold text-muted-foreground w-8 shrink-0">{{ t('sqlbuilder_common_value') }}</label>
                       <div v-if="isDateCol(cond.column)" class="flex-1 relative flex items-center">
                         <input :ref="(el) => setWhereDateRef(Number(i), el)" type="date" :value="cond.value"
                           @input="tn.setWhereCondition(Number(i), { value: ($event.target as HTMLInputElement).value })"
@@ -2869,7 +2872,7 @@ const finishBtnStyle = computed(() => {
                         </button>
                       </div>
                       <input v-else :value="cond.value" @input="tn.setWhereCondition(Number(i), { value: ($event.target as HTMLInputElement).value })"
-                        :placeholder="cond.operator === 'LIKE' ? 'เช่น %keyword%' : cond.operator === 'IN' ? 'เช่น 1,2,3' : 'ค่าที่ต้องการ'"
+                        :placeholder="cond.operator === 'LIKE' ? t('sqlbuilder_tool_config_ph_like') : cond.operator === 'IN' ? t('sqlbuilder_tool_config_ph_in') : t('sqlbuilder_tool_config_ph_value')"
                         class="flex-1 text-xs border rounded-lg px-2.5 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-rose-400/50 font-mono"
                         :class="cond.value ? 'border-rose-400/40' : ''" />
                     </div>
@@ -2880,7 +2883,7 @@ const finishBtnStyle = computed(() => {
                     </div>
                   </div>
                 </div>
-                <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">ไม่มี pre-filter</p>
+                <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">{{ t('sqlbuilder_tool_config_no_pre_filter') }}</p>
               </div>
 
               <!-- SQL Preview (editable) -->
@@ -2914,15 +2917,15 @@ const finishBtnStyle = computed(() => {
               <div class="flex items-center justify-between">
                 <div>
                   <p class="text-xs font-bold text-green-600">ORDER BY Columns</p>
-                  <p class="text-[10px] text-muted-foreground mt-0.5">เลือก columns และกำหนด ASC / DESC ต่อ column</p>
+                  <p class="text-[10px] text-muted-foreground mt-0.5">{{ t('sqlbuilder_tool_config_sort_subtitle') }}</p>
                 </div>
                 <div class="flex items-center gap-2">
                   <span class="text-[10px] font-semibold text-green-600 bg-green-500/10 px-2 py-0.5 rounded-full">
                     {{ sortItemCount }}/{{ upstreamCols.length }}
                   </span>
-                  <button @click="selectAllSortCols" class="text-[10px] text-green-600 hover:underline font-semibold">ทั้งหมด</button>
+                  <button @click="selectAllSortCols" class="text-[10px] text-green-600 hover:underline font-semibold">{{ t('sqlbuilder_common_all') }}</button>
                   <span class="text-muted-foreground text-[10px]">/</span>
-                  <button @click="clearSortCols" class="text-[10px] text-muted-foreground hover:underline">ล้าง</button>
+                  <button @click="clearSortCols" class="text-[10px] text-muted-foreground hover:underline">{{ t('sqlbuilder_common_clear') }}</button>
                 </div>
               </div>
 
@@ -2931,24 +2934,24 @@ const finishBtnStyle = computed(() => {
                 <button @click="viewMode = 'all'"
                   :class="['flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md transition-colors',
                     viewMode === 'all' ? 'bg-green-500 text-white' : 'text-muted-foreground hover:text-foreground']">
-                  All <span :class="['text-[9px] font-mono px-1 rounded', viewMode === 'all' ? 'bg-white/20' : 'bg-muted/60 text-muted-foreground/70']">{{ upstreamCols.length }}</span>
+                  {{ t('sqlbuilder_view_all') }} <span :class="['text-[9px] font-mono px-1 rounded', viewMode === 'all' ? 'bg-white/20' : 'bg-muted/60 text-muted-foreground/70']">{{ upstreamCols.length }}</span>
                 </button>
                 <button @click="viewMode = 'selected'"
                   :class="['flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md transition-colors',
                     viewMode === 'selected' ? 'bg-green-500 text-white' : 'text-muted-foreground hover:text-foreground']">
-                  Selected <span :class="['text-[9px] font-mono px-1 rounded', viewMode === 'selected' ? 'bg-white/20' : 'bg-green-500/15 text-green-600']">{{ sortItemCount }}</span>
+                  {{ t('sqlbuilder_view_selected') }} <span :class="['text-[9px] font-mono px-1 rounded', viewMode === 'selected' ? 'bg-white/20' : 'bg-green-500/15 text-green-600']">{{ sortItemCount }}</span>
                 </button>
               </div>
 
               <div class="relative">
                 <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground/50" />
-                <input v-model="sortColSearch" placeholder="ค้นหา column..."
+                <input v-model="sortColSearch" :placeholder="t('sqlbuilder_common_search_column')"
                   class="w-full text-xs border rounded-lg pl-7 pr-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-green-400/50 font-mono" />
               </div>
 
               <div v-if="!upstreamCols.length"
                 class="flex items-center gap-2 px-3 py-3 rounded-lg bg-muted/30 text-[10px] text-muted-foreground italic">
-                ยังไม่มี columns — เชื่อมต่อ table node เข้ากับ ORDER BY node ก่อน
+                {{ t('sqlbuilder_tool_config_no_upstream_sort') }}
               </div>
 
               <div v-else class="border rounded-lg overflow-hidden max-h-[420px] overflow-y-auto">
@@ -2988,9 +2991,9 @@ const finishBtnStyle = computed(() => {
                 </template>
                 <div v-if="filteredGroupedSortCols.length === 0"
                   class="px-3 py-3 text-[10px] text-muted-foreground/60 italic text-center">
-                  <template v-if="viewMode === 'selected' && !sortItemCount">ยังไม่ได้เลือก column ใน ORDER BY</template>
-                  <template v-else-if="sortColSearch">ไม่พบ column ที่ตรงกับ "{{ sortColSearch }}"</template>
-                  <template v-else>กำลังโหลด columns...</template>
+                  <template v-if="viewMode === 'selected' && !sortItemCount">{{ t('sqlbuilder_view_selected_empty_orderby') }}</template>
+                  <template v-else-if="sortColSearch">{{ t('sqlbuilder_tool_config_loading_match', { q: sortColSearch }) }}</template>
+                  <template v-else>{{ t('sqlbuilder_tool_config_loading_cols') }}</template>
                 </div>
               </div>
             </div><!-- /LEFT -->
@@ -3007,7 +3010,7 @@ const finishBtnStyle = computed(() => {
                   </label>
                   <button @click="tn.addWhereCondition()"
                     class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-rose-500/30 text-rose-400 hover:bg-rose-500/10 transition-colors">
-                    <Plus class="size-2.5" /> เพิ่ม
+                    <Plus class="size-2.5" /> {{ t('sqlbuilder_common_add') }}
                   </button>
                 </div>
 
@@ -3038,7 +3041,7 @@ const finishBtnStyle = computed(() => {
                           <p v-if="upstreamCols.find(c => c.name === cond.column)?.remark" class="font-mono text-[9px] text-muted-foreground/60 truncate">{{ cond.column }}</p>
                         </div>
                       </template>
-                      <span v-else class="text-muted-foreground text-[11px] flex-1">— เลือก Column —</span>
+                      <span v-else class="text-muted-foreground text-[11px] flex-1">{{ t('sqlbuilder_common_select_column') }}</span>
                       <ChevronDown :class="['size-3 shrink-0 text-muted-foreground transition-transform', openWhereColIdx === Number(i) ? 'rotate-180' : '']" />
                     </button>
                     <div class="flex flex-col gap-1.5">
@@ -3048,7 +3051,7 @@ const finishBtnStyle = computed(() => {
                       </div>
                     </div>
                     <div v-if="cond.operator && !['IS NULL', 'IS NOT NULL'].includes(cond.operator)" class="flex items-center gap-2">
-                      <label class="text-[10px] font-semibold text-muted-foreground w-8 shrink-0">ค่า</label>
+                      <label class="text-[10px] font-semibold text-muted-foreground w-8 shrink-0">{{ t('sqlbuilder_common_value') }}</label>
                       <div v-if="isDateCol(cond.column)" class="flex-1 relative flex items-center">
                         <input :ref="(el) => setWhereDateRef(Number(i), el)" type="date" :value="cond.value"
                           @input="tn.setWhereCondition(Number(i), { value: ($event.target as HTMLInputElement).value })"
@@ -3060,7 +3063,7 @@ const finishBtnStyle = computed(() => {
                         </button>
                       </div>
                       <input v-else :value="cond.value" @input="tn.setWhereCondition(Number(i), { value: ($event.target as HTMLInputElement).value })"
-                        :placeholder="cond.operator === 'LIKE' ? 'เช่น %keyword%' : cond.operator === 'IN' ? 'เช่น 1,2,3' : 'ค่าที่ต้องการ'"
+                        :placeholder="cond.operator === 'LIKE' ? t('sqlbuilder_tool_config_ph_like') : cond.operator === 'IN' ? t('sqlbuilder_tool_config_ph_in') : t('sqlbuilder_tool_config_ph_value')"
                         class="flex-1 text-xs border rounded-lg px-2.5 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-rose-400/50 font-mono"
                         :class="cond.value ? 'border-rose-400/40' : ''" />
                     </div>
@@ -3071,7 +3074,7 @@ const finishBtnStyle = computed(() => {
                     </div>
                   </div>
                 </div>
-                <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">ไม่มี pre-filter</p>
+                <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">{{ t('sqlbuilder_tool_config_no_pre_filter') }}</p>
               </div>
 
               <!-- SQL Preview -->
@@ -3119,41 +3122,39 @@ const finishBtnStyle = computed(() => {
             <!-- ── Step content ────────────────────────────────────────── -->
             <div class="flex-1 overflow-y-auto min-h-0">
 
-            <!-- ════ STEP 1: เลือก Sources ═══════════════════════════ -->
+            <!-- ════ STEP 1: Pick Sources ═══════════════════════════ -->
             <div v-if="unionStep === 1" class="flex flex-col overflow-hidden">
 
               <!-- C3: plain-Thai hint explaining UNION in one line so users who
                    don't know SQL understand what they're about to do. -->
               <div class="mx-5 mt-3 px-3 py-2 rounded-lg bg-yellow-500/10 border border-yellow-500/25 text-[10px] text-yellow-700 dark:text-yellow-400 flex items-start gap-2 shrink-0">
                 <GitMerge class="size-3.5 mt-0.5 shrink-0" />
-                <span>
-                  <span class="font-bold">UNION</span> คือการเอาข้อมูลจากหลายตาราง/CTE
-                  มา "ต่อท้ายกัน" เป็นชุดเดียว —
-                  ทุก source ต้องมีจำนวน column เท่ากันและชนิดตรงกัน
-                </span>
+                <i18n-t keypath="sqlbuilder_tool_config_union_explain" tag="span">
+                  <template #label><span class="font-bold">UNION</span></template>
+                </i18n-t>
               </div>
 
               <!-- Step 1 header -->
               <div class="flex items-center gap-2 px-5 py-3 border-b border-border/40 bg-muted/10 shrink-0">
                 <GitMerge class="size-4 text-yellow-500 shrink-0" />
                 <div class="flex-1 min-w-0">
-                  <p class="text-[11px] font-bold text-yellow-500">เลือก Sources</p>
-                  <p class="text-[9px] text-muted-foreground/50">เลือกอย่างน้อย 2 sources เพื่อทำ UNION</p>
+                  <p class="text-[11px] font-bold text-yellow-500">{{ t('sqlbuilder_tool_config_union_select_sources') }}</p>
+                  <p class="text-[9px] text-muted-foreground/50">{{ t('sqlbuilder_tool_config_union_at_least_2') }}</p>
                 </div>
                 <button @click="selectAllUnionSources()"
                   :disabled="!allUnionSourcesRich.length"
                   class="flex items-center gap-1 h-7 px-2.5 rounded-lg border text-[10px] font-bold transition-colors shrink-0 border-yellow-500/40 text-yellow-600 bg-yellow-500/8 hover:bg-yellow-500/15 disabled:opacity-30 disabled:cursor-not-allowed">
-                  เลือกทั้งหมด
+                  {{ t('sqlbuilder_tool_config_union_select_all') }}
                 </button>
                 <button @click="clearAllUnionSources()"
                   :disabled="!unionSources.length"
                   class="flex items-center gap-1 h-7 px-2.5 rounded-lg border text-[10px] font-bold transition-colors shrink-0 border-rose-500/40 text-rose-500 bg-rose-500/8 hover:bg-rose-500/15 disabled:opacity-30 disabled:cursor-not-allowed">
-                  เคลียร์
+                  {{ t('sqlbuilder_tool_config_union_clear') }}
                 </button>
                 <span :class="[
                   'text-[11px] font-bold px-3 py-1 rounded-full transition-colors shrink-0',
                   unionSources.length >= 2 ? 'bg-yellow-500/20 text-yellow-500' : 'bg-muted/40 text-muted-foreground/50',
-                ]">{{ unionSources.length }} เลือกแล้ว</span>
+                ]">{{ t('sqlbuilder_tool_config_union_selected', { n: unionSources.length }) }}</span>
               </div>
 
               <!-- Source card grid -->
@@ -3161,7 +3162,7 @@ const finishBtnStyle = computed(() => {
                 <div v-if="!allUnionSourcesRich.length"
                   class="flex flex-col items-center justify-center gap-3 py-16 text-center text-[11px] text-muted-foreground/40">
                   <GitMerge class="size-8 text-yellow-500/20" />
-                  วาง Table / CTE node ลง canvas ก่อน
+                  {{ t('sqlbuilder_tool_config_union_place_nodes') }}
                 </div>
 
                 <div v-else class="grid grid-cols-2 gap-3">
@@ -3195,7 +3196,7 @@ const finishBtnStyle = computed(() => {
                           'text-[10px] font-semibold px-2 py-0.5 rounded-full shrink-0 transition-colors',
                           isUnionSourceConnected(src.id) ? 'bg-violet-500/20 text-violet-400' : 'bg-muted/20 text-muted-foreground/40',
                         ]">
-                          {{ isUnionSourceConnected(src.id) ? 'เชื่อมแล้ว' : 'ยังไม่เชื่อม' }}
+                          {{ isUnionSourceConnected(src.id) ? t('sqlbuilder_tool_config_union_connected') : t('sqlbuilder_tool_config_union_not_connected') }}
                         </span>
                       </div>
 
@@ -3280,8 +3281,8 @@ const finishBtnStyle = computed(() => {
                             :class="unionCompatibilityMap.get(src.id) === 'incompatible' ? 'text-rose-500/50' : 'text-muted-foreground/40'">
                             <template v-if="unionSources.length && !isUnionSourceConnected(src.id)">
                               {{ unionCompatibilityMap.get(src.id) === 'incompatible'
-                                  ? 'ไม่มี columns ร่วมกัน'
-                                  : `${unionOverlapCount(src.id, src.cols)} columns ตรงกัน` }}
+                                  ? t('sqlbuilder_tool_config_union_no_common')
+                                  : t('sqlbuilder_tool_config_union_common_count', { n: unionOverlapCount(src.id, src.cols) }) }}
                             </template>
                             <template v-else-if="src.tables.length">
                               {{ src.tables.slice(0, 2).join(', ') }}{{ src.tables.length > 2 ? ` +${src.tables.length - 2}` : '' }}
@@ -3304,7 +3305,7 @@ const finishBtnStyle = computed(() => {
                       <!-- Dropdown: columns -->
                       <div v-if="unionExpandedSources.has(src.id)"
                         class="border-t border-border/15 max-h-[180px] overflow-y-auto bg-muted/5">
-                        <div v-if="!src.cols.length" class="px-3 py-2 text-[9px] text-muted-foreground/40 italic">ไม่พบ columns</div>
+                        <div v-if="!src.cols.length" class="px-3 py-2 text-[9px] text-muted-foreground/40 italic">{{ t('sqlbuilder_tool_config_union_no_cols') }}</div>
                         <div v-for="col in src.cols" :key="col.name"
                           class="flex items-center gap-1.5 px-3 py-1.5 hover:bg-muted/20 transition-colors border-b border-border/10 last:border-0">
                           <span :class="['text-[7px] px-1 py-0.5 rounded font-bold font-mono shrink-0', getColTypeBadge(col.type).cls]">
@@ -3323,12 +3324,12 @@ const finishBtnStyle = computed(() => {
               </div>
             </div><!-- /STEP 1 -->
 
-            <!-- ════ STEP 2: เลือก Columns ══════════════════════════════ -->
+            <!-- ════ STEP 2: Pick Columns ══════════════════════════════ -->
             <div v-else-if="unionStep === 2" class="flex flex-col overflow-hidden min-w-0">
 
               <!-- Step 2 top bar -->
               <div class="flex items-center gap-3 px-4 py-3 border-b border-border/40 bg-muted/10 shrink-0">
-                <span class="text-[10px] font-semibold text-muted-foreground/60 shrink-0 flex-1">เลือก columns ที่ต้องการในผลลัพธ์</span>
+                <span class="text-[10px] font-semibold text-muted-foreground/60 shrink-0 flex-1">{{ t('sqlbuilder_tool_config_union_pick_cols_hint') }}</span>
                 <button @click="autoDetectUnionMapping()"
                   :disabled="!unionGroupedCols.length"
                   :class="[
@@ -3347,7 +3348,7 @@ const finishBtnStyle = computed(() => {
                       ? 'border-rose-500/40 text-rose-500 bg-rose-500/8 hover:bg-rose-500/15'
                       : 'border-border/20 text-muted-foreground/30 cursor-not-allowed',
                   ]">
-                  ล้าง
+                  {{ t('sqlbuilder_common_clear') }}
                 </button>
               </div>
 
@@ -3378,7 +3379,7 @@ const finishBtnStyle = computed(() => {
                         ? 'border-yellow-500 text-yellow-500 bg-yellow-500/5'
                         : 'border-transparent text-muted-foreground/50 hover:text-foreground/70 hover:bg-muted/20',
                     ]">
-                    🔀 ทั้งหมด
+                    {{ t('sqlbuilder_tool_config_union_all_tab') }}
                     <span class="text-[9px] font-mono opacity-60">({{ unionAllSourceCols.length }})</span>
                   </button>
                   <button v-for="grp in unionGroupedCols" :key="grp.sourceId"
@@ -3407,14 +3408,14 @@ const finishBtnStyle = computed(() => {
                   <button @click="autoSelectExactMatch()"
                     :disabled="!unionGroupedCols.length"
                     class="flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-lg border font-semibold transition-colors shrink-0 disabled:opacity-30 disabled:cursor-not-allowed border-emerald-500/30 bg-emerald-500/8 text-emerald-500 hover:bg-emerald-500/15">
-                    <Sparkles class="size-3" /> เลือก Column ที่มีครบทุก Source ({{ exactMatchCols.length }})
+                    <Sparkles class="size-3" /> {{ t('sqlbuilder_tool_config_union_pick_exact', { n: exactMatchCols.length }) }}
                   </button>
                   <button v-if="unionColMapping.length" @click="clearUnionMapping()"
                     class="text-[11px] px-2.5 py-1 rounded-lg border border-border/30 text-muted-foreground/60 hover:text-rose-400 hover:border-rose-400/30 transition-colors shrink-0">
-                    ล้าง
+                    {{ t('sqlbuilder_common_clear') }}
                   </button>
                   <div class="flex-1 min-w-[120px]">
-                    <input v-model="unionColSearch" placeholder="ค้นหา column…"
+                    <input v-model="unionColSearch" :placeholder="t('sqlbuilder_common_search_column')"
                       class="w-full text-[11px] px-2.5 py-1 rounded-lg border border-border/30 bg-background/60 text-foreground/80 placeholder:text-muted-foreground/40 outline-none focus:border-yellow-500/50 transition-colors" />
                   </div>
                 </div>
@@ -3425,7 +3426,7 @@ const finishBtnStyle = computed(() => {
                   <div v-if="!unionGroupedCols.length"
                     class="flex flex-col items-center gap-2 py-16 text-center shrink-0">
                     <GitMerge class="size-6 text-yellow-500/20" />
-                    <p class="text-[10px] text-muted-foreground/50 italic">เลือก Source ในขั้นตอนที่ 1 ก่อน</p>
+                    <p class="text-[10px] text-muted-foreground/50 italic">{{ t('sqlbuilder_tool_config_union_pick_source_first') }}</p>
                   </div>
 
                   <template v-else>
@@ -3480,16 +3481,16 @@ const finishBtnStyle = computed(() => {
                       <div class="flex items-center gap-1 shrink-0">
                         <div v-for="grp in unionGroupedCols" :key="grp.sourceId"
                           :class="['size-2 rounded-sm transition-colors', grp.cols.some(c => c.name === col.name) ? 'bg-emerald-500/70' : 'bg-border/30']"
-                          :title="`${grp.label}: ${grp.cols.some(c => c.name === col.name) ? 'มี ✓' : 'ไม่มี ✗'}`" />
+                          :title="`${grp.label}: ${grp.cols.some(c => c.name === col.name) ? t('sqlbuilder_tool_config_union_has') : t('sqlbuilder_tool_config_union_missing')}`" />
                       </div>
 
                       <span v-if="col.coveredCount < unionGroupedCols.length"
-                        class="text-[8px] text-amber-400/60 shrink-0" title="ไม่ครบทุก source">⚠</span>
+                        class="text-[8px] text-amber-400/60 shrink-0" :title="t('sqlbuilder_tool_config_union_partial')">⚠</span>
                     </div>
 
                     <div v-if="!unionColTabFiltered.length"
                       class="flex flex-col items-center gap-1 py-10 text-center shrink-0">
-                      <p class="text-[10px] text-muted-foreground/40 italic">ไม่พบ column ที่ตรงกัน</p>
+                      <p class="text-[10px] text-muted-foreground/40 italic">{{ t('sqlbuilder_tool_config_union_no_match') }}</p>
                     </div>
                   </template>
 
@@ -3499,28 +3500,28 @@ const finishBtnStyle = computed(() => {
                 <!-- Bottom status bar -->
                 <div class="flex items-center justify-between px-3 py-2 border-t border-border/20 bg-muted/5 shrink-0">
                   <span class="text-[10px] text-muted-foreground/60">
-                    เลือกแล้ว <span class="font-semibold text-yellow-500">{{ unionColMapping.length }}</span> columns
+                    {{ t('sqlbuilder_tool_config_union_picked_count') }} <span class="font-semibold text-yellow-500">{{ unionColMapping.length }}</span> columns
                   </span>
                   <span v-if="unionColMapping.some(r => !unionGroupedCols.every(g => r.picks[g.sourceId]))"
                     class="text-[10px] text-amber-400">
-                    ⚠ มี column ที่ไม่ครบทุก source — SQL จะใช้ NULL แทน
+                    {{ t('sqlbuilder_tool_config_union_picked_warn') }}
                   </span>
                 </div>
               </div>
             </div><!-- /STEP 2 -->
 
-            <!-- ════ STEP 3: ตั้งค่า ═══════════════════════════════════ -->
+            <!-- ════ STEP 3: Configure ═══════════════════════════════════ -->
             <div v-else-if="unionStep === 3" class="flex flex-col gap-5 px-6 py-5 overflow-y-auto">
 
               <!-- Header -->
               <div>
-                <p class="text-[15px] font-bold text-foreground mb-1">ตั้งค่าการรวมข้อมูล</p>
-                <p class="text-[12px] text-muted-foreground/60">เลือกวิธีการรวมข้อมูล และตั้งชื่อสำหรับใช้ใน SQL</p>
+                <p class="text-[15px] font-bold text-foreground mb-1">{{ t('sqlbuilder_tool_config_union_setup_title') }}</p>
+                <p class="text-[12px] text-muted-foreground/60">{{ t('sqlbuilder_tool_config_union_setup_desc') }}</p>
               </div>
 
               <!-- Union type cards -->
               <div class="flex flex-col gap-3">
-                <p class="text-[11px] font-semibold text-muted-foreground/60 uppercase tracking-wide">วิธีการรวมข้อมูล</p>
+                <p class="text-[11px] font-semibold text-muted-foreground/60 uppercase tracking-wide">{{ t('sqlbuilder_tool_config_union_setup_method') }}</p>
                 <div class="grid grid-cols-2 gap-3">
 
                   <!-- UNION ALL -->
@@ -3545,15 +3546,15 @@ const finishBtnStyle = computed(() => {
                             UNION ALL
                           </span>
                           <span v-if="(store.modalNode?.data?.unionType ?? 'UNION ALL') !== 'UNION'"
-                            class="text-[8px] px-1.5 py-0.5 rounded font-bold bg-yellow-500 text-black">เลือก</span>
+                            class="text-[8px] px-1.5 py-0.5 rounded font-bold bg-yellow-500 text-black">{{ t('sqlbuilder_tool_config_union_picked_badge') }}</span>
                         </div>
-                        <p class="text-[11px] text-muted-foreground/70 leading-relaxed">รวมข้อมูลทั้งหมด รวมถึงข้อมูลที่ซ้ำกัน</p>
-                        <p class="text-[10px] text-muted-foreground/40 mt-0.5">เร็วกว่า — แนะนำเมื่อไม่มีข้อมูลซ้ำ</p>
+                        <p class="text-[11px] text-muted-foreground/70 leading-relaxed">{{ t('sqlbuilder_tool_config_union_all_desc') }}</p>
+                        <p class="text-[10px] text-muted-foreground/40 mt-0.5">{{ t('sqlbuilder_tool_config_union_all_hint') }}</p>
                       </div>
                     </div>
                     <div :class="['px-3 py-1.5 rounded-lg text-[10px] font-mono',
                       (store.modalNode?.data?.unionType ?? 'UNION ALL') !== 'UNION' ? 'bg-yellow-500/10 text-yellow-400' : 'bg-muted/40 text-muted-foreground/40']">
-                      100 + 80 = 180 แถว
+                      {{ t('sqlbuilder_tool_config_union_all_rows') }}
                     </div>
                   </div>
 
@@ -3580,15 +3581,15 @@ const finishBtnStyle = computed(() => {
                             UNION
                           </span>
                           <span v-if="store.modalNode?.data?.unionType === 'UNION'"
-                            class="text-[8px] px-1.5 py-0.5 rounded font-bold bg-yellow-500 text-black">เลือก</span>
+                            class="text-[8px] px-1.5 py-0.5 rounded font-bold bg-yellow-500 text-black">{{ t('sqlbuilder_tool_config_union_picked_badge') }}</span>
                         </div>
-                        <p class="text-[11px] text-muted-foreground/70 leading-relaxed">รวมข้อมูลและตัดข้อมูลซ้ำออก</p>
-                        <p class="text-[10px] text-muted-foreground/40 mt-0.5">ช้ากว่า — ใช้เมื่อต้องการข้อมูลไม่ซ้ำ</p>
+                        <p class="text-[11px] text-muted-foreground/70 leading-relaxed">{{ t('sqlbuilder_tool_config_union_distinct_desc') }}</p>
+                        <p class="text-[10px] text-muted-foreground/40 mt-0.5">{{ t('sqlbuilder_tool_config_union_distinct_hint') }}</p>
                       </div>
                     </div>
                     <div :class="['px-3 py-1.5 rounded-lg text-[10px] font-mono',
                       store.modalNode?.data?.unionType === 'UNION' ? 'bg-yellow-500/10 text-yellow-400' : 'bg-muted/40 text-muted-foreground/40']">
-                      100 + 80 = ~150 แถว (ลดซ้ำ)
+                      {{ t('sqlbuilder_tool_config_union_distinct_rows') }}
                     </div>
                   </div>
 
@@ -3598,8 +3599,8 @@ const finishBtnStyle = computed(() => {
               <!-- CTE Name -->
               <div class="flex flex-col gap-2">
                 <div class="flex items-center justify-between">
-                  <p class="text-[11px] font-semibold text-muted-foreground/60 uppercase tracking-wide">ตั้งชื่อชุดข้อมูล (ไม่บังคับ)</p>
-                  <span class="text-[10px] text-muted-foreground/40">ใช้อ้างอิงใน SQL ภายหลัง</span>
+                  <p class="text-[11px] font-semibold text-muted-foreground/60 uppercase tracking-wide">{{ t('sqlbuilder_tool_config_union_name_title') }}</p>
+                  <span class="text-[10px] text-muted-foreground/40">{{ t('sqlbuilder_tool_config_union_name_hint') }}</span>
                 </div>
                 <div class="relative flex items-center">
                   <span class="font-mono text-[12px] text-muted-foreground/40 absolute left-3 pointer-events-none select-none">WITH </span>
@@ -3607,34 +3608,34 @@ const finishBtnStyle = computed(() => {
                     :value="store.modalNode?.data?.name ?? ''"
                     @input="tn.setModalData({ name: ($event.target as HTMLInputElement).value })"
                     class="w-full h-10 pl-14 pr-4 rounded-xl border border-border/50 bg-background text-[12px] font-mono text-yellow-400 focus:outline-none focus:border-yellow-500/60 focus:ring-1 focus:ring-yellow-500/20 transition-all"
-                    placeholder="เช่น all_sales"
+                    :placeholder="t('sqlbuilder_tool_config_union_name_ph')"
                     spellcheck="false"
                   />
                 </div>
                 <p v-if="store.modalNode?.data?.name" class="text-[10px] text-muted-foreground/40 font-mono">
-                  จะสร้าง: <span class="text-yellow-500/70">WITH {{ store.modalNode.data.name }} AS ( ... )</span>
+                  {{ t('sqlbuilder_tool_config_union_name_preview') }}<span class="text-yellow-500/70">WITH {{ store.modalNode.data.name }} AS ( ... )</span>
                 </p>
               </div>
 
             </div><!-- /STEP 3 -->
 
-            <!-- ════ STEP 4: เงื่อนไข ════════════════════════════════════ -->
+            <!-- ════ STEP 4: Conditions ════════════════════════════════════ -->
             <div v-else-if="unionStep === 4" class="flex flex-col overflow-hidden min-h-0">
 
               <!-- Header -->
               <div class="flex items-center gap-2 px-5 py-3 border-b border-border/40 bg-muted/10 shrink-0">
                 <Filter class="size-4 text-yellow-500 shrink-0" />
                 <div class="flex-1 min-w-0">
-                  <p class="text-[11px] font-bold text-yellow-500">เพิ่มเงื่อนไข (WHERE)</p>
-                  <p class="text-[9px] text-muted-foreground/50">กรองข้อมูลหลังจาก UNION — เช่น ภูมิภาค "North" หรือ ยอดขาย &gt; 1000</p>
+                  <p class="text-[11px] font-bold text-yellow-500">{{ t('sqlbuilder_tool_config_union_add_condition') }}</p>
+                  <p class="text-[9px] text-muted-foreground/50">{{ t('sqlbuilder_tool_config_union_condition_hint') }}</p>
                 </div>
                 <span v-if="(store.modalNode?.data?.conditions ?? []).filter((c: any) => c.column).length"
                   class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-yellow-500/20 text-yellow-500 shrink-0">
-                  {{ (store.modalNode?.data?.conditions ?? []).filter((c: any) => c.column).length }} เงื่อนไข
+                  {{ t('sqlbuilder_tool_config_union_condition_count', { n: (store.modalNode?.data?.conditions ?? []).filter((c: any) => c.column).length }) }}
                 </span>
                 <button @click="tn.addUnionCondition()"
                   class="flex items-center gap-1 h-7 px-2.5 rounded-lg border border-yellow-500/40 text-yellow-500 bg-yellow-500/8 hover:bg-yellow-500/15 text-[10px] font-bold transition-colors shrink-0">
-                  <Plus class="size-2.5" /> เพิ่ม
+                  <Plus class="size-2.5" /> {{ t('sqlbuilder_common_add') }}
                 </button>
               </div>
 
@@ -3652,11 +3653,11 @@ const finishBtnStyle = computed(() => {
                 <div v-if="!(store.modalNode?.data?.conditions ?? []).length"
                   class="flex flex-col items-center gap-3 py-16 text-center">
                   <Filter class="size-8 text-yellow-500/20" />
-                  <p class="text-[12px] text-foreground/50 font-medium">ไม่มีเงื่อนไข</p>
-                  <p class="text-[10px] text-muted-foreground/40">จะดึงข้อมูลทั้งหมดจาก UNION</p>
+                  <p class="text-[12px] text-foreground/50 font-medium">{{ t('sqlbuilder_tool_config_union_no_cond') }}</p>
+                  <p class="text-[10px] text-muted-foreground/40">{{ t('sqlbuilder_tool_config_union_cond_take_all') }}</p>
                   <button @click="tn.addUnionCondition()"
                     class="mt-2 flex items-center gap-1.5 text-[11px] px-4 py-2 rounded-lg border border-yellow-500/30 text-yellow-500 hover:bg-yellow-500/10 transition-colors">
-                    <Plus class="size-3.5" /> เพิ่มเงื่อนไขแรก
+                    <Plus class="size-3.5" /> {{ t('sqlbuilder_tool_config_union_add_first_cond') }}
                   </button>
                 </div>
 
@@ -3668,7 +3669,7 @@ const finishBtnStyle = computed(() => {
                   <div class="flex items-center gap-2">
                     <span v-if="Number(i) > 0"
                       class="text-[9px] font-bold px-1.5 py-0.5 rounded bg-blue-500/15 border border-blue-500/30 text-blue-400 shrink-0">AND</span>
-                    <span class="text-[9px] font-bold text-yellow-500/70 uppercase tracking-wide flex-1">เงื่อนไข {{ Number(i) + 1 }}</span>
+                    <span class="text-[9px] font-bold text-yellow-500/70 uppercase tracking-wide flex-1">{{ t('sqlbuilder_tool_config_union_cond_n', { n: Number(i) + 1 }) }}</span>
                     <button @click="tn.removeUnionCondition(Number(i))"
                       class="size-5 flex items-center justify-center rounded text-muted-foreground/40 hover:text-destructive hover:bg-destructive/10 transition-colors shrink-0">
                       <X class="size-3" />
@@ -3686,7 +3687,7 @@ const finishBtnStyle = computed(() => {
                       </span>
                       <span class="truncate flex-1">{{ cond.column }}</span>
                     </template>
-                    <span v-else class="text-muted-foreground/40 truncate flex-1">— เลือก Column —</span>
+                    <span v-else class="text-muted-foreground/40 truncate flex-1">{{ t('sqlbuilder_common_select_column') }}</span>
                     <ChevronDown class="size-3 text-muted-foreground/40 shrink-0" />
                   </button>
 
@@ -3702,8 +3703,8 @@ const finishBtnStyle = computed(() => {
                       :value="cond.value"
                       @input="tn.setUnionCondition(Number(i), { value: ($event.target as HTMLInputElement).value })"
                       class="flex-1 h-8 px-2.5 rounded-lg border border-border/40 bg-background text-[11px] font-mono focus:outline-none focus:border-yellow-500/40 min-w-0"
-                      placeholder="ค่า…" />
-                    <span v-else class="flex-1 text-[10px] text-muted-foreground/35 italic">ไม่ต้องระบุค่า</span>
+                      :placeholder="t('sqlbuilder_tool_config_union_value_ph')" />
+                    <span v-else class="flex-1 text-[10px] text-muted-foreground/35 italic">{{ t('sqlbuilder_tool_config_union_no_value_needed') }}</span>
                   </div>
 
                   <!-- SQL preview for this condition -->
@@ -3717,7 +3718,7 @@ const finishBtnStyle = computed(() => {
               </div><!-- /conditions list -->
             </div><!-- /STEP 4 -->
 
-            <!-- ════ STEP 5: ตรวจสอบ SQL ═══════════════════════════════ -->
+            <!-- ════ STEP 5: Review SQL ═══════════════════════════════ -->
             <div v-else-if="unionStep === 5" class="flex flex-col gap-4 px-6 py-5">
 
               <!-- Summary cards -->
@@ -3730,12 +3731,12 @@ const finishBtnStyle = computed(() => {
                 <div class="flex flex-col gap-1 px-4 py-3 rounded-xl border border-border/40 bg-muted/10">
                   <span class="text-[9px] text-muted-foreground/60 uppercase tracking-wide font-semibold">Output Columns</span>
                   <span class="text-[22px] font-bold text-yellow-500 leading-none">{{ unionColMapping.length || '*' }}</span>
-                  <span class="text-[9px] text-muted-foreground/50">{{ unionColMapping.length ? 'columns กำหนดแล้ว' : 'ดึงทุก column' }}</span>
+                  <span class="text-[9px] text-muted-foreground/50">{{ unionColMapping.length ? t('sqlbuilder_tool_config_union_cols_defined') : t('sqlbuilder_tool_config_union_take_all_cols') }}</span>
                 </div>
                 <div class="flex flex-col gap-1 px-4 py-3 rounded-xl border border-border/40 bg-muted/10">
                   <span class="text-[9px] text-muted-foreground/60 uppercase tracking-wide font-semibold">Union Type</span>
                   <span class="text-[18px] font-bold text-yellow-500 leading-none">{{ store.modalNode?.data?.unionType ?? 'UNION ALL' }}</span>
-                  <span class="text-[9px] text-muted-foreground/50">{{ (store.modalNode?.data?.unionType ?? 'UNION ALL') === 'UNION ALL' ? 'รวมข้อมูลทั้งหมด' : 'ตัดข้อมูลซ้ำออก' }}</span>
+                  <span class="text-[9px] text-muted-foreground/50">{{ (store.modalNode?.data?.unionType ?? 'UNION ALL') === 'UNION ALL' ? t('sqlbuilder_tool_config_union_all_data') : t('sqlbuilder_tool_config_union_remove_dup') }}</span>
                 </div>
               </div>
 
@@ -3743,7 +3744,7 @@ const finishBtnStyle = computed(() => {
               <div v-if="unionColMapping.some(r => hasUnionTypeMismatch(r))"
                 class="flex items-center gap-2 px-3 py-2 rounded-lg border border-amber-500/30 bg-amber-500/5 text-[10px] text-amber-400">
                 <span class="font-bold shrink-0">⚠</span>
-                มี type mismatch ในบางแถวของ Column Mapping — ตรวจสอบใน Step 2
+                {{ t('sqlbuilder_tool_config_union_review_warn') }}
               </div>
 
               <!-- Column coverage matrix -->
@@ -3801,7 +3802,7 @@ const finishBtnStyle = computed(() => {
                   <code class="text-[10px] font-mono text-foreground/70 leading-relaxed whitespace-pre">{{ unionSqlPreview }}</code>
                 </div>
                 <div v-else class="px-4 py-3 rounded-xl bg-muted/10 border border-border/20 text-[10px] text-muted-foreground/40 italic">
-                  เพิ่ม Sources ใน Step 1 เพื่อดู SQL
+                  {{ t('sqlbuilder_tool_config_union_add_sources_first') }}
                 </div>
               </div>
 
@@ -3831,7 +3832,7 @@ const finishBtnStyle = computed(() => {
                   </div>
                   <button @click="tn.setModalData({ customSql: '' })"
                     class="text-[10px] px-2.5 py-1 rounded-lg border border-indigo-500/30 text-indigo-500 hover:bg-indigo-500/10 transition-colors font-semibold shrink-0">
-                    ล้าง → ใช้ Builder
+                    {{ t('sqlbuilder_tool_config_subq_clear_to_builder') }}
                   </button>
                 </div>
                 <SqlAutoInput
@@ -3859,22 +3860,22 @@ const finishBtnStyle = computed(() => {
                       class="text-[9px] px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-400 font-mono border border-indigo-500/30 font-bold shrink-0">hybrid</span>
                     <span class="text-[10px] text-muted-foreground truncate">
                       <template v-if="store.modalNode.data._importVerbatim">
-                        Raw SQL ด้านบนเป็นแหล่งข้อมูลจริง · ฟีลด์ด้านล่างใช้ inspect / แก้ raw SQL ตามต้องการ
+                        {{ t('sqlbuilder_tool_config_subq_imported_hint') }}
                       </template>
-                      <template v-else>Inner query (FROM) · คอลัมน์ด้านล่างเป็น outer SELECT</template>
+                      <template v-else>{{ t('sqlbuilder_tool_config_subq_hybrid_hint') }}</template>
                     </span>
                   </div>
                   <div class="flex items-center gap-1.5 shrink-0">
                     <button v-if="store.modalNode.data._importVerbatim"
                       @click="tn.setModalData({ customSql: '', _importVerbatim: false })"
-                      title="ลบ raw SQL ออก ใช้ฟีลด์ด้านล่างเป็น builder (cols/CASE/MATH/WHERE) — JOIN ของ tables บน canvas ทำหน้าที่ FROM"
+                      :title="t('sqlbuilder_tool_config_subq_to_builder_tip')"
                       class="text-[9px] px-2 py-0.5 rounded border border-amber-500/30 text-amber-500/80 hover:bg-amber-500/10 transition-colors">
-                      เปลี่ยนเป็น Builder mode
+                      {{ t('sqlbuilder_tool_config_subq_to_builder_mode') }}
                     </button>
                     <button v-else
                       @click="tn.setModalData({ customSql: '', _importVerbatim: false })"
                       class="text-[9px] px-2 py-0.5 rounded border border-indigo-500/30 text-indigo-500/70 hover:bg-indigo-500/10 transition-colors">
-                      ล้าง raw SQL
+                      {{ t('sqlbuilder_tool_config_subq_clear_raw') }}
                     </button>
                   </div>
                 </div>
@@ -3896,15 +3897,15 @@ const finishBtnStyle = computed(() => {
                   <div class="flex items-center justify-between">
                     <div>
                       <p class="text-xs font-bold text-indigo-500">SELECT Columns</p>
-                      <p class="text-[10px] text-muted-foreground mt-0.5">เลือก columns ที่จะ SELECT ใน subquery</p>
+                      <p class="text-[10px] text-muted-foreground mt-0.5">{{ t('sqlbuilder_tool_config_subq_select_desc') }}</p>
                     </div>
                     <div class="flex items-center gap-2">
                       <span class="text-[10px] font-semibold text-indigo-500 bg-indigo-500/10 px-2 py-0.5 rounded-full">
                         {{ (store.modalNode.data.selectItems ?? []).length }}/{{ upstreamCols.length }}
                       </span>
-                      <button @click="selectAllSubqCols" class="text-[10px] text-indigo-500 hover:underline font-semibold">ทั้งหมด</button>
+                      <button @click="selectAllSubqCols" class="text-[10px] text-indigo-500 hover:underline font-semibold">{{ t('sqlbuilder_common_all') }}</button>
                       <span class="text-muted-foreground text-[10px]">/</span>
-                      <button @click="tn.setModalData({ selectItems: [] })" class="text-[10px] text-muted-foreground hover:underline">ล้าง</button>
+                      <button @click="tn.setModalData({ selectItems: [] })" class="text-[10px] text-muted-foreground hover:underline">{{ t('sqlbuilder_common_clear') }}</button>
                     </div>
                   </div>
 
@@ -3913,24 +3914,24 @@ const finishBtnStyle = computed(() => {
                     <button @click="viewMode = 'all'"
                       :class="['flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md transition-colors',
                         viewMode === 'all' ? 'bg-indigo-500 text-white' : 'text-muted-foreground hover:text-foreground']">
-                      All <span :class="['text-[9px] font-mono px-1 rounded', viewMode === 'all' ? 'bg-white/20' : 'bg-muted/60 text-muted-foreground/70']">{{ upstreamCols.length }}</span>
+                      {{ t('sqlbuilder_view_all') }} <span :class="['text-[9px] font-mono px-1 rounded', viewMode === 'all' ? 'bg-white/20' : 'bg-muted/60 text-muted-foreground/70']">{{ upstreamCols.length }}</span>
                     </button>
                     <button @click="viewMode = 'selected'"
                       :class="['flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md transition-colors',
                         viewMode === 'selected' ? 'bg-indigo-500 text-white' : 'text-muted-foreground hover:text-foreground']">
-                      Selected <span :class="['text-[9px] font-mono px-1 rounded', viewMode === 'selected' ? 'bg-white/20' : 'bg-indigo-500/15 text-indigo-500']">{{ (store.modalNode.data.selectItems ?? []).length }}</span>
+                      {{ t('sqlbuilder_view_selected') }} <span :class="['text-[9px] font-mono px-1 rounded', viewMode === 'selected' ? 'bg-white/20' : 'bg-indigo-500/15 text-indigo-500']">{{ (store.modalNode.data.selectItems ?? []).length }}</span>
                     </button>
                   </div>
 
                   <div class="relative">
                     <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground/50" />
-                    <input v-model="subqColSearch" placeholder="ค้นหา column..."
+                    <input v-model="subqColSearch" :placeholder="t('sqlbuilder_common_search_column')"
                       class="w-full text-xs border rounded-lg pl-7 pr-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-indigo-400/50 font-mono" />
                   </div>
 
                   <div v-if="!upstreamCols.length"
                     class="flex items-center gap-2 px-3 py-3 rounded-lg bg-muted/30 text-[10px] text-muted-foreground italic">
-                    ยังไม่มี columns — เชื่อมต่อ table node เข้ากับ subquery node ก่อน
+                    {{ t('sqlbuilder_tool_config_no_upstream_subq') }}
                   </div>
 
                   <div v-else class="border rounded-lg overflow-hidden max-h-[380px] overflow-y-auto">
@@ -3964,9 +3965,9 @@ const finishBtnStyle = computed(() => {
                     </template>
                     <div v-if="!filteredSubqGroupedCols.length"
                       class="px-3 py-3 text-[10px] text-muted-foreground/60 italic text-center">
-                      <template v-if="viewMode === 'selected' && !(store.modalNode.data.selectItems ?? []).length">ยังไม่ได้เลือก column ใน SELECT</template>
-                      <template v-else-if="subqColSearch">ไม่พบ column ที่ตรงกับ "{{ subqColSearch }}"</template>
-                      <template v-else>กำลังโหลด columns...</template>
+                      <template v-if="viewMode === 'selected' && !(store.modalNode.data.selectItems ?? []).length">{{ t('sqlbuilder_view_selected_empty_subquery') }}</template>
+                      <template v-else-if="subqColSearch">{{ t('sqlbuilder_tool_config_loading_match', { q: subqColSearch }) }}</template>
+                      <template v-else>{{ t('sqlbuilder_tool_config_loading_cols') }}</template>
                     </div>
                   </div>
                 </div><!-- /SELECT Columns -->
@@ -3974,8 +3975,8 @@ const finishBtnStyle = computed(() => {
                 <!-- Selected columns + alias -->
                 <div v-if="(store.modalNode.data.selectItems ?? []).length"
                   class="flex flex-col gap-2 border rounded-xl p-3 bg-indigo-500/3">
-                  <p class="text-[11px] font-semibold text-indigo-500">Alias (ตั้งชื่อ column)
-                    <span class="text-[10px] font-normal text-muted-foreground ml-1">ว่างเปล่า = ใช้ชื่อเดิม</span>
+                  <p class="text-[11px] font-semibold text-indigo-500">{{ t('sqlbuilder_tool_config_subq_alias_title') }}
+                    <span class="text-[10px] font-normal text-muted-foreground ml-1">{{ t('sqlbuilder_tool_config_subq_alias_hint') }}</span>
                   </p>
                   <div class="flex flex-col gap-1.5 max-h-[160px] overflow-y-auto">
                     <div v-for="(item, i) in store.modalNode.data.selectItems" :key="'si-' + i"
@@ -4000,11 +4001,11 @@ const finishBtnStyle = computed(() => {
                   <div class="flex items-center justify-between">
                     <div>
                       <p class="text-xs font-bold text-indigo-500">MATH / Expression</p>
-                      <p class="text-[10px] text-muted-foreground mt-0.5">คำสั่งคณิตศาสตร์ / ฟังก์ชัน SQL พร้อม alias</p>
+                      <p class="text-[10px] text-muted-foreground mt-0.5">{{ t('sqlbuilder_tool_config_subq_math_desc') }}</p>
                     </div>
                     <button @click="tn.addMathItem()"
                       class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-indigo-500/30 text-indigo-500 hover:bg-indigo-500/10 transition-colors">
-                      <Plus class="size-2.5" /> เพิ่ม
+                      <Plus class="size-2.5" /> {{ t('sqlbuilder_common_add') }}
                     </button>
                   </div>
 
@@ -4018,7 +4019,7 @@ const finishBtnStyle = computed(() => {
                   </div>
 
                   <p v-if="!(store.modalNode.data.mathItems ?? []).length"
-                    class="text-[10px] text-muted-foreground/50 italic px-1">คลิก preset ด้านบนหรือ "เพิ่ม" เพื่อเพิ่ม expression</p>
+                    class="text-[10px] text-muted-foreground/50 italic px-1">{{ t('sqlbuilder_tool_config_subq_math_empty') }}</p>
 
                   <div class="flex flex-col gap-2 max-h-[260px] overflow-y-auto">
                     <div v-for="(m, mi) in (store.modalNode.data.mathItems ?? [])" :key="'mi-' + mi"
@@ -4058,16 +4059,16 @@ const finishBtnStyle = computed(() => {
                   <div class="flex items-center justify-between">
                     <div>
                       <p class="text-xs font-bold text-indigo-500">CASE WHEN</p>
-                      <p class="text-[10px] text-muted-foreground mt-0.5">เพิ่ม conditional expressions ใน SELECT</p>
+                      <p class="text-[10px] text-muted-foreground mt-0.5">{{ t('sqlbuilder_tool_config_subq_case_desc') }}</p>
                     </div>
                     <button @click="tn.addSubqCaseWhen()"
                       class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-indigo-500/30 text-indigo-500 hover:bg-indigo-500/10 transition-colors">
-                      <Plus class="size-2.5" /> เพิ่ม
+                      <Plus class="size-2.5" /> {{ t('sqlbuilder_common_add') }}
                     </button>
                   </div>
 
                   <p v-if="!(store.modalNode.data.caseWhens ?? []).length"
-                    class="text-[10px] text-muted-foreground/50 italic px-1">ยังไม่มี CASE WHEN</p>
+                    class="text-[10px] text-muted-foreground/50 italic px-1">{{ t('sqlbuilder_tool_config_subq_case_empty') }}</p>
 
                   <div class="flex flex-col gap-3 max-h-[320px] overflow-y-auto">
                     <div v-for="(cw, ci) in (store.modalNode.data.caseWhens ?? [])" :key="'cw-' + ci"
@@ -4123,7 +4124,7 @@ const finishBtnStyle = computed(() => {
 
                       <button @click="tn.addSubqCaseWhenBranch(Number(ci))"
                         class="text-[9px] w-full py-1 rounded border border-dashed border-indigo-500/30 text-indigo-500/70 hover:bg-indigo-500/8 transition-colors flex items-center justify-center gap-1">
-                        <Plus class="size-3" /> เพิ่ม WHEN branch
+                        <Plus class="size-3" /> {{ t('sqlbuilder_tool_config_subq_add_when') }}
                       </button>
                     </div>
                   </div>
@@ -4141,7 +4142,7 @@ const finishBtnStyle = computed(() => {
                     </label>
                     <button @click="tn.addWhereCondition()"
                       class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-rose-500/30 text-rose-500 hover:bg-rose-500/10 transition-colors">
-                      <Plus class="size-2.5" /> เพิ่ม
+                      <Plus class="size-2.5" /> {{ t('sqlbuilder_common_add') }}
                     </button>
                   </div>
 
@@ -4174,7 +4175,7 @@ const finishBtnStyle = computed(() => {
                     </div>
                   </div>
                   <p v-if="!(store.modalNode.data.conditions ?? []).length"
-                    class="text-[10px] text-muted-foreground/50 italic px-1">ไม่มี condition = ดึงข้อมูลทั้งหมด</p>
+                    class="text-[10px] text-muted-foreground/50 italic px-1">{{ t('sqlbuilder_tool_config_no_condition_all') }}</p>
                 </div><!-- /WHERE -->
 
                 <!-- SQL Preview -->
@@ -4184,7 +4185,7 @@ const finishBtnStyle = computed(() => {
                     <button @click="tn.setModalData({ customSql: subqSqlPreview })"
                       v-if="subqSqlPreview && subqSqlPreview !== 'SELECT *\nFROM   <upstream>'"
                       class="text-[9px] px-2 py-0.5 rounded border border-indigo-500/30 text-indigo-500/70 hover:bg-indigo-500/10 transition-colors">
-                      → บันทึกเป็น verbatim
+                      {{ t('sqlbuilder_tool_config_subq_save_verbatim') }}
                     </button>
                   </div>
                   <div class="px-3 py-2 rounded-lg bg-indigo-500/5 border border-indigo-400/20 max-h-[160px] overflow-y-auto overflow-x-auto">
@@ -4208,11 +4209,11 @@ const finishBtnStyle = computed(() => {
               <div class="flex items-center justify-between">
                 <div>
                   <p class="text-xs font-bold text-rose-500">WHERE Conditions</p>
-                  <p class="text-[10px] text-muted-foreground mt-0.5">กรองข้อมูลใน WHERE clause</p>
+                  <p class="text-[10px] text-muted-foreground mt-0.5">{{ t('sqlbuilder_tool_config_where_desc') }}</p>
                 </div>
                 <button @click="tn.addWhereCondition()"
                   class="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-rose-500/30 text-rose-400 hover:bg-rose-500/10 transition-colors">
-                  <Plus class="size-2.5" /> เพิ่ม
+                  <Plus class="size-2.5" /> {{ t('sqlbuilder_common_add') }}
                 </button>
               </div>
 
@@ -4246,7 +4247,7 @@ const finishBtnStyle = computed(() => {
                         <p v-if="upstreamCols.find(c => c.name === cond.column)?.remark" class="font-mono text-[9px] text-muted-foreground/60 truncate">{{ cond.column }}</p>
                       </div>
                     </template>
-                    <span v-else class="text-muted-foreground text-[11px] flex-1">— เลือก Column —</span>
+                    <span v-else class="text-muted-foreground text-[11px] flex-1">{{ t('sqlbuilder_common_select_column') }}</span>
                     <ChevronDown :class="['size-3 shrink-0 text-muted-foreground transition-transform', openWhereColIdx === Number(i) ? 'rotate-180' : '']" />
                   </button>
 
@@ -4261,7 +4262,7 @@ const finishBtnStyle = computed(() => {
 
                   <!-- Value input -->
                   <div v-if="cond.operator && !['IS NULL', 'IS NOT NULL'].includes(cond.operator)" class="flex items-center gap-2">
-                    <label class="text-[10px] font-semibold text-muted-foreground w-8 shrink-0">ค่า</label>
+                    <label class="text-[10px] font-semibold text-muted-foreground w-8 shrink-0">{{ t('sqlbuilder_common_value') }}</label>
                     <div v-if="isDateCol(cond.column)" class="flex-1 relative flex items-center">
                       <input :ref="(el) => setWhereDateRef(Number(i), el)" type="date" :value="cond.value"
                         @input="tn.setWhereCondition(Number(i), { value: ($event.target as HTMLInputElement).value })"
@@ -4273,7 +4274,7 @@ const finishBtnStyle = computed(() => {
                       </button>
                     </div>
                     <input v-else :value="cond.value" @input="tn.setWhereCondition(Number(i), { value: ($event.target as HTMLInputElement).value })"
-                      :placeholder="cond.operator === 'LIKE' ? 'เช่น %keyword%' : cond.operator === 'IN' ? 'เช่น 1,2,3' : 'ค่าที่ต้องการ'"
+                      :placeholder="cond.operator === 'LIKE' ? t('sqlbuilder_tool_config_ph_like') : cond.operator === 'IN' ? t('sqlbuilder_tool_config_ph_in') : t('sqlbuilder_tool_config_ph_value')"
                       class="flex-1 text-xs border rounded-lg px-2.5 py-1.5 bg-background focus:outline-none focus:ring-2 focus:ring-rose-400/50 font-mono"
                       :class="cond.value ? 'border-rose-400/40' : ''" />
                   </div>
@@ -4286,7 +4287,7 @@ const finishBtnStyle = computed(() => {
                   </div>
                 </div>
               </div>
-              <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">ไม่มี condition = ดึงข้อมูลทั้งหมด</p>
+              <p v-else class="text-[10px] text-muted-foreground/60 italic px-1">{{ t('sqlbuilder_tool_config_no_condition_all') }}</p>
             </div><!-- /LEFT -->
 
             <!-- ── RIGHT: SQL Preview ─────────────────────────────────── -->
@@ -4371,23 +4372,23 @@ const finishBtnStyle = computed(() => {
                 <div class="flex gap-2">
                   <button @click="close"
                     class="text-xs px-4 py-2 border rounded-lg hover:bg-accent transition-colors">
-                    ยกเลิก
+                    {{ t('sqlbuilder_common_cancel') }}
                   </button>
                   <button v-if="unionStep > 1" @click="unionStep--"
                     class="text-xs px-4 py-2 border border-border/60 rounded-lg hover:bg-muted/30 transition-colors flex items-center gap-1.5">
-                    ← ย้อนกลับ
+                    {{ t('sqlbuilder_tool_config_union_back') }}
                   </button>
                   <!-- Skip buttons for optional steps -->
                   <button v-if="unionStep === 2 || unionStep === 3"
                     @click="unionStep++"
                     class="text-xs px-4 py-2 border border-border/40 rounded-lg text-muted-foreground/60 hover:text-foreground/70 hover:bg-muted/20 transition-colors">
-                    ข้ามขั้นตอนนี้
+                    {{ t('sqlbuilder_tool_config_union_skip_step') }}
                   </button>
                   <!-- Step 4 skip: no conditions -->
                   <button v-if="unionStep === 4"
                     @click="unionStep++"
                     class="text-xs px-4 py-2 border border-border/40 rounded-lg text-muted-foreground/60 hover:text-foreground/70 hover:bg-muted/20 transition-colors">
-                    ไม่มีเงื่อนไข →
+                    {{ t('sqlbuilder_tool_config_union_no_cond_arrow') }}
                   </button>
                   <!-- Next / final -->
                   <button v-if="unionStep < UNION_STEPS.length"
@@ -4399,12 +4400,12 @@ const finishBtnStyle = computed(() => {
                         ? 'bg-yellow-500/30 text-white/50 cursor-not-allowed'
                         : 'bg-yellow-500 text-white hover:bg-yellow-400',
                     ]">
-                    {{ unionStep === 4 ? 'ตรวจสอบ SQL →' : 'ถัดไป →' }}
+                    {{ unionStep === 4 ? t('sqlbuilder_tool_config_union_review_sql') : t('sqlbuilder_common_next') }}
                   </button>
                   <button v-else @click="finishAndSave()"
                     class="text-xs px-5 py-2 text-black rounded-lg font-semibold hover:opacity-90 transition-opacity flex items-center gap-1.5 bg-yellow-500">
                     <Sparkles class="size-3.5" />
-                    ยืนยันสร้าง UNION
+                    {{ t('sqlbuilder_tool_config_union_confirm') }}
                   </button>
                 </div>
               </template>
@@ -4419,7 +4420,7 @@ const finishBtnStyle = computed(() => {
                 <div class="flex gap-2">
                   <button @click="close"
                     class="text-xs px-4 py-2 border rounded-lg hover:bg-accent transition-colors">
-                    ยกเลิก
+                    {{ t('sqlbuilder_common_cancel') }}
                   </button>
                   <button @click="nodeType === 'group' ? finish() : finishAndSave()"
                     class="text-xs px-5 py-2 text-white rounded-lg font-semibold hover:opacity-90 transition-opacity flex items-center gap-1.5"

@@ -5,6 +5,8 @@ import { useSqlBuilderStore } from '~/stores/sql-builder'
 import { JOIN_EDGE_COLORS } from '~/types/sql-builder'
 import type { JoinType } from '~/types/sql-builder'
 
+const { t } = useI18n()
+
 const props = defineProps<{
   id: string
   source: string
@@ -93,7 +95,7 @@ function openEdit() {
         @click.stop="openEdit"
         class="text-[9px] px-2 py-0.5 rounded-full font-bold font-mono leading-none shadow transition-all hover:scale-105 active:scale-95"
         :style="{ backgroundColor: color, color: '#fff' }"
-        :title="`${joinType} — คลิกเพื่อแก้ไข`"
+        :title="t('sqlbuilder_node_edge_edit_join', { join: joinType })"
       >
         {{ joinType.replace(' JOIN', '') }}
       </button>
@@ -116,7 +118,7 @@ function openEdit() {
         v-if="selected"
         @click.stop="deleteEdge"
         class="size-5 flex items-center justify-center rounded-full bg-destructive text-white shadow-lg transition-all hover:scale-110 active:scale-95 animate-in fade-in zoom-in-75 duration-100 mt-0.5"
-        title="ลบเส้นเชื่อม"
+        :title="t('sqlbuilder_node_edge_delete')"
       >
         <Trash2 class="size-2.5" />
       </button>

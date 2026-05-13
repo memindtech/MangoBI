@@ -26,6 +26,7 @@ import { useDragDrop } from '~/composables/sql-builder/useDragDrop'
 import { useMangoBIApi } from '~/composables/useMangoBIApi'
 import type { BIListItem } from '~/composables/useMangoBIApi'
 
+const { t } = useI18n()
 const store = useSqlBuilderStore()
 const { sendToDataModel, resetCanvas } = useFlowEvents()
 const dragDrop = useDragDrop()
@@ -81,7 +82,7 @@ function importSQLToCanvas() {
   importError.value   = ''
   importSuccess.value = false
   const sql = importSQL.value.trim()
-  if (!sql) { importError.value = 'กรุณาวาง SQL ก่อน'; return }
+  if (!sql) { importError.value = t('sqlbuilder_header_import_error_paste'); return }
 
   // Detect {key} template variables → show substitution step
   const varRe = /\{([\w.]+)\}/g
@@ -156,7 +157,7 @@ function runImport(sql: string) {
       if (!cteNames.has(low)) tableByName.set(low, tbl)
     }
 
-    if (tableByName.size === 0) { importError.value = 'ไม่พบตาราง'; return }
+    if (tableByName.size === 0) { importError.value = t('sqlbuilder_header_import_error_notable'); return }
     const tableNames = [...tableByName.values()]
 
     // ── 2b. Parse SELECT columns per real table ────────────────────────────
@@ -1270,9 +1271,9 @@ function nodeStats(nodes: any[]) {
           >
             <!-- Save section -->
             <div class="p-3 border-b">
-              <p class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-1.5">บันทึก Template</p>
+              <p class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-1.5">{{ t('sqlbuilder_header_save_template') }}</p>
               <div class="flex gap-1.5">
-                <input v-model="templateName" placeholder="ชื่อ template…"
+                <input v-model="templateName" :placeholder="t('sqlbuilder_header_template_name')"
                   class="flex-1 text-xs border rounded-lg px-2 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-sky-400" />
                 <button @click="saveTemplate"
                   class="flex items-center gap-1 text-xs px-2.5 py-1 bg-sky-500 hover:bg-sky-600 text-white rounded-lg font-semibold transition-colors">
@@ -1284,7 +1285,7 @@ function nodeStats(nodes: any[]) {
             <!-- Saved templates list -->
             <div class="max-h-48 overflow-y-auto">
               <div v-if="!templates.length" class="px-3 py-4 text-xs text-muted-foreground/60 text-center italic">
-                ยังไม่มี template ที่บันทึก
+                {{ t('sqlbuilder_header_no_templates') }}
               </div>
               <div
                 v-for="tpl in templates" :key="tpl.id"
@@ -1320,7 +1321,7 @@ function nodeStats(nodes: any[]) {
       <!-- Load from cloud -->
       <button @click="openLoadModal"
         class="flex items-center gap-1 text-xs px-2 py-1.5 border rounded-lg hover:bg-accent transition-colors"
-        title="โหลด template จาก cloud">
+        :title="t('sqlbuilder_header_load_title')">
         <CloudDownload class="size-3.5" />
         <span class="hidden sm:inline">Load</span>
       </button>
@@ -1369,7 +1370,7 @@ function nodeStats(nodes: any[]) {
           <!-- Header -->
           <div class="flex items-center gap-2 mb-4">
             <CloudDownload class="size-5 text-sky-500" />
-            <h2 class="font-bold text-sm">เพิ่ม Template ลง Canvas</h2>
+            <h2 class="font-bold text-sm">{{ t('sqlbuilder_header_load_modal_title') }}</h2>
             <button @click="showLoadModal = false" class="ml-auto text-muted-foreground hover:text-foreground">
               <XIcon class="size-4" />
             </button>
@@ -1382,14 +1383,14 @@ function nodeStats(nodes: any[]) {
               :class="['flex-1 text-xs py-1 rounded-md font-medium transition-colors',
                 loadTab === 'cloud' ? 'bg-background shadow text-sky-600' : 'text-muted-foreground hover:text-foreground']"
             >
-              ของฉัน <span class="text-[10px] opacity-60">({{ cloudItems.length }})</span>
+              {{ t('sqlbuilder_header_tab_mine') }} <span class="text-[10px] opacity-60">({{ cloudItems.length }})</span>
             </button>
             <button
               @click="loadTab = 'public'"
               :class="['flex-1 text-xs py-1 rounded-md font-medium transition-colors',
                 loadTab === 'public' ? 'bg-background shadow text-sky-600' : 'text-muted-foreground hover:text-foreground']"
             >
-              <Globe class="size-3 inline-block mr-0.5 -mt-px" />สาธารณะ
+              <Globe class="size-3 inline-block mr-0.5 -mt-px" />{{ t('sqlbuilder_header_tab_public') }}
             </button>
             <button
               @click="loadTab = 'local'"
@@ -1410,10 +1411,10 @@ function nodeStats(nodes: any[]) {
           <!-- ── Cloud tab ── -->
           <div v-if="loadTab === 'cloud'">
             <div v-if="loadingCloud" class="flex items-center justify-center gap-2 py-8 text-muted-foreground text-xs">
-              <Loader2 class="size-4 animate-spin" /> กำลังโหลด…
+              <Loader2 class="size-4 animate-spin" /> {{ t('sqlbuilder_common_loading') }}
             </div>
             <div v-else-if="!cloudItems.length" class="text-center py-8 text-xs text-muted-foreground/60 italic">
-              ยังไม่มีข้อมูล Cloud ที่บันทึกไว้
+              {{ t('sqlbuilder_header_no_cloud') }}
             </div>
             <div v-else class="flex flex-col gap-1 max-h-80 overflow-y-auto -mx-1 px-1">
               <div
@@ -1431,7 +1432,7 @@ function nodeStats(nodes: any[]) {
                   @click.stop="loadCloudToCanvas(item)"
                   :disabled="loadingId === item.id || appendingId === item.id"
                   class="flex items-center gap-1 text-[10px] px-2.5 py-1 border rounded-lg font-semibold transition-colors disabled:opacity-50 shrink-0 hover:bg-accent"
-                  title="โหลดแทน Canvas ปัจจุบัน"
+                  :title="t('sqlbuilder_header_load_replace')"
                 >
                   <Loader2 v-if="loadingId === item.id" class="size-3 animate-spin" />
                   <FolderOpen v-else class="size-3" />
@@ -1442,7 +1443,7 @@ function nodeStats(nodes: any[]) {
                   @click.stop="addCloudToCanvas(item)"
                   :disabled="appendingId === item.id || loadingId === item.id"
                   class="flex items-center gap-1 text-[10px] px-2.5 py-1 bg-sky-500 hover:bg-sky-600 text-white rounded-lg font-semibold transition-colors disabled:opacity-50 shrink-0"
-                  title="เพิ่มต่อจาก Canvas ปัจจุบัน"
+                  :title="t('sqlbuilder_header_load_append')"
                 >
                   <Loader2 v-if="appendingId === item.id" class="size-3 animate-spin" />
                   <PlusCircle v-else class="size-3" />
@@ -1464,10 +1465,10 @@ function nodeStats(nodes: any[]) {
           <!-- ── Public tab ── -->
           <div v-else-if="loadTab === 'public'">
             <div v-if="loadingPublic" class="flex items-center justify-center gap-2 py-8 text-muted-foreground text-xs">
-              <Loader2 class="size-4 animate-spin" /> กำลังโหลด…
+              <Loader2 class="size-4 animate-spin" /> {{ t('sqlbuilder_common_loading') }}
             </div>
             <div v-else-if="!publicItems.length" class="text-center py-8 text-xs text-muted-foreground/60 italic">
-              ยังไม่มี Query สาธารณะ
+              {{ t('sqlbuilder_header_no_public') }}
             </div>
             <div v-else class="flex flex-col gap-1 max-h-80 overflow-y-auto -mx-1 px-1">
               <div
@@ -1487,7 +1488,7 @@ function nodeStats(nodes: any[]) {
                   @click.stop="loadCloudToCanvas(item)"
                   :disabled="loadingId === item.id || appendingId === item.id"
                   class="flex items-center gap-1 text-[10px] px-2.5 py-1 border rounded-lg font-semibold transition-colors disabled:opacity-50 shrink-0 hover:bg-accent"
-                  title="โหลดแทน Canvas ปัจจุบัน"
+                  :title="t('sqlbuilder_header_load_replace')"
                 >
                   <Loader2 v-if="loadingId === item.id" class="size-3 animate-spin" />
                   <FolderOpen v-else class="size-3" />
@@ -1498,7 +1499,7 @@ function nodeStats(nodes: any[]) {
                   @click.stop="addCloudToCanvas(item)"
                   :disabled="appendingId === item.id || loadingId === item.id"
                   class="flex items-center gap-1 text-[10px] px-2.5 py-1 bg-sky-500 hover:bg-sky-600 text-white rounded-lg font-semibold transition-colors disabled:opacity-50 shrink-0"
-                  title="เพิ่มต่อจาก Canvas ปัจจุบัน"
+                  :title="t('sqlbuilder_header_load_append')"
                 >
                   <Loader2 v-if="appendingId === item.id" class="size-3 animate-spin" />
                   <PlusCircle v-else class="size-3" />
@@ -1511,7 +1512,7 @@ function nodeStats(nodes: any[]) {
           <!-- ── Local tab ── -->
           <div v-else-if="loadTab === 'local'">
             <div v-if="!localTemplates.length" class="text-center py-8 text-xs text-muted-foreground/60 italic">
-              ยังไม่มี Template ที่บันทึกไว้ในเครื่อง
+              {{ t('sqlbuilder_header_no_local') }}
             </div>
             <div v-else class="flex flex-col gap-1 max-h-80 overflow-y-auto -mx-1 px-1">
               <div
@@ -1530,7 +1531,7 @@ function nodeStats(nodes: any[]) {
                 <button
                   @click.stop="loadLocalToCanvas(tpl.id)"
                   class="flex items-center gap-1 text-[10px] px-2.5 py-1 border rounded-lg font-semibold transition-colors shrink-0 hover:bg-accent"
-                  title="โหลดแทน Canvas ปัจจุบัน"
+                  :title="t('sqlbuilder_header_load_replace')"
                 >
                   <FolderOpen class="size-3" />
                   <span class="hidden sm:inline">Load</span>
@@ -1539,7 +1540,7 @@ function nodeStats(nodes: any[]) {
                 <button
                   @click.stop="addLocalToCanvas(tpl.id)"
                   class="flex items-center gap-1 text-[10px] px-2.5 py-1 bg-sky-500 hover:bg-sky-600 text-white rounded-lg font-semibold transition-colors shrink-0"
-                  title="เพิ่มต่อจาก Canvas ปัจจุบัน"
+                  :title="t('sqlbuilder_header_load_append')"
                 >
                   <PlusCircle class="size-3" />
                   <span>Add</span>
@@ -1563,14 +1564,14 @@ function nodeStats(nodes: any[]) {
               <div class="flex items-center gap-2">
                 <FileCode2 class="size-4 text-emerald-500 shrink-0" />
                 <div>
-                  <p class="text-xs font-semibold">Import จาก SQL Query</p>
-                  <p class="text-[10px] text-muted-foreground">วาง Generated SQL เพื่อสร้าง Table nodes อัตโนมัติ</p>
+                  <p class="text-xs font-semibold">{{ t('sqlbuilder_header_import_title') }}</p>
+                  <p class="text-[10px] text-muted-foreground">{{ t('sqlbuilder_header_import_desc') }}</p>
                 </div>
               </div>
 
               <textarea
                 v-model="importSQL"
-                placeholder="วาง SQL ที่นี่…&#10;เช่น:&#10;SELECT ...&#10;FROM table_a&#10;  LEFT JOIN table_b ON table_b.id = table_a.b_id"
+                :placeholder="t('sqlbuilder_header_import_placeholder')"
                 class="w-full h-48 px-3 py-2.5 rounded-xl border bg-muted/30 text-[11px] font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500/40 resize-none"
                 spellcheck="false"
               />
@@ -1578,19 +1579,23 @@ function nodeStats(nodes: any[]) {
               <p v-if="importError" class="text-xs text-destructive">{{ importError }}</p>
 
               <div v-if="importSuccess" class="flex items-center gap-2 text-emerald-500 text-xs font-semibold">
-                <CheckCheck class="size-4" /> สร้าง nodes สำเร็จ!
+                <CheckCheck class="size-4" /> {{ t('sqlbuilder_header_import_success') }}
               </div>
 
               <div class="flex items-center gap-2 p-3 rounded-xl bg-muted/40 border text-[10px] text-muted-foreground leading-relaxed">
                 <span class="shrink-0">💡</span>
-                <span>ระบบจะอ่าน <code class="font-mono bg-muted px-1 rounded">FROM</code> และ <code class="font-mono bg-muted px-1 rounded">JOIN</code> เพื่อสร้าง Table node พร้อม mapping อัตโนมัติ ตัวแปร <code class="font-mono bg-muted px-1 rounded">{key}</code> จะถูกถามค่าก่อน Import</span>
+                <i18n-t keypath="sqlbuilder_header_import_hint" tag="span">
+                  <template #from><code class="font-mono bg-muted px-1 rounded">FROM</code></template>
+                  <template #join><code class="font-mono bg-muted px-1 rounded">JOIN</code></template>
+                  <template #key><code class="font-mono bg-muted px-1 rounded">{key}</code></template>
+                </i18n-t>
               </div>
 
               <button
                 @click="importSQLToCanvas"
                 class="flex items-center justify-center gap-2 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold transition-colors"
               >
-                <FileCode2 class="size-4" /> สร้าง Nodes จาก SQL
+                <FileCode2 class="size-4" /> {{ t('sqlbuilder_header_import_build_btn') }}
               </button>
             </template>
 
@@ -1601,14 +1606,14 @@ function nodeStats(nodes: any[]) {
                 <button
                   @click="importStep = 'input'"
                   class="size-6 flex items-center justify-center rounded-lg hover:bg-accent text-muted-foreground transition-colors shrink-0"
-                  title="ย้อนกลับ"
+                  :title="t('sqlbuilder_header_vars_back')"
                 >
                   <ChevronLeft class="size-4" />
                 </button>
                 <Braces class="size-4 text-amber-500 shrink-0" />
                 <div>
-                  <p class="text-xs font-semibold">ตัวแปรใน Query ({{ templateVars.length }} รายการ)</p>
-                  <p class="text-[10px] text-muted-foreground">ระบุค่าของตัวแปรก่อนนำเข้า</p>
+                  <p class="text-xs font-semibold">{{ t('sqlbuilder_header_vars_title', { n: templateVars.length }) }}</p>
+                  <p class="text-[10px] text-muted-foreground">{{ t('sqlbuilder_header_vars_desc') }}</p>
                 </div>
               </div>
 
@@ -1625,7 +1630,7 @@ function nodeStats(nodes: any[]) {
                   <span class="text-muted-foreground text-xs shrink-0">=</span>
                   <input
                     v-model="v.value"
-                    :placeholder="`ค่าของ ${v.key}…`"
+                    :placeholder="t('sqlbuilder_header_vars_value_ph', { key: v.key })"
                     class="flex-1 min-w-0 text-xs border rounded-lg px-2.5 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-amber-400"
                     @keydown.enter.prevent="confirmVarsAndImport"
                   />
@@ -1640,13 +1645,13 @@ function nodeStats(nodes: any[]) {
                   @click="importStep = 'input'"
                   class="flex-1 py-2.5 rounded-xl border text-xs font-semibold transition-colors hover:bg-accent"
                 >
-                  ย้อนกลับ
+                  {{ t('sqlbuilder_header_vars_back') }}
                 </button>
                 <button
                   @click="confirmVarsAndImport"
                   class="flex-[2] flex items-center justify-center gap-2 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold transition-colors"
                 >
-                  <CheckCheck class="size-4" /> ยืนยัน → สร้าง Nodes
+                  <CheckCheck class="size-4" /> {{ t('sqlbuilder_header_vars_confirm') }}
                 </button>
               </div>
             </template>
@@ -1655,8 +1660,8 @@ function nodeStats(nodes: any[]) {
 
           <!-- Footer hint -->
           <p v-if="loadTab !== 'import'" class="text-[10px] text-muted-foreground/50 text-center mt-3">
-            <span class="font-semibold">Load</span> = โหลดแทน canvas ปัจจุบัน &nbsp;·&nbsp;
-            <span class="font-semibold">Add</span> = เพิ่มไว้ข้างๆ node ที่มีอยู่
+            <span class="font-semibold">{{ t('sqlbuilder_header_footer_load') }}</span> {{ t('sqlbuilder_header_footer_load_desc') }} &nbsp;·&nbsp;
+            <span class="font-semibold">{{ t('sqlbuilder_header_footer_add') }}</span> {{ t('sqlbuilder_header_footer_add_desc') }}
           </p>
         </div>
       </div>

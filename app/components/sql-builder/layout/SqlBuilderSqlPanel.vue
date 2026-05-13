@@ -7,6 +7,7 @@ import { Code2, ChevronDown, ChevronRight, Copy, Eye, AlertTriangle } from 'luci
 import { useSqlBuilderStore } from '~/stores/sql-builder'
 import { useSqlGenerator } from '~/composables/sql-builder/useSqlGenerator'
 
+const { t } = useI18n()
 const store = useSqlBuilderStore()
 const { generateSQL } = useSqlGenerator()
 
@@ -94,7 +95,7 @@ function startResize(e: MouseEvent) {
             previewEnabled
               ? 'bg-emerald-500/15 text-emerald-500 font-semibold'
               : 'text-muted-foreground hover:text-foreground']"
-          title="Preview TOP N rows">
+          :title="t('sqlbuilder_sql_panel_preview_top')">
           <Eye class="size-3" />
           TOP
         </button>
@@ -129,7 +130,7 @@ function startResize(e: MouseEvent) {
       >
         <div class="flex items-center gap-1.5 font-semibold">
           <AlertTriangle class="size-3.5" />
-          <span>ข้อควรระวัง ({{ store.lastGenerationWarnings.length }})</span>
+          <span>{{ t('sqlbuilder_sql_panel_warnings', { n: store.lastGenerationWarnings.length }) }}</span>
         </div>
         <ul class="list-disc list-inside space-y-0.5 pl-1">
           <li v-for="(w, i) in store.lastGenerationWarnings" :key="i">{{ w }}</li>
@@ -138,7 +139,7 @@ function startResize(e: MouseEvent) {
       <pre v-if="displaySQL"
         class="px-4 py-3 text-xs font-mono whitespace-pre-wrap leading-relaxed">{{ displaySQL }}</pre>
       <div v-else class="flex items-center justify-center h-full text-xs text-muted-foreground">
-        กด "Generate SQL" เพื่อสร้าง Query
+        {{ t('sqlbuilder_sql_panel_empty_hint') }}
       </div>
     </div>
   </div>

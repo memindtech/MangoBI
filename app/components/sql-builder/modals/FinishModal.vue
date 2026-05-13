@@ -10,6 +10,7 @@ import { CloudUpload, CheckCircle2, Loader2, AlertCircle, X, Globe, Lock } from 
 import { useSqlBuilderStore } from '~/stores/sql-builder'
 import { useMangoBIApi } from '~/composables/useMangoBIApi'
 
+const { t } = useI18n()
 const store = useSqlBuilderStore()
 const api   = useMangoBIApi()
 const { $xt } = useNuxtApp() as any
@@ -42,7 +43,7 @@ watch(showFinishModal, async (open) => {
 
   const sql = generatedSQL.value?.trim()
   if (!sql || sql.startsWith('--')) {
-    colMapError.value   = 'ไม่มีข้อมูล column — ตรวจสอบว่ามี Table บน Canvas'
+    colMapError.value   = t('sqlbuilder_finish_err_no_table')
     colMapLoading.value = false
     return
   }
@@ -74,7 +75,7 @@ watch(showFinishModal, async (open) => {
       }
     })
   } catch (err: any) {
-    colMapError.value = err?.message ?? 'โหลดข้อมูล column ไม่สำเร็จ'
+    colMapError.value = err?.message ?? t('sqlbuilder_finish_err_load_cols')
   } finally {
     colMapLoading.value = false
   }
@@ -107,7 +108,7 @@ async function doSave() {
       columnMapping,
       isPublic:      finishIsPublic.value,
     })
-    if (!newId) throw new Error('บันทึกไม่สำเร็จ')
+    if (!newId) throw new Error(t('sqlbuilder_finish_err_save'))
     savedId.value        = newId
     savedName.value      = finishName.value.trim()
     savedIsPublic.value  = finishIsPublic.value
@@ -117,7 +118,7 @@ async function doSave() {
       finishSuccess.value = false
     }, 1200)
   } catch (err: any) {
-    finishError.value = err?.message ?? 'บันทึกไม่สำเร็จ'
+    finishError.value = err?.message ?? t('sqlbuilder_finish_err_save')
   } finally {
     finishSaving.value = false
   }
@@ -135,7 +136,7 @@ async function doSave() {
           <!-- Header -->
           <div class="flex items-center gap-2 px-6 pt-6 pb-4 shrink-0">
             <CloudUpload class="size-5 text-emerald-500" />
-            <h2 class="font-bold text-sm">บันทึก SQL Builder</h2>
+            <h2 class="font-bold text-sm">{{ t('sqlbuilder_finish_title') }}</h2>
             <button @click="close" class="ml-auto text-muted-foreground hover:text-foreground">
               <X class="size-4" />
             </button>
@@ -144,17 +145,17 @@ async function doSave() {
           <!-- Success state -->
           <div v-if="finishSuccess" class="flex flex-col items-center gap-3 py-10 px-6">
             <CheckCircle2 class="size-10 text-emerald-500" />
-            <p class="text-sm font-semibold text-emerald-600">บันทึกสำเร็จ</p>
+            <p class="text-sm font-semibold text-emerald-600">{{ t('sqlbuilder_finish_success') }}</p>
           </div>
 
           <!-- Form -->
           <template v-else>
             <!-- Name -->
             <div class="px-6 pb-4 shrink-0">
-              <label class="text-xs text-muted-foreground mb-1 block">ชื่อ</label>
+              <label class="text-xs text-muted-foreground mb-1 block">{{ t('sqlbuilder_finish_label_name') }}</label>
               <input
                 v-model="finishName"
-                placeholder="ตั้งชื่อ SQL Builder…"
+                :placeholder="t('sqlbuilder_finish_name_placeholder')"
                 class="w-full text-sm border rounded-lg px-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
                 autofocus
               />
@@ -174,9 +175,9 @@ async function doSave() {
               >
                 <component :is="finishIsPublic ? Globe : Lock" class="size-4 shrink-0" />
                 <div class="flex-1 text-left">
-                  <p class="text-xs font-semibold">{{ finishIsPublic ? 'สาธารณะ' : 'ส่วนตัว' }}</p>
+                  <p class="text-xs font-semibold">{{ finishIsPublic ? t('sqlbuilder_finish_public') : t('sqlbuilder_finish_private') }}</p>
                   <p class="text-[10px] opacity-70">
-                    {{ finishIsPublic ? 'ทุกคนในระบบมองเห็นและโหลดได้' : 'มองเห็นเฉพาะคุณเท่านั้น' }}
+                    {{ finishIsPublic ? t('sqlbuilder_finish_public_desc') : t('sqlbuilder_finish_private_desc') }}
                   </p>
                 </div>
                 <!-- Toggle pill -->
@@ -189,13 +190,13 @@ async function doSave() {
             <!-- Column Mapping -->
             <div class="px-6 pb-4 flex flex-col gap-2 min-h-0 flex-1">
               <div class="flex items-center justify-between shrink-0">
-                <p class="text-xs font-semibold text-muted-foreground">ตรวจสอบ Column Names</p>
+                <p class="text-xs font-semibold text-muted-foreground">{{ t('sqlbuilder_finish_check_cols') }}</p>
                 <span v-if="colMapRows.length" class="text-[10px] text-emerald-600 font-mono">{{ colMapRows.length }} columns</span>
               </div>
 
               <div v-if="colMapLoading"
                 class="flex items-center justify-center gap-2 py-6 text-muted-foreground text-xs border rounded-lg">
-                <Loader2 class="size-4 animate-spin" /> กำลังโหลดข้อมูล column…
+                <Loader2 class="size-4 animate-spin" /> {{ t('sqlbuilder_finish_loading_cols') }}
               </div>
 
               <div v-else-if="colMapError"
@@ -205,7 +206,7 @@ async function doSave() {
 
               <div v-else-if="!colMapRows.length"
                 class="text-center py-6 text-[10px] text-muted-foreground/60 italic border border-dashed rounded-lg">
-                ไม่มีข้อมูล column
+                {{ t('sqlbuilder_finish_no_cols') }}
               </div>
 
               <div v-else class="overflow-auto border rounded-lg flex-1">
@@ -247,7 +248,7 @@ async function doSave() {
               <div class="flex gap-2 justify-end">
                 <button @click="close"
                   class="text-xs px-3 py-1.5 border rounded-lg hover:bg-accent transition-colors">
-                  ยกเลิก
+                  {{ t('sqlbuilder_common_cancel') }}
                 </button>
                 <button @click="doSave"
                   :disabled="finishSaving || colMapLoading || !finishName.trim()"
@@ -255,7 +256,7 @@ async function doSave() {
                          text-white rounded-lg font-semibold transition-colors disabled:opacity-50">
                   <Loader2 v-if="finishSaving" class="size-3.5 animate-spin" />
                   <CloudUpload v-else class="size-3.5" />
-                  บันทึก
+                  {{ t('sqlbuilder_common_save') }}
                 </button>
               </div>
             </div>
