@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import {
-  BarChart2, Share2,
+  LayoutGrid, Share2,
   LogOut, ChevronUp,
   LayoutDashboard, Send, Code2, UserCircle, Settings,
 } from 'lucide-vue-next'
@@ -58,12 +58,12 @@ function isActive(path: string) {
       <SidebarMenu>
         <SidebarMenuItem>
           <SidebarMenuButton size="lg" @click="router.push('/')">
-            <div class="flex size-8 items-center justify-center rounded-lg bg-orange-500 text-white shrink-0">
-              <BarChart2 class="size-4" />
+            <div class="flex size-9 items-center justify-center rounded-xl bg-orange-500 text-white shrink-0 shadow-sm">
+              <LayoutGrid class="size-5" />
             </div>
-            <div class="flex flex-col leading-none group-data-[collapsible=icon]:hidden">
+            <div class="flex flex-col leading-tight group-data-[collapsible=icon]:hidden">
               <span class="font-bold text-base">MangoBI</span>
-              <span class="text-xs text-muted-foreground">Planning System</span>
+              <span class="text-xs text-muted-foreground">Business Intelligence Platform</span>
             </div>
           </SidebarMenuButton>
         </SidebarMenuItem>
