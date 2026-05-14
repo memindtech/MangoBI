@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Share2, LayoutDashboard, Send, Code2, ArrowRight } from 'lucide-vue-next'
+import { Share2, LayoutDashboard, LayoutGrid, Send, Code2, ArrowRight } from 'lucide-vue-next'
 
 const router = useRouter()
 
@@ -55,7 +55,7 @@ const features = [
     <div class="text-center">
       <div class="flex items-center justify-center gap-3 mb-3">
         <div class="flex size-12 items-center justify-center rounded-2xl bg-orange-500 text-white shadow-lg">
-          <LayoutDashboard class="size-6" />
+          <LayoutGrid class="size-6" />
         </div>
         <h1 class="text-3xl font-bold tracking-tight">MangoBI</h1>
       </div>
