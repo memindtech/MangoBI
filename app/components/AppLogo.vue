@@ -2,10 +2,9 @@
 /**
  * AppLogo — MangoBI brand mark
  *
- * Orange gradient rounded-square tile with a bold white "M" plus an
- * up-right arrow flying out of the right leg (the "growth / BI" signal).
- * A small white dot at the upper-left adds a notification-style accent.
- * Renders crisply from 24px (toolbar) up to 200px+ (splash).
+ * Orange gradient rounded-square tile with a bold white "M" whose right
+ * stroke continues out as an up-right arrow (the BI / growth signal).
+ * Small white dot at the upper-left adds a notification-style accent.
  */
 withDefaults(defineProps<{
   /** size in px (height = width) */
@@ -25,60 +24,41 @@ withDefaults(defineProps<{
     :class="flat ? '' : 'drop-shadow-md'"
   >
     <defs>
-      <!-- Background: warm orange diagonal gradient -->
       <linearGradient id="mb-tile" x1="0" y1="0" x2="1" y2="1">
         <stop offset="0%"   stop-color="#fb923c" />
-        <stop offset="55%"  stop-color="#f97316" />
-        <stop offset="100%" stop-color="#c2410c" />
+        <stop offset="100%" stop-color="#ea580c" />
       </linearGradient>
-      <!-- Top-right soft highlight -->
       <radialGradient id="mb-shine" cx="0.75" cy="0.15" r="0.6">
-        <stop offset="0%"   stop-color="white" stop-opacity="0.35" />
+        <stop offset="0%"   stop-color="white" stop-opacity="0.30" />
         <stop offset="100%" stop-color="white" stop-opacity="0" />
       </radialGradient>
     </defs>
 
     <!-- Rounded square tile -->
-    <rect x="0" y="0" width="48" height="48" rx="11" fill="url(#mb-tile)" />
-    <rect x="0" y="0" width="48" height="48" rx="11" fill="url(#mb-shine)" />
+    <rect width="48" height="48" rx="10" fill="url(#mb-tile)" />
+    <rect width="48" height="48" rx="10" fill="url(#mb-shine)" />
 
     <!-- Decorative dot, upper-left -->
-    <circle cx="8" cy="8.5" r="2.2" fill="white" opacity="0.9" />
+    <circle cx="8" cy="9" r="2.2" fill="white" />
 
-    <!-- Up-right arrow flying out the right leg of M.
-         Drawn as a vertical "up arrow" then rotated 35° clockwise around its base. -->
-    <g transform="rotate(35 35 18)">
-      <path
-        d="M 33 18
-           L 33 8
-           L 28.5 8
-           L 35 -0.5
-           L 41.5 8
-           L 37 8
-           L 37 18
-           Z"
-        fill="white"
-      />
+    <!-- M + arrow as one continuous heavy stroke
+         M: (11,38) → up to (11,12) → V down to (24,30) → V up to (36,12)
+         Arrow stem: (36,12) → (44,4)
+         Right leg of M: (36,12) → (36,38)
+         Arrowhead: chevron at (44,4) -->
+    <g
+      stroke="white"
+      stroke-width="6"
+      fill="none"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <!-- The "M" body -->
+      <polyline points="11,38 11,12 24,30 36,12 36,38" />
+      <!-- Arrow stem extending up-right from right leg's top -->
+      <line x1="36" y1="12" x2="44" y2="4" />
+      <!-- Arrowhead chevron pointing NE (tip at 44,4) -->
+      <polyline points="39,4 44,4 44,9" />
     </g>
-
-    <!-- Bold "M" letter (filled white).
-         Legs ~7px thick; V dips to y=26; the right leg overlaps with the arrow base above. -->
-    <path
-      d="M 8 40
-         L 8 13
-         L 15 13
-         L 24 26
-         L 33 13
-         L 40 13
-         L 40 40
-         L 33 40
-         L 33 22
-         L 27 30
-         L 21 30
-         L 15 22
-         L 15 40
-         Z"
-      fill="white"
-    />
   </svg>
 </template>
