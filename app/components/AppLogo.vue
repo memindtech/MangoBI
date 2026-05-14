@@ -2,14 +2,14 @@
 /**
  * AppLogo — MangoBI brand mark
  *
- * Orange gradient rounded-square tile with a bold white "M" whose right
- * stroke continues out as an up-right arrow (the BI / growth signal).
- * Small white dot at the upper-left adds a notification-style accent.
+ * Round orange tile with a bold white "M" and an up-right growth arrow
+ * exiting the right leg. Small notification-style dot at the upper-left;
+ * subtle darker badge clipped to the lower-right edge for a touch of depth.
  */
 withDefaults(defineProps<{
   /** size in px (height = width) */
   size?: number
-  /** drop the soft outer shadow when the logo sits on an already-colored surface */
+  /** drop the soft outer shadow when sitting on an already-colored surface */
   flat?: boolean
 }>(), { size: 64, flat: false })
 </script>
@@ -24,41 +24,43 @@ withDefaults(defineProps<{
     :class="flat ? '' : 'drop-shadow-md'"
   >
     <defs>
-      <linearGradient id="mb-tile" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0%"   stop-color="#fb923c" />
-        <stop offset="100%" stop-color="#ea580c" />
-      </linearGradient>
-      <radialGradient id="mb-shine" cx="0.75" cy="0.15" r="0.6">
-        <stop offset="0%"   stop-color="white" stop-opacity="0.30" />
-        <stop offset="100%" stop-color="white" stop-opacity="0" />
+      <!-- Background: warm orange with a hint of glow from upper-left -->
+      <radialGradient id="mb-tile" cx="0.32" cy="0.25" r="0.95">
+        <stop offset="0%"   stop-color="#fdba74" />
+        <stop offset="45%"  stop-color="#f97316" />
+        <stop offset="100%" stop-color="#9a3412" />
       </radialGradient>
+      <!-- Crisp circle clip so we can stroke the arrow OUTSIDE the disc -->
+      <clipPath id="mb-clip">
+        <circle cx="24" cy="24" r="22.5" />
+      </clipPath>
     </defs>
 
-    <!-- Rounded square tile -->
-    <rect width="48" height="48" rx="10" fill="url(#mb-tile)" />
-    <rect width="48" height="48" rx="10" fill="url(#mb-shine)" />
+    <!-- The disc -->
+    <circle cx="24" cy="24" r="22.5" fill="url(#mb-tile)" />
+
+    <!-- Small badge clipped to the lower-right edge for depth -->
+    <g :clip-path="`url(#mb-clip)`">
+      <rect x="34" y="34" width="14" height="14" rx="2.5" fill="#7c2d12" transform="rotate(45 41 41)" />
+    </g>
 
     <!-- Decorative dot, upper-left -->
-    <circle cx="8" cy="9" r="2.2" fill="white" />
+    <circle cx="11" cy="11" r="2.3" fill="white" />
 
-    <!-- M + arrow as one continuous heavy stroke
-         M: (11,38) → up to (11,12) → V down to (24,30) → V up to (36,12)
-         Arrow stem: (36,12) → (44,4)
-         Right leg of M: (36,12) → (36,38)
-         Arrowhead: chevron at (44,4) -->
+    <!-- M + arrow: continuous heavy stroke, rounded joints -->
     <g
       stroke="white"
-      stroke-width="6"
+      stroke-width="6.5"
       fill="none"
       stroke-linecap="round"
       stroke-linejoin="round"
     >
-      <!-- The "M" body -->
-      <polyline points="11,38 11,12 24,30 36,12 36,38" />
-      <!-- Arrow stem extending up-right from right leg's top -->
-      <line x1="36" y1="12" x2="44" y2="4" />
-      <!-- Arrowhead chevron pointing NE (tip at 44,4) -->
-      <polyline points="39,4 44,4 44,9" />
+      <!-- M body — left leg, V dip, right leg -->
+      <polyline points="12,36 12,15 24,30 36,15 36,36" />
+      <!-- Arrow stem out the top of the right leg, heading NE -->
+      <line x1="36" y1="15" x2="44" y2="7" />
+      <!-- Arrowhead chevron (tip at 44,7) -->
+      <polyline points="39,7 44,7 44,12" />
     </g>
   </svg>
 </template>
