@@ -40,6 +40,12 @@ export default defineNuxtConfig({
   app: {
     head: {
       meta: [{ name: 'viewport', content: 'width=device-width, initial-scale=1.0' }],
+      link: [
+        // SVG favicon for modern browsers (scales crisply on hi-DPI / retina)
+        { rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' },
+        // ICO fallback for older browsers
+        { rel: 'icon', type: 'image/x-icon', href: '/favicon.ico' },
+      ],
     },
   },
 
