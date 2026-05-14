@@ -11,8 +11,6 @@
 const props = withDefaults(defineProps<{
   /** rendered height in px — width follows the native 111:56 aspect ratio */
   height?: number
-  /** drop the soft outer shadow */
-  flat?: boolean
   /**
    * Color of the "Mango" wordmark + M + mango fruit + arrow.
    *  - 'auto' (default) — white in dark mode, slate-900 in light mode
@@ -20,7 +18,7 @@ const props = withDefaults(defineProps<{
    *  - 'dark'           — force dark slate (use on light surfaces)
    */
   mark?: 'auto' | 'light' | 'dark'
-}>(), { height: 56, flat: false, mark: 'auto' })
+}>(), { height: 56, mark: 'auto' })
 
 const colorMode = useColorMode()
 
@@ -41,10 +39,9 @@ const markColor = computed(() => {
     preserveAspectRatio="xMidYMid meet"
     role="img"
     aria-label="MangoBI"
-    :class="flat ? '' : 'drop-shadow-sm'"
   >
     <!-- ── Green data-icon cluster (unchanged in both themes) ─────────── -->
-    <g filter="url(#mb-shadow)">
+    <g>
       <path d="M74.2498 17.0375C73.1963 17.0375 73.292 18.2119 73.292 18.2119L73.292 20.0268H76.3567H84.4973V18.2119C84.4973 17.251 83.6354 17.0375 83.6354 17.0375H74.2498Z" fill="#4DFF88"/>
       <path d="M73.292 20.0268C73.292 18.9719 73.292 18.2119 73.292 18.2119C73.292 18.2119 73.1963 17.0375 74.2498 17.0375H83.6354C83.6354 17.0375 84.4973 17.251 84.4973 18.2119M73.292 18.2119L73.292 20.0268M84.4973 18.2119C84.4973 18.4697 84.4973 19.1578 84.4973 20.0268M84.4973 18.2119V20.0268M73.292 20.0268C73.292 22.0849 73.292 25.2651 73.292 26.1121C73.292 27.3932 74.2498 27.5 74.2498 27.5C74.2498 27.5 75.1316 27.5 76.3567 27.5M73.292 20.0268H76.3567M84.4973 20.0268C84.4973 22.3968 84.4973 26.1121 84.4973 26.1121C84.4973 26.1121 84.5931 27.2865 83.6354 27.5C83.0507 27.5 78.9404 27.5 76.3567 27.5M84.4973 20.0268H76.3567M76.3567 20.0268V27.5" stroke="#4DFF88"/>
       <path d="M54.3513 16.9531C53.4171 16.9531 53.502 17.8813 53.502 17.8813L53.502 19.3156H56.2196H63.4384V17.8813C63.4384 17.1219 62.674 16.9531 62.674 16.9531H54.3513Z" fill="#4DFF88"/>
@@ -71,17 +68,5 @@ const markColor = computed(() => {
     <path :stroke="markColor" d="M0.5 48V22H6.6875L10.8125 31.8378L16.3125 22H21.8125L12.875 37.4595H8.75L6 30.4324V48H0.5Z"/>
     <path :stroke="markColor" d="M17 34.6486L22.5 25.5135V48H17V34.6486Z"/>
 
-    <defs>
-      <filter id="mb-shadow" x="49" y="0" width="40" height="36" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
-        <feFlood flood-opacity="0" result="BackgroundImageFix"/>
-        <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
-        <feOffset dy="4"/>
-        <feGaussianBlur stdDeviation="2"/>
-        <feComposite in2="hardAlpha" operator="out"/>
-        <feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.25 0"/>
-        <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow"/>
-        <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow" result="shape"/>
-      </filter>
-    </defs>
   </svg>
 </template>
