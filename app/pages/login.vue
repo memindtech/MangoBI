@@ -46,6 +46,11 @@ const showAlert = (title: string, description: string, type: string = 'info') =>
 }
 
 // --- Microsoft Config ---
+// Feature flag: flip to true to restore the Microsoft OAuth login button.
+// MSAL imports + submitLogin('microsoft') logic remain in place so re-enabling
+// only requires this single toggle.
+const MS_LOGIN_ENABLED = false
+
 const microsoftClientID = ref('YOUR_CLIENT_ID') // ใส่ Client ID จริง
 const microsoftTenantID = ref('YOUR_TENANT_ID') // ใส่ Tenant ID จริง
 
@@ -202,9 +207,8 @@ onMounted(() => {
     <Card class="w-full max-w-md shadow-lg">
       <CardHeader class="space-y-1 text-center">
         <div class="flex justify-center mb-4">
-           <div class="h-12 w-12 bg-orange-500 rounded-xl flex items-center justify-center text-white font-bold text-2xl shadow-inner">BI</div>
+          <AppLogo :height="56" />
         </div>
-        <CardTitle class="text-2xl font-bold">{{ t('login_app_name') }}</CardTitle>
         <CardDescription>{{ t('login_subtitle') }}</CardDescription>
       </CardHeader>
       
@@ -258,24 +262,27 @@ onMounted(() => {
             {{ t('login_btn') }}
           </Button>
 
-          <div class="relative my-4">
-            <div class="absolute inset-0 flex items-center">
-              <span class="w-full border-t" />
+          <!-- Microsoft login temporarily hidden — restore by setting MS_LOGIN_ENABLED = true -->
+          <template v-if="MS_LOGIN_ENABLED">
+            <div class="relative my-4">
+              <div class="absolute inset-0 flex items-center">
+                <span class="w-full border-t" />
+              </div>
+              <div class="relative flex justify-center text-xs uppercase">
+                <span class="bg-background px-2 text-muted-foreground">{{ t('login_or') }}</span>
+              </div>
             </div>
-            <div class="relative flex justify-center text-xs uppercase">
-              <span class="bg-background px-2 text-muted-foreground">{{ t('login_or') }}</span>
-            </div>
-          </div>
 
-          <Button variant="outline" @click="submitLogin('microsoft')" class="w-full border-gray-300" :disabled="isLoading">
-            <Loader2 v-if="isLoading && form.oauth2 === 'Y'" class="mr-2 size-4 animate-spin" />
-            <template v-else>
-              <svg class="mr-2 h-4 w-4" viewBox="0 0 23 23" xmlns="http://www.w3.org/2000/svg">
-                <path fill="#f35325" d="M1 1h10v10H1z"/><path fill="#81bc06" d="M12 1h10v10H12z"/><path fill="#05a6f0" d="M1 12h10v10H1z"/><path fill="#ffba08" d="M12 12h10v10H12z"/>
-              </svg>
-              {{ t('login_ms_btn') }}
-            </template>
-          </Button>
+            <Button variant="outline" @click="submitLogin('microsoft')" class="w-full border-gray-300" :disabled="isLoading">
+              <Loader2 v-if="isLoading && form.oauth2 === 'Y'" class="mr-2 size-4 animate-spin" />
+              <template v-else>
+                <svg class="mr-2 h-4 w-4" viewBox="0 0 23 23" xmlns="http://www.w3.org/2000/svg">
+                  <path fill="#f35325" d="M1 1h10v10H1z"/><path fill="#81bc06" d="M12 1h10v10H12z"/><path fill="#05a6f0" d="M1 12h10v10H1z"/><path fill="#ffba08" d="M12 12h10v10H12z"/>
+                </svg>
+                {{ t('login_ms_btn') }}
+              </template>
+            </Button>
+          </template>
         </div>
       </CardContent>
     </Card>
