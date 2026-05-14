@@ -207,7 +207,7 @@ onMounted(() => {
     <Card class="w-full max-w-md shadow-lg">
       <CardHeader class="space-y-1 text-center">
         <div class="flex justify-center mb-4">
-           <div class="h-12 w-12 bg-orange-500 rounded-xl flex items-center justify-center text-white font-bold text-2xl shadow-inner">BI</div>
+          <AppLogo :size="64" />
         </div>
         <CardTitle class="text-2xl font-bold">{{ t('login_app_name') }}</CardTitle>
         <CardDescription>{{ t('login_subtitle') }}</CardDescription>
