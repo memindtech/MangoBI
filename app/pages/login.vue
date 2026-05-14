@@ -207,9 +207,7 @@ onMounted(() => {
     <Card class="w-full max-w-md shadow-lg">
       <CardHeader class="space-y-1 text-center">
         <div class="flex justify-center mb-4">
-          <div class="rounded-2xl px-6 py-4 bg-gradient-to-br from-orange-400 via-orange-500 to-orange-700 shadow-lg">
-            <AppLogo :height="56" flat />
-          </div>
+          <AppLogo :height="56" />
         </div>
         <CardDescription>{{ t('login_subtitle') }}</CardDescription>
       </CardHeader>
